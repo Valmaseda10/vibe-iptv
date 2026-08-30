@@ -1,0 +1,102 @@
+#EXTM3U x-tvg-url="http://panel.example.com/xmltv.php?username=demo&password=demo"
+#EXTINF:-1 tvg-id="canaluno.es" tvg-name="Canal Uno" tvg-logo="http://panel.example.com/logos/1.png" group-title="ESPAÑA | GENERAL",ES | Canal Uno HD
+http://panel.example.com:8080/live/demo/demo/1.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal Dos
+http://panel.example.com:8080/live/demo/demo/2.ts
+#EXTINF:-1 tvg-id="canaltres.es" group-title="ESPAÑA | GENERAL",Canal Tres
+#EXTVLCOPT:http-user-agent=VLC/3.0.20 LibVLC/3.0.20
+http://panel.example.com:8080/live/demo/demo/3.ts
+#EXTINF:-1 tvg-logo="http://panel.example.com/covers/6001.jpg" group-title="PELICULAS | ESTRENOS",Película de Estreno (2024)
+http://panel.example.com:8080/movie/demo/demo/6001.mp4
+#EXTINF:-1 group-title="PELICULAS ACCION",Otra Película Sin Ruta Movie
+http://panel.example.com:8080/vod/demo/demo/6002.mp4
+#EXTINF:-1 group-title="SERIES ES",Serie de Ejemplo S01E02
+http://panel.example.com:8080/series/demo/demo/70102.mp4
+#EXTINF:-1 group-title="SERIES ES",Serie de Ejemplo 1x03
+http://panel.example.com:8080/series/demo/demo/70103.mp4
+#EXTINF:-1 group-title="SERIES ES",Otra Serie T2 E5
+http://panel.example.com:8080/vod/demo/demo/70205.mp4
+#EXTINF:-1 group-title="SERIES ES",Otra Serie Mas - Temporada 3 Capitulo 1
+http://panel.example.com:8080/vod/demo/demo/70301.mp4
+#EXTINF:-1 group-title="SERIES ES",Documental Especial Sin Patron De Episodio
+http://panel.example.com:8080/series/demo/demo/70401.mp4
+#EXTINF:-1 tvg-id="" tvg-logo="" group-title="ESPAÑA | GENERAL",  ES  |   Canal   Raro
+http://panel.example.com:8080/live/demo/demo/4.ts
+#EXTINF:-1,Canal Comodín Sin Grupo
+http://panel.example.com:8080/x/demo/demo/5.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 013
+http://panel.example.com:8080/live/demo/demo/213.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 014
+http://panel.example.com:8080/live/demo/demo/214.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 015
+http://panel.example.com:8080/live/demo/demo/215.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 016
+http://panel.example.com:8080/live/demo/demo/216.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 017
+http://panel.example.com:8080/live/demo/demo/217.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 018
+http://panel.example.com:8080/live/demo/demo/218.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 019
+http://panel.example.com:8080/live/demo/demo/219.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 020
+http://panel.example.com:8080/live/demo/demo/220.ts
+#EXTINF:-1 group-title="DOCUMENTALES",Canal 021
+http://panel.example.com:8080/live/demo/demo/221.ts
+#EXTINF:-1 group-title="DOCUMENTALES",Canal 022
+http://panel.example.com:8080/live/demo/demo/222.ts
+#EXTINF:-1 group-title="DOCUMENTALES",Canal 023
+http://panel.example.com:8080/live/demo/demo/223.ts
+#EXTINF:-1 group-title="DOCUMENTALES",Canal 024
+http://panel.example.com:8080/live/demo/demo/224.ts
+#EXTINF:-1 group-title="DOCUMENTALES",Canal 025
+http://panel.example.com:8080/live/demo/demo/225.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 026
+http://panel.example.com:8080/live/demo/demo/226.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 027
+http://panel.example.com:8080/live/demo/demo/227.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 028
+http://panel.example.com:8080/live/demo/demo/228.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 029
+http://panel.example.com:8080/live/demo/demo/229.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 030
+http://panel.example.com:8080/live/demo/demo/230.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 031
+http://panel.example.com:8080/live/demo/demo/231.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 032
+http://panel.example.com:8080/live/demo/demo/232.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 033
+http://panel.example.com:8080/live/demo/demo/233.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 034
+http://panel.example.com:8080/live/demo/demo/234.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 035
+http://panel.example.com:8080/live/demo/demo/235.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 036
+http://panel.example.com:8080/live/demo/demo/236.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 037
+http://panel.example.com:8080/live/demo/demo/237.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 038
+http://panel.example.com:8080/live/demo/demo/238.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 039
+http://panel.example.com:8080/live/demo/demo/239.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 040
+http://panel.example.com:8080/live/demo/demo/240.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 041
+http://panel.example.com:8080/live/demo/demo/241.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 042
+http://panel.example.com:8080/live/demo/demo/242.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 043
+http://panel.example.com:8080/live/demo/demo/243.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 044
+http://panel.example.com:8080/live/demo/demo/244.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 045
+http://panel.example.com:8080/live/demo/demo/245.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 046
+http://panel.example.com:8080/live/demo/demo/246.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 047
+http://panel.example.com:8080/live/demo/demo/247.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 048
+http://panel.example.com:8080/live/demo/demo/248.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 049
+http://panel.example.com:8080/live/demo/demo/249.ts
+#EXTINF:-1 group-title="ESPAÑA | GENERAL",Canal 050
+http://panel.example.com:8080/live/demo/demo/250.ts

@@ -1,7 +1,3 @@
-// Sin consumidores hasta la fase F1, cuando sources::xtream y sources::m3u empiecen a
-// registrar URLs de proveedor.
-#![allow(dead_code)]
-
 use reqwest::Url;
 
 const MASK: &str = "REDACTED";

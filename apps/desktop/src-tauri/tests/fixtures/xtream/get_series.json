@@ -1,0 +1,15 @@
+[
+  {
+    "num": 1,
+    "name": "Serie de Ejemplo",
+    "series_id": 9001,
+    "cover": "http://panel.example.com/covers/9001.jpg",
+    "plot": "Una serie inventada para los tests.",
+    "genre": "Drama",
+    "releaseDate": "2020-03-01",
+    "last_modified": "1700000000"
+  },
+  {
+    "name": "Serie sin id, se descarta"
+  }
+]

@@ -5,6 +5,9 @@ mod catalog;
 mod db;
 mod media;
 mod server;
+// Sin consumidores en producción hasta la fase F2, cuando catalog::sync empiece a
+// llamar al trait Source. Los tests de este módulo ya lo ejercitan.
+#[allow(dead_code)]
 mod sources;
 mod util;
 

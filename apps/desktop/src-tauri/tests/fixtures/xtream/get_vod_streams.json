@@ -1,0 +1,25 @@
+[
+  {
+    "num": 1,
+    "name": "Película de Estreno (2024)",
+    "stream_id": 5001,
+    "stream_icon": "http://panel.example.com/covers/5001.jpg",
+    "container_extension": "mkv",
+    "category_id": "10",
+    "added": "1700000000",
+    "rating": "7.5"
+  },
+  {
+    "num": 2,
+    "name": "Otra Película",
+    "stream_id": "5002",
+    "container_extension": "mp4",
+    "category_id": "11",
+    "added": 1700003600,
+    "rating": 8,
+    "tmdb_id": "603692"
+  },
+  {
+    "name": "Sin id, se descarta"
+  }
+]

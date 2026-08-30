@@ -1,0 +1,10 @@
+{
+  "user_info": {
+    "auth": 0,
+    "status": "Disabled"
+  },
+  "server_info": {
+    "url": "panel.example.com",
+    "port": "8080"
+  }
+}

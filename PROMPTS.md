@@ -9,7 +9,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 > para la fase N antes de escribir código.
 
 - [x] F0 Andamiaje
-- [ ] F1 Capa de fuentes
+- [x] F1 Capa de fuentes
 - [ ] F2 Base de datos y sincronización
 - [ ] F3 Normalización y TMDB
 - [ ] F4 API local y tipos

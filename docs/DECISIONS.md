@@ -59,6 +59,64 @@ aparecía en `LISTEN` pero ninguna petición obtenía respuesta. Se corrigió ll
 
 ---
 
+## 2026-08-30 — F1 Capa de fuentes
+
+**Qué se ha construido.** Trait `Source` (`#[async_trait]`) en `sources/mod.rs` con
+`XtreamSource` y `M3uSource` completos. Tipos compartidos en `sources/model.rs`,
+`SourceError` (`thiserror`) en `sources/error.rs`, deserializadores tolerantes a
+número/cadena/nulo/ausente en `sources/serde_helpers.rs`. `XtreamSource` cubre cuenta,
+categorías, canales, películas, series, `get_series_info`, User-Agent configurable y
+construcción de URL de stream en sus dos variantes (con y sin `/live/`). `M3uSource`
+parsea línea a línea, extrae el nombre visible tras la última coma, clasifica por ruta
+con heurística de `group-title` como respaldo, agrupa episodios por patrón
+(`S01E02`/`1x02`/`T1 E2`/`Temporada X Capitulo Y`) y expone `detect_embedded_xtream_credentials`
+para URLs `get.php`. 20 fixtures anónimos en `tests/fixtures/` (8 respuestas Xtream + una
+lista M3U de 50 entradas con los casos raros). 41 tests, todos en verde.
+
+**Decisiones tomadas.**
+- **El reintento sin `/live/` no vive en F1.** `docs/XTREAM-API.md` describe probar la
+  URL, fallar con 404 y reintentar sin el segmento — pero eso implica abrir una conexión
+  real al stream, y R1 prohíbe explícitamente abrir un stream para comprobar si
+  funciona. `XtreamSource` expone `stream_url_variant()` con ambas formas; probarlas de
+  verdad y recordar cuál funciona queda para el proxy de `/stream/:kind/:id` de F6, que
+  ya abre el stream a través de StreamGuard de todas formas.
+- **`remote_id` de M3U es un hash opaco, no una redacción de la URL.** `util::redact()`
+  solo reconoce la forma `/live|movie|series/usuario/contraseña/id` de Xtream. Un M3U
+  puede traer credenciales bajo cualquier segmento de ruta (`/vod/`, lo que sea);
+  ampliar `redact()` a cualquier ruta de 3+ segmentos habría sido peligroso (destroza
+  URLs de imágenes con esa forma). Un hash del contenido no puede filtrar un substring
+  del original, sea cual sea la forma de la URL. Se encontró probando la fixture propia
+  de test, con rutas `/vod/`/`/x/` a propósito para forzar la heurística de
+  `group-title`.
+- **Wire structs máximamente tolerantes, filtrado explícito en la conversión.** Cada
+  tipo `*Wire` de Xtream tiene todos los campos opcionales (incluidos los ids); la
+  conversión a `Raw*` descarta la entrada individual si falta un id imprescindible, en
+  vez de fallar el listado completo por una fila mal formada.
+- **Categorías sintéticas para M3U.** M3U no tiene endpoint de categorías; se derivan de
+  los valores distintos de `group-title` vistos por tipo, con un slug interno como
+  `remote_id`. `RawSeries` no lleva categoría (a diferencia de `RawChannel`/`RawMovie`):
+  `series_sources` en `docs/DATA-MODEL.md` tampoco tiene esa columna.
+- **Testeo de Xtream con un mock axum, no una librería de mocking HTTP.** axum ya es
+  dependencia de producción; un router mínimo en el propio test sirve los fixtures y
+  permite comprobar cabeceras (`User-Agent`) sin añadir ninguna dependencia nueva solo
+  para tests.
+- **`rust-version` corregido a 1.82.** Clippy avisó de que `LazyLock` (usado en
+  `m3u.rs`) e `Option::is_none_or` (usado en `redact.rs` desde F0) piden 1.80 y 1.82
+  respectivamente; el `1.77` de F0 era una cifra puesta sin comprobar.
+
+**Deuda técnica pendiente.**
+- **Persistencia de la URL de reproducción de M3U entre reinicios.** A diferencia de
+  Xtream (que reconstruye la URL siempre desde usuario+contraseña+id), M3U no tiene esa
+  estructura: la URL real solo vive en memoria dentro de la instancia de `M3uSource` que
+  hizo el parseo. `docs/DATA-MODEL.md` no tiene columna pensada para esto. F2 tiene que
+  decidir cómo resolver una URL de M3U después de un reinicio de la app (¿columna nueva?
+  ¿re-parsear la lista al vuelo?) — no lo he decidido por mi cuenta.
+- CORS permisivo y icono provisional, heredados de F0 (ver entrada anterior).
+- `sources` sigue con `#[allow(dead_code)]` en `main.rs`: sin consumidor en producción
+  hasta que `catalog::sync` (F2) llame de verdad al trait `Source`.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

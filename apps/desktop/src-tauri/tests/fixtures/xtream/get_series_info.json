@@ -1,0 +1,36 @@
+{
+  "seasons": [
+    { "season_number": 1, "name": "Temporada 1" },
+    { "season_number": 2, "name": "Temporada 2" }
+  ],
+  "info": {
+    "name": "Serie de Ejemplo",
+    "cover": "http://panel.example.com/covers/9001.jpg"
+  },
+  "episodes": {
+    "1": [
+      {
+        "id": 90011,
+        "episode_num": 1,
+        "title": "Piloto",
+        "container_extension": "mp4",
+        "info": { "duration_secs": "1500", "movie_image": "http://panel.example.com/stills/90011.jpg" }
+      },
+      {
+        "id": "90012",
+        "episode_num": "2",
+        "title": "El segundo",
+        "container_extension": "mp4"
+      }
+    ],
+    "2": [
+      {
+        "id": 90021,
+        "episode_num": 1,
+        "title": "Vuelta",
+        "container_extension": "mkv",
+        "info": { "duration_secs": 1620 }
+      }
+    ]
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "user_info": {
+    "username": "demo",
+    "password": "demo",
+    "auth": 1,
+    "status": "Active",
+    "exp_date": "1893456000",
+    "is_trial": "0",
+    "active_cons": "1",
+    "max_connections": "2",
+    "allowed_output_formats": ["m3u8", "ts"]
+  },
+  "server_info": {
+    "url": "panel.example.com",
+    "port": "8080",
+    "server_protocol": "http",
+    "timezone": "Europe/Madrid"
+  }
+}
