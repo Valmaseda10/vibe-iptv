@@ -1,4 +1,4 @@
-import { createRoute } from "@tanstack/react-router";
+import { createRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { rootRoute } from "./__root";
 import { fetchHealth, getServerPort } from "../lib/tauri-client";
@@ -28,6 +28,9 @@ function HomeScreen() {
           {data.port}
         </p>
       )}
+      <Link to="/settings" className="text-red-400 underline hover:text-red-300">
+        Ajustes de proveedores
+      </Link>
     </main>
   );
 }

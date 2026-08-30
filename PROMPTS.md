@@ -10,7 +10,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 
 - [x] F0 Andamiaje
 - [x] F1 Capa de fuentes
-- [ ] F2 Base de datos y sincronización
+- [x] F2 Base de datos y sincronización
 - [ ] F3 Normalización y TMDB
 - [ ] F4 API local y tipos
 - [ ] F5 Cascarón de interfaz

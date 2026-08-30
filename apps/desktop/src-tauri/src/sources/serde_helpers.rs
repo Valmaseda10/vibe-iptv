@@ -41,6 +41,16 @@ where
     }))
 }
 
+/// Cadena opcional (p. ej. `stream_icon`) donde una cadena vacía significa "sin valor",
+/// no un valor real. Confirmado contra un proveedor real: algunos paneles mandan `""`
+/// en vez de omitir el campo o mandar `null`.
+pub fn non_empty_string_opt<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.filter(|s| !s.is_empty()))
+}
+
 fn value_to_i64(value: Value) -> Option<i64> {
     match value {
         Value::Number(n) => n.as_i64(),

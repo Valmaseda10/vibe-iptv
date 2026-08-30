@@ -2,18 +2,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod catalog;
+mod commands;
 mod db;
 mod media;
 mod server;
-// Sin consumidores en producción hasta la fase F2, cuando catalog::sync empiece a
-// llamar al trait Source. Los tests de este módulo ya lo ejercitan.
-#[allow(dead_code)]
 mod sources;
 mod util;
 
 use std::net::TcpListener as StdTcpListener;
 
+use commands::{add_provider, list_providers, sync_provider, validate_m3u, validate_xtream};
 use server::{get_server_port, serve, ServerPort};
+use util::stream_guard::StreamGuard;
 
 fn main() {
     tracing_subscriber::fmt()
@@ -34,6 +34,7 @@ fn main() {
 
     tauri::Builder::default()
         .manage(ServerPort(port))
+        .manage(StreamGuard::new())
         .setup(move |_app| {
             let listener = listener
                 .try_clone()
@@ -45,7 +46,14 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![get_server_port])
+        .invoke_handler(tauri::generate_handler![
+            get_server_port,
+            list_providers,
+            validate_xtream,
+            validate_m3u,
+            add_provider,
+            sync_provider,
+        ])
         .run(tauri::generate_context!())
         .expect("error al arrancar VIBE IPTV");
 }

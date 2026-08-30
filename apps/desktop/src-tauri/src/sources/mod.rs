@@ -4,7 +4,7 @@ pub mod model;
 pub mod serde_helpers;
 pub mod xtream;
 
-pub use error::Result;
+pub use error::{Result, SourceError};
 pub use model::{
     AccountInfo, MediaKind, RawCategory, RawChannel, RawMovie, RawSeries, RawSeriesDetail,
     StreamRef, XmltvStream,

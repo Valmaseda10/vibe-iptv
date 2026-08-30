@@ -1,2 +1,121 @@
-//! Conexión SQLite y aplicación de migraciones desde `../migrations/`. Implementado en
-//! la fase F2 — ver `docs/DATA-MODEL.md`.
+//! Conexión SQLite y aplicación de migraciones. Las migraciones se embeben en el
+//! binario en tiempo de compilación (`include_str!`): así no dependen de que
+//! `migrations/` viaje como recurso empaquetado aparte.
+
+use std::path::Path;
+
+use rusqlite::Connection;
+
+use super::{DbError, Result};
+
+const MIGRATIONS: &[(&str, &str)] = &[(
+    "001_schema_inicial.sql",
+    include_str!("../../migrations/001_schema_inicial.sql"),
+)];
+
+/// Abre (o crea) la base de datos en el directorio de datos de la aplicación.
+pub fn open_connection(app_handle: &tauri::AppHandle) -> Result<Connection> {
+    use tauri::Manager;
+
+    let dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|err| DbError::DataDir(err.to_string()))?;
+    std::fs::create_dir_all(&dir)?;
+    open_connection_at(&dir.join("vibe-iptv.sqlite3"))
+}
+
+/// Igual que [`open_connection`] pero sobre una ruta explícita; separado para poder
+/// probarlo sin un `AppHandle` real.
+pub fn open_connection_at(path: &Path) -> Result<Connection> {
+    let mut conn = Connection::open(path)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "foreign_keys", true)?;
+    run_migrations(&mut conn)?;
+    Ok(conn)
+}
+
+fn run_migrations(conn: &mut Connection) -> Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS _migrations (
+            filename    TEXT PRIMARY KEY,
+            applied_at  INTEGER NOT NULL
+        );",
+    )?;
+
+    for (filename, sql) in MIGRATIONS {
+        let already_applied: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM _migrations WHERE filename = ?1)",
+            [filename],
+            |row| row.get(0),
+        )?;
+        if already_applied {
+            continue;
+        }
+
+        let tx = conn.transaction()?;
+        tx.execute_batch(sql)?;
+        tx.execute(
+            "INSERT INTO _migrations (filename, applied_at) VALUES (?1, ?2)",
+            rusqlite::params![filename, super::now_epoch()],
+        )?;
+        tx.commit()?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn applies_migrations_and_creates_expected_tables() {
+        let conn = open_connection_at(Path::new(":memory:")).unwrap();
+
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'providers'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let fts_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name = 'search_index'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_count, 1);
+    }
+
+    #[test]
+    fn reopening_and_migrating_again_is_a_no_op() {
+        let path = std::env::temp_dir().join(format!("vibe-iptv-test-{}.sqlite3", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        open_connection_at(&path).unwrap();
+        // Segunda apertura sobre el mismo fichero: no debe fallar por "table already exists".
+        open_connection_at(&path).unwrap();
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn wal_and_foreign_keys_are_enabled() {
+        let path = std::env::temp_dir().join(format!("vibe-iptv-test-pragmas-{}.sqlite3", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let conn = open_connection_at(&path).unwrap();
+
+        let journal_mode: String = conn.query_row("PRAGMA journal_mode", [], |row| row.get(0)).unwrap();
+        assert_eq!(journal_mode.to_lowercase(), "wal");
+
+        let foreign_keys: i64 = conn.query_row("PRAGMA foreign_keys", [], |row| row.get(0)).unwrap();
+        assert_eq!(foreign_keys, 1);
+
+        drop(conn);
+        let _ = std::fs::remove_file(&path);
+    }
+}

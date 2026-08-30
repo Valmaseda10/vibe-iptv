@@ -14,7 +14,7 @@ use super::model::{
     AccountInfo, MediaKind, RawCategory, RawChannel, RawEpisode, RawMovie, RawSeries,
     RawSeriesDetail, StreamRef, XmltvStream,
 };
-use super::serde_helpers::{lenient_f64, lenient_i64, lenient_id_opt, lenient_u32};
+use super::serde_helpers::{lenient_f64, lenient_i64, lenient_id_opt, lenient_u32, non_empty_string_opt};
 use super::Source;
 
 pub const DEFAULT_USER_AGENT: &str = "VLC/3.0.20 LibVLC/3.0.20";
@@ -264,9 +264,9 @@ struct ChannelWire {
     stream_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "non_empty_string_opt")]
     stream_icon: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "non_empty_string_opt")]
     epg_channel_id: Option<String>,
     #[serde(default, deserialize_with = "lenient_id_opt")]
     category_id: Option<String>,
@@ -299,7 +299,7 @@ struct MovieWire {
     stream_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "non_empty_string_opt")]
     stream_icon: Option<String>,
     #[serde(default)]
     container_extension: Option<String>,
@@ -549,6 +549,14 @@ mod tests {
         let ch103 = channels.iter().find(|c| c.remote_id == "103").unwrap();
         assert_eq!(ch103.category_remote_id, None); // category_id: "" se trata como ausente
         assert_eq!(ch103.epg_channel_id, None); // epg_channel_id: null
+    }
+
+    #[test]
+    fn empty_stream_icon_is_treated_as_absent() {
+        // Confirmado contra un proveedor real: algunos canales mandan stream_icon: ""
+        // en vez de omitir el campo.
+        let wire: ChannelWire = serde_json::from_str(r#"{"stream_id": "1", "name": "x", "stream_icon": ""}"#).unwrap();
+        assert_eq!(wire.into_raw().unwrap().logo_url, None);
     }
 
     #[tokio::test]

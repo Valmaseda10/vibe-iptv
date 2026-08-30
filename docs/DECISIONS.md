@@ -59,6 +59,71 @@ aparecía en `LISTEN` pero ninguna petición obtenía respuesta. Se corrigió ll
 
 ---
 
+## 2026-08-30 — F2 Base de datos y sincronización
+
+**Qué se ha construido.** Migración inicial (`001_schema_inicial.sql`) con el esquema
+completo de `docs/DATA-MODEL.md`, embebida en el binario y aplicada una sola vez vía
+tabla `_migrations`. `db::queries` con upserts tipados e idempotentes para proveedores,
+categorías, canales, películas y series. `StreamGuard` real (semáforo con generación
+para invalidar permisos viejos, `Drop` a prueba de pánico). `util::keychain` sobre
+`keyring`. `catalog::sync::run` orquesta los 4 pasos de `docs/ARCHITECTURE.md` por lotes
+de 500, se pausa (nunca cancela) si `StreamGuard::is_busy()`, es cancelable, y emite
+progreso vía closure (los comandos lo reenvían como evento Tauri `sync://progress`).
+Pantalla de Ajustes (`/settings`) funcional: alta de proveedor Xtream o M3U, validación
+en vivo, detección de `get.php` disfrazado de Xtream, lista de proveedores con
+resincronizar y barra de progreso. 69 tests.
+
+**Decisiones tomadas.**
+- **La URL de M3U es una credencial.** `providers.base_url` guarda la versión redactada
+  de la URL para proveedores M3U; la URL real (con usuario/contraseña embebidos, si los
+  hay) va al keychain bajo `credential_ref`, igual que la contraseña de Xtream. Xtream no
+  cambia: su `base_url` nunca lleva credenciales.
+- **`clean_title`/`match_key` son un placeholder** (título tal cual, sin año) hasta que
+  F3 implemente `catalog::normalize`. Confirmado contra el proveedor real: un mismo show
+  puede llegar con la calidad pegada al título (`"... 1080p"`), así que el placeholder
+  agrupa peor que la normalización real, pero nunca revienta ni pierde datos.
+- **`StreamGuard` es el semáforo completo ya, sin proceso real que matar** (eso es F6).
+  Se implementó `acquire` como `async` desde ahora, aunque hoy no haya nada que esperar,
+  para no romper la firma cuando F6 necesite esperar de verdad a que muera un proceso.
+- **`rusqlite::Connection` viaja entre el hilo async y el pool de tareas bloqueantes de
+  tokio** (patrón "ping-pong" con `spawn_blocking`) porque rusqlite es síncrono y
+  `Source` es async. Se prefirió sobre `r2d2`/un pool de conexiones: un único escritor a
+  la vez encaja con cómo sincroniza esta app.
+- **Provider CRUD y sincronización van por comandos Tauri, no por HTTP**, hasta que F4
+  construya `/api/*`. `src-tauri/src/commands.rs` es la capa fina que lo conecta todo.
+
+**Bugs reales encontrados verificando contra el proveedor real del usuario y contra la
+app de verdad (no en teoría):**
+- **`keyring` sin la feature `windows-native` cae en un backend "mock" en Windows sin
+  avisar.** Las contraseñas parecían guardarse (la llamada no fallaba) pero jamás se
+  podían volver a leer (`NoEntry`). Sin este arreglo, la "seguridad" de R5 habría sido
+  una ilusión: nunca se habría podido recuperar ninguna contraseña guardada. Corregido
+  añadiendo `features = ["windows-native"]` a la dependencia.
+- **`ts-rs` mapea `i64`/`u64` a `bigint`, pero Tauri serializa los comandos por JSON
+  normal** (`JSON.parse`), así que en tiempo de ejecución esos campos son `number`, no
+  `bigint` de verdad, pese a lo que decía el tipo generado. Corregido con
+  `#[ts(type = "number")]` / `"number | null"` en todos los campos `i64`/`u64` expuestos
+  (ids, contadores, timestamps epoch): todos caben sobrados en
+  `Number.MAX_SAFE_INTEGER`.
+- **`stream_icon` (y campos de texto similares) puede llegar como `""` en vez de ausente
+  o `null`.** No estaba cubierto por los fixtures inventados de F1. Añadido
+  `serde_helpers::non_empty_string_opt` y aplicado a `stream_icon`/`epg_channel_id`.
+
+**Verificación real (no queda en el repo, solo aquí).** Con el proveedor Xtream real del
+usuario: cuenta válida, 615 canales, 23.388 películas, 8.684 series, todo parseado sin
+errores; detección de `get.php` correcta; sincronización completa a SQLite en disco:
+31.754 ítems en 11,3 s (el criterio de aceptación pide menos de 60 s para 50.000).
+
+**Deuda técnica pendiente.**
+- Persistencia de la URL de reproducción de M3U entre reinicios — sigue sin resolver
+  (heredado de F1, ver esa entrada).
+- CORS permisivo e icono provisional — heredados de F0.
+- Sin botón de cancelar sincronización en la interfaz (el motor sí es cancelable; falta
+  la UI). Sin edición/baja de proveedores.
+- La pantalla de Ajustes es funcional, no la versión visual definitiva — eso es F5.
+
+---
+
 ## 2026-08-30 — F1 Capa de fuentes
 
 **Qué se ha construido.** Trait `Source` (`#[async_trait]`) en `sources/mod.rs` con
