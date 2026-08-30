@@ -124,6 +124,61 @@ errores; detección de `get.php` correcta; sincronización completa a SQLite en 
 
 ---
 
+## 2026-08-31 — F3 Normalización y TMDB
+
+**Qué se ha construido.** `catalog::normalize`: las 6 reglas de `docs/DATA-MODEL.md` en
+orden, con 40 tests (más de los 30 pedidos). `catalog::tmdb`: `TmdbClient` (búsqueda
+es-ES con respaldo en-US, detalle directo por `tmdb_id`, 5 peticiones concurrentes,
+reintento exponencial ante 429), similitud por Levenshtein normalizado, caché de
+aciertos y fallos en `tmdb_cache`, y `run_matching_pass` recorriendo `movies`/`series`
+en `pending`/`error`. `db::queries::upsert_movie/upsert_series/upsert_channel` ahora
+reciben los campos ya normalizados en vez de calcular un placeholder. `GET
+/img/:size/:image_id` sirve portadas/fondos con caché en disco, descargando de
+`image.tmdb.org` si falta. Ajustes: campo de clave de API de TMDB (al keychain) y botón
+"Buscar en TMDB". 133 tests en total.
+
+**Decisiones tomadas.**
+- **Solo se extrae año entre `()`/`[]`, nunca un año suelto al final.** "1917", "2012" y
+  "Blade Runner 2049" son indistinguibles de un año-sufijo real usando solo texto, y en
+  el catálogo real del usuario los títulos con año siempre usan paréntesis. Confirmada
+  con el usuario antes de implementar.
+- **`runtime_min` se queda sin rellenar.** `search/movie` de TMDB no lo trae; pedirlo
+  exigiría una petición extra por película a `/movie/{id}`, duplicando la carga contra
+  el límite de 5 concurrentes, y el criterio de aceptación es sobre `tmdb_state`.
+  Pendiente para cuando haga falta de verdad en la ficha de película (F5).
+- **`queries.rs` no depende de `catalog::normalize`.** `upsert_movie`/`upsert_series`/
+  `upsert_channel` reciben un `TitleFields` con los valores ya calculados; quien
+  normaliza es `catalog::sync`. Mantiene el SQL en `db`, la lógica de negocio en
+  `catalog`.
+- **Recalcular `match_key` orfanaba filas de F2.** Al cambiar de placeholder a
+  normalización real, el `ON CONFLICT(match_key)` de una resincronización ya no
+  encuentra la fila vieja: se crea una nueva y la vieja se queda sin `movie_sources`/
+  `series_sources`. Se añadió `delete_orphaned_movies_and_series`, llamada al final de
+  cada `sync::run`.
+- **TMDB corre automáticamente tras cada sincronización, y también a mano** desde
+  Ajustes ("Buscar en TMDB"), para cuando la clave se añade después de haber
+  sincronizado ya — si no, esos pendientes se quedarían así para siempre.
+- **Estado `error` se reintenta junto con `pending`.** Representa un fallo transitorio
+  (red, 429 agotado), no un "TMDB no tiene esto" definitivo como `not_found`.
+- **Concurrencia de TMDB**: un `tokio::spawn` por película/serie pendiente (pueden ser
+  miles), con un `tokio::sync::Semaphore` de 5 dentro de `TmdbClient` limitando las
+  peticiones HTTP reales en vuelo, y un único `Connection` compartido tras un
+  `tokio::sync::Mutex` para la caché y la escritura del resultado (bloqueos breves,
+  de una sola fila). Se prefirió a abrir varias conexiones SQLite concurrentes o a
+  añadir la dependencia `futures` solo para `buffer_unordered`.
+- **Ninguna dependencia nueva.** La similitud de texto es Levenshtein normalizado
+  escrito a mano.
+
+**Deuda técnica pendiente.**
+- Heredada de F1/F0 (persistencia de URL M3U, CORS permisivo, icono provisional).
+- Sin botón de cancelar el pase de TMDB desde la interfaz (el motor acepta un `cancel`,
+  falta exponerlo).
+- El 80% de aciertos del criterio de aceptación no se ha podido verificar de extremo a
+  extremo: hace falta una clave de TMDB real, que no se ha pedido al usuario. Queda para
+  cuando el usuario la añada desde Ajustes.
+
+---
+
 ## 2026-08-30 — F1 Capa de fuentes
 
 **Qué se ha construido.** Trait `Source` (`#[async_trait]`) en `sources/mod.rs` con

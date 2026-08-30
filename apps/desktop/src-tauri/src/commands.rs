@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
+use crate::catalog::tmdb::{self, TmdbClient};
 use crate::catalog::sync;
 use crate::db::queries::{self, ProviderKind};
 use crate::db::schema;
@@ -20,6 +21,9 @@ use crate::util::keychain;
 use crate::util::stream_guard::StreamGuard;
 
 type CmdResult<T> = std::result::Result<T, String>;
+
+/// Clave de keychain bajo la que vive la clave de API de TMDB (regla R5: nunca en SQLite).
+const TMDB_API_KEY_CREDENTIAL_REF: &str = "tmdb-api-key";
 
 /// Vista de un proveedor para la interfaz: nunca lleva `credential_ref` (regla R5).
 #[derive(Debug, Clone, Serialize, TS)]
@@ -223,6 +227,57 @@ pub async fn sync_provider(app: AppHandle, stream_guard: State<'_, Arc<StreamGua
     Ok(())
 }
 
+#[tauri::command]
+pub fn set_tmdb_api_key(app: AppHandle, api_key: String) -> CmdResult<()> {
+    keychain::store_secret(TMDB_API_KEY_CREDENTIAL_REF, &api_key).map_err(|err| err.to_string())?;
+    spawn_tmdb_matching(app);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn has_tmdb_api_key() -> bool {
+    keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).is_ok()
+}
+
+/// Botón manual "Buscar en TMDB": hace falta cuando la clave se añade después de haber
+/// sincronizado ya (si no, los pendientes se quedarían así para siempre).
+#[tauri::command]
+pub fn match_tmdb(app: AppHandle) -> CmdResult<()> {
+    if !has_tmdb_api_key() {
+        return Err("no hay clave de API de TMDB guardada todavía".to_string());
+    }
+    spawn_tmdb_matching(app);
+    Ok(())
+}
+
+fn spawn_tmdb_matching(app: AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let api_key = match keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF) {
+            Ok(key) => key,
+            Err(_) => return, // sin clave todavía: nada que hacer, no es un error
+        };
+        let conn = match schema::open_connection(&app) {
+            Ok(conn) => conn,
+            Err(err) => {
+                tracing::error!(error = %err, "no se pudo abrir la base de datos para emparejar con TMDB");
+                return;
+            }
+        };
+
+        let client = Arc::new(TmdbClient::new(api_key));
+        let app_for_progress = app.clone();
+        let on_progress: Arc<dyn Fn(u32, u32) + Send + Sync> = Arc::new(move |current, total| {
+            let progress = sync::SyncProgress { provider_id: 0, stage: "tmdb".to_string(), current, total };
+            let _ = app_for_progress.emit("sync://progress", &progress);
+        });
+
+        match tmdb::run_matching_pass(conn, client, Arc::new(AtomicBool::new(false)), on_progress).await {
+            Ok(summary) => tracing::info!(matched = summary.matched, total = summary.total, "emparejamiento con TMDB completado"),
+            Err(err) => tracing::error!(error = %err, "emparejamiento con TMDB fallido"),
+        }
+    });
+}
+
 async fn fetch_m3u_source(url: &str) -> CmdResult<M3uSource> {
     let response = reqwest::get(url).await.map_err(|_| format!("no se pudo descargar {}", redact(url)))?;
     let text = response.text().await.map_err(|_| format!("no se pudo leer {}", redact(url)))?;
@@ -246,7 +301,12 @@ fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + 
         .await;
 
         match result {
-            Ok((_, summary)) => tracing::info!(provider_id, channels = summary.channels, movies = summary.movies, series = summary.series, "sincronización completada"),
+            Ok((_, summary)) => {
+                tracing::info!(provider_id, channels = summary.channels, movies = summary.movies, series = summary.series, "sincronización completada");
+                // Paso 6 de docs/ARCHITECTURE.md: en segundo plano, sin bloquear el
+                // catálogo ya sincronizado. Si no hay clave de TMDB todavía, no hace nada.
+                spawn_tmdb_matching(app);
+            }
             Err(err) => tracing::error!(provider_id, error = %err, "sincronización fallida"),
         }
     });

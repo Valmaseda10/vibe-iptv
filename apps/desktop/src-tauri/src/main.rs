@@ -11,8 +11,12 @@ mod util;
 
 use std::net::TcpListener as StdTcpListener;
 
-use commands::{add_provider, list_providers, sync_provider, validate_m3u, validate_xtream};
+use commands::{
+    add_provider, has_tmdb_api_key, list_providers, match_tmdb, set_tmdb_api_key, sync_provider, validate_m3u,
+    validate_xtream,
+};
 use server::{get_server_port, serve, ServerPort};
+use tauri::Manager;
 use util::stream_guard::StreamGuard;
 
 fn main() {
@@ -35,12 +39,18 @@ fn main() {
     tauri::Builder::default()
         .manage(ServerPort(port))
         .manage(StreamGuard::new())
-        .setup(move |_app| {
+        .setup(move |app| {
+            let image_cache_dir = app
+                .path()
+                .app_data_dir()
+                .expect("no se pudo resolver el directorio de datos")
+                .join("images");
+
             let listener = listener
                 .try_clone()
                 .expect("no se pudo clonar el socket local");
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = serve(listener).await {
+                if let Err(err) = serve(listener, image_cache_dir).await {
                     tracing::error!(error = %err, "el servidor local se detuvo inesperadamente");
                 }
             });
@@ -53,6 +63,9 @@ fn main() {
             validate_m3u,
             add_provider,
             sync_provider,
+            set_tmdb_api_key,
+            has_tmdb_api_key,
+            match_tmdb,
         ])
         .run(tauri::generate_context!())
         .expect("error al arrancar VIBE IPTV");

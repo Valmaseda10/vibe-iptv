@@ -30,15 +30,28 @@ export function SettingsScreen() {
   const [xtreamStatus, setXtreamStatus] = useState<AccountStatus | null>(null);
   const [m3uStatus, setM3uStatus] = useState<M3uValidation | null>(null);
   const [progressByProvider, setProgressByProvider] = useState<Record<number, SyncProgress>>({});
+  const [tmdbProgress, setTmdbProgress] = useState<SyncProgress | null>(null);
+  const [tmdbApiKey, setTmdbApiKey] = useState("");
 
   const providersQuery = useQuery({
     queryKey: ["providers"],
     queryFn: () => invoke<ProviderSummary[]>("list_providers"),
   });
 
+  const tmdbKeyQuery = useQuery({
+    queryKey: ["tmdb-api-key-configured"],
+    queryFn: () => invoke<boolean>("has_tmdb_api_key"),
+  });
+
   useEffect(() => {
     const unlistenPromise = listen<SyncProgress>("sync://progress", (event) => {
-      setProgressByProvider((prev) => ({ ...prev, [event.payload.provider_id]: event.payload }));
+      // provider_id 0 es el pase global de TMDB (no está atado a un proveedor
+      // concreto: películas y series ya no distinguen de qué proveedor vinieron).
+      if (event.payload.stage === "tmdb") {
+        setTmdbProgress(event.payload);
+      } else {
+        setProgressByProvider((prev) => ({ ...prev, [event.payload.provider_id]: event.payload }));
+      }
       if (event.payload.total > 0 && event.payload.current >= event.payload.total) {
         queryClient.invalidateQueries({ queryKey: ["providers"] });
       }
@@ -96,6 +109,18 @@ export function SettingsScreen() {
 
   const syncMutation = useMutation({
     mutationFn: (providerId: number) => invoke<void>("sync_provider", { providerId }),
+  });
+
+  const saveTmdbKeyMutation = useMutation({
+    mutationFn: (apiKey: string) => invoke<void>("set_tmdb_api_key", { apiKey }),
+    onSuccess: () => {
+      setTmdbApiKey("");
+      queryClient.invalidateQueries({ queryKey: ["tmdb-api-key-configured"] });
+    },
+  });
+
+  const matchTmdbMutation = useMutation({
+    mutationFn: () => invoke<void>("match_tmdb"),
   });
 
   function applySuggestion() {
@@ -228,6 +253,52 @@ export function SettingsScreen() {
                 </button>
               </div>
             )}
+          </div>
+        )}
+      </section>
+
+      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <h2 className="mb-4 text-xl font-medium">TMDB</h2>
+        <p className="mb-3 text-sm text-neutral-400">
+          {tmdbKeyQuery.data ? "Clave de API guardada." : "Sin clave de API guardada todavía. Sin ella, las películas y series se quedan sin portada ni sinopsis."}
+        </p>
+        <div className="flex gap-3">
+          <input
+            type="password"
+            placeholder="Clave de API de TMDB"
+            className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+            value={tmdbApiKey}
+            onChange={(e) => setTmdbApiKey(e.target.value)}
+          />
+          <button
+            type="button"
+            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50"
+            onClick={() => saveTmdbKeyMutation.mutate(tmdbApiKey)}
+            disabled={!tmdbApiKey || saveTmdbKeyMutation.isPending}
+          >
+            {saveTmdbKeyMutation.isPending ? "Guardando…" : "Guardar"}
+          </button>
+          <button
+            type="button"
+            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50"
+            onClick={() => matchTmdbMutation.mutate()}
+            disabled={!tmdbKeyQuery.data || matchTmdbMutation.isPending}
+          >
+            Buscar en TMDB
+          </button>
+        </div>
+        {matchTmdbMutation.isError && <p className="mt-3 text-red-400">{String(matchTmdbMutation.error)}</p>}
+        {tmdbProgress && tmdbProgress.total > 0 && (
+          <div className="mt-4">
+            <p className="mb-1 text-sm text-neutral-400">
+              Emparejando con TMDB: {tmdbProgress.current}/{tmdbProgress.total}
+            </p>
+            <div className="h-2 w-full overflow-hidden rounded bg-neutral-800">
+              <div
+                className="h-full bg-red-600 transition-[width]"
+                style={{ width: `${Math.min(100, (tmdbProgress.current / tmdbProgress.total) * 100)}%` }}
+              />
+            </div>
           </div>
         )}
       </section>

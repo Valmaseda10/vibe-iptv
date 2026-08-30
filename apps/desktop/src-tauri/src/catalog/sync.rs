@@ -1,6 +1,7 @@
 //! Sincronizador de catálogo. Pasos 1 a 4 de `docs/ARCHITECTURE.md`, sección
-//! "Sincronización". Los pasos 5 a 8 (normalización, TMDB, imágenes, EPG) llegan en
-//! fases posteriores.
+//! "Sincronización", con el paso 5 (normalización) integrado en cada upsert. El paso 6
+//! (TMDB) lo dispara `commands::spawn_sync` después de que esta función termine, no vive
+//! aquí. Los pasos 7 y 8 (imágenes ya las sirve `server::routes`, EPG llega en F7).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -10,6 +11,7 @@ use rusqlite::Connection;
 use serde::Serialize;
 use ts_rs::TS;
 
+use crate::catalog::normalize::{self, NormalizedTitle};
 use crate::db::{self, queries};
 use crate::sources::{MediaKind, Source, SourceError};
 use crate::util::stream_guard::StreamGuard;
@@ -115,7 +117,9 @@ pub async fn run(
         let (next_conn, ()) = run_blocking(conn, move |conn| {
             let tx = conn.unchecked_transaction()?;
             for channel in &chunk {
-                queries::upsert_channel(&tx, provider_id, &map, channel)?;
+                let (normalized, match_key) = normalize_title(&channel.raw_name);
+                let fields = title_fields(&normalized, &match_key);
+                queries::upsert_channel(&tx, provider_id, &map, channel, &fields)?;
             }
             tx.commit()?;
             Ok(())
@@ -138,7 +142,9 @@ pub async fn run(
         let (next_conn, ()) = run_blocking(conn, move |conn| {
             let tx = conn.unchecked_transaction()?;
             for movie in &chunk {
-                queries::upsert_movie(&tx, provider_id, &map, movie)?;
+                let (normalized, match_key) = normalize_title(&movie.raw_title);
+                let fields = title_fields(&normalized, &match_key);
+                queries::upsert_movie(&tx, provider_id, &map, movie, &fields)?;
             }
             tx.commit()?;
             Ok(())
@@ -160,7 +166,9 @@ pub async fn run(
         let (next_conn, ()) = run_blocking(conn, move |conn| {
             let tx = conn.unchecked_transaction()?;
             for one_series in &chunk {
-                queries::upsert_series(&tx, provider_id, one_series)?;
+                let (normalized, match_key) = normalize_title(&one_series.raw_title);
+                let fields = title_fields(&normalized, &match_key);
+                queries::upsert_series(&tx, provider_id, one_series, &fields)?;
             }
             tx.commit()?;
             Ok(())
@@ -174,6 +182,12 @@ pub async fn run(
     }
 
     let (next_conn, ()) = run_blocking(conn, move |conn| queries::mark_provider_synced(conn, provider_id)).await?;
+    conn = next_conn;
+
+    // Recalcular match_key con normalización real puede dejar huérfanas filas de
+    // sincronizaciones anteriores (p. ej. el placeholder de F2, o un match_key que
+    // cambia porque el título crudo del proveedor cambió). Ver docs/DECISIONS.md, F3.
+    let (next_conn, _) = run_blocking(conn, queries::delete_orphaned_movies_and_series).await?;
     conn = next_conn;
 
     let (channels_count, movies_count, series_count) = {
@@ -193,6 +207,22 @@ pub async fn run(
     };
 
     Ok((conn, summary))
+}
+
+fn normalize_title(raw: &str) -> (NormalizedTitle, String) {
+    let normalized = normalize::normalize(raw);
+    let match_key = normalize::match_key(&normalized.clean_title, normalized.year);
+    (normalized, match_key)
+}
+
+fn title_fields<'a>(normalized: &'a NormalizedTitle, match_key: &'a str) -> queries::TitleFields<'a> {
+    queries::TitleFields {
+        clean_title: &normalized.clean_title,
+        year: normalized.year,
+        match_key,
+        quality: normalized.quality.as_deref(),
+        language: normalized.language.as_deref(),
+    }
 }
 
 fn report_batch_progress(

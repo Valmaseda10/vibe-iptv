@@ -128,6 +128,18 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<ProviderRow>> {
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+/// Campos ya calculados por `catalog::normalize` para una entrada. `queries.rs` no
+/// depende de `catalog`: recibe estos valores ya hechos, nunca los calcula (lógica de
+/// negocio en `catalog::sync`, SQL aquí).
+#[derive(Clone, Copy)]
+pub struct TitleFields<'a> {
+    pub clean_title: &'a str,
+    pub year: Option<i32>,
+    pub match_key: &'a str,
+    pub quality: Option<&'a str>,
+    pub language: Option<&'a str>,
+}
+
 fn media_kind_db(kind: MediaKind) -> &'static str {
     match kind {
         MediaKind::Live => "live",
@@ -166,26 +178,27 @@ pub fn upsert_categories(
     Ok(map)
 }
 
-/// `display_name` se deja igual a `raw_name`: la limpieza real de títulos es de la fase
-/// F3 (`catalog::normalize`), que actualizará esta columna sobre las filas existentes.
 pub fn upsert_channel(
     conn: &Connection,
     provider_id: i64,
     category_map: &HashMap<String, i64>,
     channel: &RawChannel,
+    fields: &TitleFields,
 ) -> Result<()> {
     let category_id = channel.category_remote_id.as_ref().and_then(|id| category_map.get(id).copied());
     conn.execute(
         "INSERT INTO channels
             (provider_id, remote_id, category_id, raw_name, display_name, logo_url, epg_channel_id,
-             has_catchup, catchup_days, sort_order)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             quality, language, has_catchup, catchup_days, sort_order)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
          ON CONFLICT(provider_id, remote_id) DO UPDATE SET
             category_id = excluded.category_id,
             raw_name = excluded.raw_name,
             display_name = excluded.display_name,
             logo_url = excluded.logo_url,
             epg_channel_id = excluded.epg_channel_id,
+            quality = excluded.quality,
+            language = excluded.language,
             has_catchup = excluded.has_catchup,
             catchup_days = excluded.catchup_days,
             sort_order = excluded.sort_order",
@@ -194,9 +207,11 @@ pub fn upsert_channel(
             channel.remote_id,
             category_id,
             channel.raw_name,
-            channel.raw_name,
+            fields.clean_title,
             channel.logo_url,
             channel.epg_channel_id,
+            fields.quality,
+            fields.language,
             channel.has_catchup as i64,
             channel.catchup_days,
             channel.sort_order,
@@ -205,57 +220,58 @@ pub fn upsert_channel(
     Ok(())
 }
 
-/// `clean_title`/`match_key` son un placeholder (título tal cual, sin año) hasta que
-/// F3 implemente `catalog::normalize`. Agrupa por título exacto: no está mal, solo es
-/// menos preciso que la normalización real.
 pub fn upsert_movie(
     conn: &Connection,
     provider_id: i64,
     category_map: &HashMap<String, i64>,
     movie: &RawMovie,
+    fields: &TitleFields,
 ) -> Result<()> {
-    let clean_title = movie.raw_title.trim().to_string();
-    let match_key = format!("{}-0000", placeholder_slug(&clean_title));
-
     conn.execute(
-        "INSERT INTO movies (clean_title, match_key, tmdb_id, added_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(match_key) DO UPDATE SET clean_title = excluded.clean_title",
-        params![clean_title, match_key, movie.tmdb_id, movie.added_at],
+        "INSERT INTO movies (clean_title, year, match_key, tmdb_id, added_at)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(match_key) DO UPDATE SET clean_title = excluded.clean_title, year = excluded.year",
+        params![fields.clean_title, fields.year, fields.match_key, movie.tmdb_id, movie.added_at],
     )?;
-    let movie_id: i64 = conn.query_row("SELECT id FROM movies WHERE match_key = ?1", params![match_key], |row| {
-        row.get(0)
-    })?;
+    let movie_id: i64 =
+        conn.query_row("SELECT id FROM movies WHERE match_key = ?1", params![fields.match_key], |row| row.get(0))?;
 
     let category_id = movie.category_remote_id.as_ref().and_then(|id| category_map.get(id).copied());
     conn.execute(
-        "INSERT INTO movie_sources (movie_id, provider_id, remote_id, category_id, raw_title, container)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO movie_sources (movie_id, provider_id, remote_id, category_id, raw_title, container, quality, language)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
          ON CONFLICT(provider_id, remote_id) DO UPDATE SET
             movie_id = excluded.movie_id,
             category_id = excluded.category_id,
             raw_title = excluded.raw_title,
-            container = excluded.container",
-        params![movie_id, provider_id, movie.remote_id, category_id, movie.raw_title, movie.container_extension],
+            container = excluded.container,
+            quality = excluded.quality,
+            language = excluded.language",
+        params![
+            movie_id,
+            provider_id,
+            movie.remote_id,
+            category_id,
+            movie.raw_title,
+            movie.container_extension,
+            fields.quality,
+            fields.language
+        ],
     )?;
     Ok(())
 }
 
-/// Mismo placeholder de agrupación que [`upsert_movie`]; `series_sources` no tiene
-/// columna de categoría (ver `docs/DATA-MODEL.md`).
-pub fn upsert_series(conn: &Connection, provider_id: i64, series: &RawSeries) -> Result<()> {
-    let clean_title = series.raw_title.trim().to_string();
-    let match_key = format!("{}-0000", placeholder_slug(&clean_title));
-
+/// `series_sources` no tiene columna de categoría ni de calidad/idioma (ver
+/// `docs/DATA-MODEL.md`): esas variantes son por episodio/fuente, no por serie.
+pub fn upsert_series(conn: &Connection, provider_id: i64, series: &RawSeries, fields: &TitleFields) -> Result<()> {
     conn.execute(
-        "INSERT INTO series (clean_title, match_key, added_at)
-         VALUES (?1, ?2, ?3)
-         ON CONFLICT(match_key) DO UPDATE SET clean_title = excluded.clean_title",
-        params![clean_title, match_key, now_epoch()],
+        "INSERT INTO series (clean_title, year, match_key, added_at)
+         VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(match_key) DO UPDATE SET clean_title = excluded.clean_title, year = excluded.year",
+        params![fields.clean_title, fields.year, fields.match_key, now_epoch()],
     )?;
-    let series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = ?1", params![match_key], |row| {
-        row.get(0)
-    })?;
+    let series_id: i64 =
+        conn.query_row("SELECT id FROM series WHERE match_key = ?1", params![fields.match_key], |row| row.get(0))?;
 
     conn.execute(
         "INSERT INTO series_sources (series_id, provider_id, remote_id, raw_title)
@@ -268,23 +284,13 @@ pub fn upsert_series(conn: &Connection, provider_id: i64, series: &RawSeries) ->
     Ok(())
 }
 
-fn placeholder_slug(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut last_was_dash = false;
-    for ch in input.chars() {
-        let lower = ch.to_ascii_lowercase();
-        if lower.is_ascii_alphanumeric() {
-            out.push(lower);
-            last_was_dash = false;
-        } else if !last_was_dash && !out.is_empty() {
-            out.push('-');
-            last_was_dash = true;
-        }
-    }
-    while out.ends_with('-') {
-        out.pop();
-    }
-    out
+/// Borra `movies`/`series` sin ninguna fuente asociada. Recalcular `match_key` con
+/// normalización real (F3) puede dejar huérfanas las filas placeholder de F2 al
+/// resincronizar: el `ON CONFLICT(match_key)` ya no coincide con la fila vieja.
+pub fn delete_orphaned_movies_and_series(conn: &Connection) -> Result<(usize, usize)> {
+    let movies = conn.execute("DELETE FROM movies WHERE id NOT IN (SELECT DISTINCT movie_id FROM movie_sources)", [])?;
+    let series = conn.execute("DELETE FROM series WHERE id NOT IN (SELECT DISTINCT series_id FROM series_sources)", [])?;
+    Ok((movies, series))
 }
 
 pub fn count_categories(conn: &Connection, provider_id: i64) -> Result<i64> {
@@ -311,6 +317,110 @@ pub fn count_series_sources(conn: &Connection, provider_id: i64) -> Result<i64> 
         row.get(0)
     })
     .map_err(Into::into)
+}
+
+pub fn count_matched_movies(conn: &Connection) -> Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM movies WHERE tmdb_state = 'matched'", [], |row| row.get(0)).map_err(Into::into)
+}
+
+pub fn count_all_movies(conn: &Connection) -> Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM movies", [], |row| row.get(0)).map_err(Into::into)
+}
+
+// ─────────────── TMDB (F3) ───────────────
+
+pub struct PendingTitle {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub tmdb_id: Option<i64>,
+}
+
+pub fn list_pending_movies(conn: &Connection) -> Result<Vec<PendingTitle>> {
+    list_pending(conn, "movies")
+}
+
+pub fn list_pending_series(conn: &Connection) -> Result<Vec<PendingTitle>> {
+    list_pending(conn, "series")
+}
+
+fn list_pending(conn: &Connection, table: &str) -> Result<Vec<PendingTitle>> {
+    // `table` no viene nunca del usuario, solo de las dos llamadas de arriba.
+    // 'error' se reintenta también: es un fallo transitorio (red, 429 agotado), no un
+    // "TMDB no tiene esto" definitivo como sí lo es 'not_found'.
+    let sql = format!("SELECT id, clean_title, year, tmdb_id FROM {table} WHERE tmdb_state IN ('pending', 'error')");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok(PendingTitle { id: row.get(0)?, clean_title: row.get(1)?, year: row.get(2)?, tmdb_id: row.get(3)? })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Resultado de intentar emparejar una película/serie con TMDB. `genres_json` es el
+/// array de ids de género tal cual lo da TMDB, ya serializado.
+pub struct TmdbOutcome<'a> {
+    pub state: &'a str, // 'matched' | 'not_found' | 'error'
+    pub tmdb_id: Option<i64>,
+    pub overview: Option<&'a str>,
+    pub poster_path: Option<&'a str>,
+    pub backdrop_path: Option<&'a str>,
+    pub rating: Option<f64>,
+    pub genres_json: Option<&'a str>,
+    pub runtime_min: Option<i32>,
+}
+
+pub fn update_movie_tmdb_result(conn: &Connection, movie_id: i64, outcome: &TmdbOutcome) -> Result<()> {
+    conn.execute(
+        "UPDATE movies SET tmdb_state=?1, tmdb_id=?2, overview=?3, poster_path=?4, backdrop_path=?5, rating=?6,
+            genres=?7, runtime_min=?8 WHERE id=?9",
+        params![
+            outcome.state,
+            outcome.tmdb_id,
+            outcome.overview,
+            outcome.poster_path,
+            outcome.backdrop_path,
+            outcome.rating,
+            outcome.genres_json,
+            outcome.runtime_min,
+            movie_id
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn update_series_tmdb_result(conn: &Connection, series_id: i64, outcome: &TmdbOutcome) -> Result<()> {
+    conn.execute(
+        "UPDATE series SET tmdb_state=?1, tmdb_id=?2, overview=?3, poster_path=?4, backdrop_path=?5, rating=?6,
+            genres=?7 WHERE id=?8",
+        params![
+            outcome.state,
+            outcome.tmdb_id,
+            outcome.overview,
+            outcome.poster_path,
+            outcome.backdrop_path,
+            outcome.rating,
+            outcome.genres_json,
+            series_id
+        ],
+    )?;
+    Ok(())
+}
+
+/// Caché de aciertos y de fallos de búsqueda en TMDB (regla: "los fallos también se
+/// cachean", ver `docs/DATA-MODEL.md`).
+pub fn get_tmdb_cache(conn: &Connection, key: &str) -> Result<Option<String>> {
+    conn.query_row("SELECT response FROM tmdb_cache WHERE query_hash = ?1", params![key], |row| row.get(0))
+        .optional()
+        .map_err(Into::into)
+}
+
+pub fn set_tmdb_cache(conn: &Connection, key: &str, response_json: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO tmdb_cache (query_hash, response, fetched_at) VALUES (?1, ?2, ?3)
+         ON CONFLICT(query_hash) DO UPDATE SET response = excluded.response, fetched_at = excluded.fetched_at",
+        params![key, response_json, now_epoch()],
+    )?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -378,14 +488,15 @@ mod tests {
             catchup_days: 7,
             sort_order: Some(1),
         };
-        upsert_channel(&conn, provider_id, &category_map, &channel).unwrap();
-        upsert_channel(&conn, provider_id, &category_map, &channel).unwrap(); // repetir: no duplica
+        let fields = TitleFields { clean_title: "Canal Uno", year: None, match_key: "n/a", quality: None, language: None };
+        upsert_channel(&conn, provider_id, &category_map, &channel, &fields).unwrap();
+        upsert_channel(&conn, provider_id, &category_map, &channel, &fields).unwrap(); // repetir: no duplica
 
         assert_eq!(count_channels(&conn, provider_id).unwrap(), 1);
     }
 
     #[test]
-    fn upsert_movie_groups_by_placeholder_match_key() {
+    fn upsert_movie_groups_by_match_key() {
         let conn = memory_conn();
         let provider_id = insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
         let category_map = HashMap::new();
@@ -393,22 +504,25 @@ mod tests {
         let movie_a = RawMovie {
             remote_id: "5001".into(),
             category_remote_id: None,
-            raw_title: "Mi Película".into(),
+            raw_title: "Mi Película 4K".into(),
             container_extension: Some("mkv".into()),
             logo_url: None,
             added_at: Some(1700000000),
             rating: Some(7.5),
             tmdb_id: None,
         };
-        // Misma película, otro proveedor/remote_id, mismo título exacto: debe agruparse
-        // bajo la misma fila `movies` (comportamiento esperado del placeholder de F2).
-        let movie_b = RawMovie { remote_id: "9999".into(), ..movie_a.clone() };
+        // Misma película, otro proveedor/remote_id, distinta calidad en el nombre crudo,
+        // pero el mismo match_key normalizado: debe agruparse bajo la misma fila `movies`.
+        let movie_b = RawMovie { remote_id: "9999".into(), raw_title: "Mi Película HD".into(), ..movie_a.clone() };
 
-        upsert_movie(&conn, provider_id, &category_map, &movie_a).unwrap();
-        upsert_movie(&conn, provider_id, &category_map, &movie_b).unwrap();
+        let fields_a =
+            TitleFields { clean_title: "Mi Película", year: Some(2020), match_key: "mi-pelicula-2020", quality: Some("4K"), language: None };
+        let fields_b = TitleFields { quality: Some("HD"), ..fields_a };
 
-        let movies_count: i64 = conn.query_row("SELECT COUNT(*) FROM movies", [], |r| r.get(0)).unwrap();
-        assert_eq!(movies_count, 1);
+        upsert_movie(&conn, provider_id, &category_map, &movie_a, &fields_a).unwrap();
+        upsert_movie(&conn, provider_id, &category_map, &movie_b, &fields_b).unwrap();
+
+        assert_eq!(count_all_movies(&conn).unwrap(), 1);
         assert_eq!(count_movie_sources(&conn, provider_id).unwrap(), 2);
     }
 
@@ -424,9 +538,92 @@ mod tests {
             plot: None,
             release_date: None,
         };
-        upsert_series(&conn, provider_id, &series).unwrap();
-        upsert_series(&conn, provider_id, &series).unwrap();
+        let fields = TitleFields { clean_title: "Serie de Ejemplo", year: None, match_key: "serie-de-ejemplo-0000", quality: None, language: None };
+        upsert_series(&conn, provider_id, &series, &fields).unwrap();
+        upsert_series(&conn, provider_id, &series, &fields).unwrap();
 
         assert_eq!(count_series_sources(&conn, provider_id).unwrap(), 1);
+    }
+
+    #[test]
+    fn recomputing_match_key_orphans_the_old_row_and_cleanup_removes_it() {
+        let conn = memory_conn();
+        let provider_id = insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let category_map = HashMap::new();
+        let movie = RawMovie {
+            remote_id: "1".into(),
+            category_remote_id: None,
+            raw_title: "Peli".into(),
+            container_extension: None,
+            logo_url: None,
+            added_at: None,
+            rating: None,
+            tmdb_id: None,
+        };
+
+        let placeholder = TitleFields { clean_title: "Peli", year: None, match_key: "peli-0000-placeholder", quality: None, language: None };
+        upsert_movie(&conn, provider_id, &category_map, &movie, &placeholder).unwrap();
+        assert_eq!(count_all_movies(&conn).unwrap(), 1);
+
+        // Resincronizar con un match_key distinto (normalización real): el movie_source
+        // se mueve a una fila nueva, la vieja queda huérfana.
+        let real = TitleFields { clean_title: "Peli", year: Some(2020), match_key: "peli-2020", quality: None, language: None };
+        upsert_movie(&conn, provider_id, &category_map, &movie, &real).unwrap();
+        assert_eq!(count_all_movies(&conn).unwrap(), 2); // la vieja sigue ahí, huérfana
+
+        let (removed_movies, removed_series) = delete_orphaned_movies_and_series(&conn).unwrap();
+        assert_eq!(removed_movies, 1);
+        assert_eq!(removed_series, 0);
+        assert_eq!(count_all_movies(&conn).unwrap(), 1);
+        assert_eq!(count_movie_sources(&conn, provider_id).unwrap(), 1);
+    }
+
+    #[test]
+    fn tmdb_cache_roundtrip() {
+        let conn = memory_conn();
+        assert_eq!(get_tmdb_cache(&conn, "movie:foo:2020").unwrap(), None);
+
+        set_tmdb_cache(&conn, "movie:foo:2020", r#"{"outcome":"not_found"}"#).unwrap();
+        assert_eq!(get_tmdb_cache(&conn, "movie:foo:2020").unwrap().as_deref(), Some(r#"{"outcome":"not_found"}"#));
+
+        set_tmdb_cache(&conn, "movie:foo:2020", r#"{"outcome":"matched","id":1}"#).unwrap();
+        assert_eq!(get_tmdb_cache(&conn, "movie:foo:2020").unwrap().as_deref(), Some(r#"{"outcome":"matched","id":1}"#));
+    }
+
+    #[test]
+    fn list_pending_movies_and_update_result() {
+        let conn = memory_conn();
+        let provider_id = insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let movie = RawMovie {
+            remote_id: "1".into(),
+            category_remote_id: None,
+            raw_title: "Peli".into(),
+            container_extension: None,
+            logo_url: None,
+            added_at: None,
+            rating: None,
+            tmdb_id: None,
+        };
+        let fields = TitleFields { clean_title: "Peli", year: Some(2020), match_key: "peli-2020", quality: None, language: None };
+        upsert_movie(&conn, provider_id, &HashMap::new(), &movie, &fields).unwrap();
+
+        let pending = list_pending_movies(&conn).unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].clean_title, "Peli");
+
+        let outcome = TmdbOutcome {
+            state: "matched",
+            tmdb_id: Some(603692),
+            overview: Some("Sinopsis"),
+            poster_path: Some("/p.jpg"),
+            backdrop_path: Some("/b.jpg"),
+            rating: Some(7.8),
+            genres_json: Some("[28,80]"),
+            runtime_min: Some(118),
+        };
+        update_movie_tmdb_result(&conn, pending[0].id, &outcome).unwrap();
+
+        assert!(list_pending_movies(&conn).unwrap().is_empty());
+        assert_eq!(count_matched_movies(&conn).unwrap(), 1);
     }
 }
