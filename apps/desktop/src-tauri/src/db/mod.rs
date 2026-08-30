@@ -1,4 +1,5 @@
 pub mod queries;
+pub mod reads;
 pub mod schema;
 
 /// Errores de la capa de persistencia.

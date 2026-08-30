@@ -13,8 +13,8 @@ const MIGRATIONS: &[(&str, &str)] = &[(
     include_str!("../../migrations/001_schema_inicial.sql"),
 )];
 
-/// Abre (o crea) la base de datos en el directorio de datos de la aplicación.
-pub fn open_connection(app_handle: &tauri::AppHandle) -> Result<Connection> {
+/// Ruta del fichero SQLite en el directorio de datos de la aplicación, sin abrirlo.
+pub fn resolve_db_path(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf> {
     use tauri::Manager;
 
     let dir = app_handle
@@ -22,7 +22,12 @@ pub fn open_connection(app_handle: &tauri::AppHandle) -> Result<Connection> {
         .app_data_dir()
         .map_err(|err| DbError::DataDir(err.to_string()))?;
     std::fs::create_dir_all(&dir)?;
-    open_connection_at(&dir.join("vibe-iptv.sqlite3"))
+    Ok(dir.join("vibe-iptv.sqlite3"))
+}
+
+/// Abre (o crea) la base de datos en el directorio de datos de la aplicación.
+pub fn open_connection(app_handle: &tauri::AppHandle) -> Result<Connection> {
+    open_connection_at(&resolve_db_path(app_handle)?)
 }
 
 /// Igual que [`open_connection`] pero sobre una ruta explícita; separado para poder
@@ -32,6 +37,14 @@ pub fn open_connection_at(path: &Path) -> Result<Connection> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
     run_migrations(&mut conn)?;
+    Ok(conn)
+}
+
+/// Para lecturas frecuentes (la API HTTP): sin comprobar migraciones en cada apertura.
+pub fn open_readonly_at(path: &Path) -> Result<Connection> {
+    let conn = Connection::open(path)?;
+    conn.pragma_update(None, "journal_mode", "WAL")?;
+    conn.pragma_update(None, "foreign_keys", true)?;
     Ok(conn)
 }
 

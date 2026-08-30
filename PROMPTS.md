@@ -12,7 +12,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F1 Capa de fuentes
 - [x] F2 Base de datos y sincronización
 - [x] F3 Normalización y TMDB
-- [ ] F4 API local y tipos
+- [x] F4 API local y tipos
 - [ ] F5 Cascarón de interfaz
 - [ ] F6 Reproductor
 - [ ] F7 EPG y directo

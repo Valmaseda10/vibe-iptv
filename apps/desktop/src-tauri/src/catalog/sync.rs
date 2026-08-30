@@ -190,6 +190,11 @@ pub async fn run(
     let (next_conn, _) = run_blocking(conn, queries::delete_orphaned_movies_and_series).await?;
     conn = next_conn;
 
+    // F4 (búsqueda por HTTP) depende de esto; se reconstruye entera aquí, no con
+    // triggers por fila (ver el comentario de rebuild_search_index).
+    let (next_conn, ()) = run_blocking(conn, queries::rebuild_search_index).await?;
+    conn = next_conn;
+
     let (channels_count, movies_count, series_count) = {
         let channels = queries::count_channels(&conn, provider_id)?;
         let movies = queries::count_movie_sources(&conn, provider_id)?;

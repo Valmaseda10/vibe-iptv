@@ -293,6 +293,27 @@ pub fn delete_orphaned_movies_and_series(conn: &Connection) -> Result<(usize, us
     Ok((movies, series))
 }
 
+/// Reconstruye `search_index` (FTS5) entero de una vez al final de cada sincronización.
+/// Se prefirió a triggers por fila: con decenas de miles de upserts por sincronización,
+/// un trigger de borrado por fila sobre una tabla FTS5 sin índice en `item_id` sería
+/// O(n²) en la práctica. Reconstruir de una vez es un único escaneo por tabla.
+pub fn rebuild_search_index(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM search_index", [])?;
+    conn.execute(
+        "INSERT INTO search_index(title, item_kind, item_id) SELECT display_name, 'channel', id FROM channels",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO search_index(title, item_kind, item_id) SELECT clean_title, 'movie', id FROM movies",
+        [],
+    )?;
+    conn.execute(
+        "INSERT INTO search_index(title, item_kind, item_id) SELECT clean_title, 'series', id FROM series",
+        [],
+    )?;
+    Ok(())
+}
+
 pub fn count_categories(conn: &Connection, provider_id: i64) -> Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM categories WHERE provider_id = ?1", params![provider_id], |row| {
         row.get(0)

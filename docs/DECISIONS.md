@@ -179,6 +179,60 @@ reciben los campos ya normalizados en vez de calcular un placeholder. `GET
 
 ---
 
+## 2026-08-31 — F4 API local y tipos
+
+**Qué se ha construido.** `server/api.rs` expone el catálogo por HTTP en axum, todavía
+solo en 127.0.0.1: `/api/home`, `/api/live/categories`, `/api/live/channels`,
+`/api/movies` (+ `/:id`), `/api/series` (+ `/:id`, con `series_detail()` bajo demanda si
+`detail_synced_at` es nulo o tiene más de 7 días), `/api/search`, `/api/playback/progress`,
+`/api/favorites` (GET/POST/DELETE). `GET /img/:size/:image_id` (de F3) sirve portadas y
+fondos. `db/reads.rs` es la nueva capa de lectura (paginación por cursor, filtros de
+género vía `json_each` sobre la columna `genres`, búsqueda por FTS5). 27 tipos ts-rs
+nuevos exportados. 22 tests nuevos (12 en `reads.rs`, 10 en `server::api`).
+
+**Decisiones tomadas.**
+- **`search_index` (FTS5) se reconstruye entera al final de cada sincronización, no con
+  triggers por fila.** Con decenas de miles de upserts por sincronización, un trigger de
+  borrado por fila sobre una tabla FTS5 sin índice en `item_id` habría sido O(n²) en la
+  práctica. Reconstruirla es un único escaneo por tabla (`channels`, `movies`, `series`).
+- **La paginación por cursor usa `id` como desempate único, incluso con `sort` distinto
+  de "más recientes".** Hacer keyset pagination exacto para cada combinación de
+  orden/filtro no compensaba el tiempo en esta fase, sin una interfaz real que lo
+  ejerciera todavía (llega en F5). Documentado como límite conocido, no un descuido.
+- **`db/reads.rs` separado de `db/queries.rs`**: lectura (API HTTP) frente a escritura
+  (sincronizador). `queries.rs` sigue sin depender de `catalog`; `reads.rs` tampoco.
+- **Conexión nueva por petición HTTP, vía `spawn_blocking`**, sin pool de conexiones
+  (`r2d2`/`bb8`): SQLite + WAL soporta lectores concurrentes de sobra para el tráfico de
+  una app de escritorio de un único usuario, y añadir un pool no estaba justificado.
+  `open_readonly_at` evita repetir la comprobación de migraciones en cada petición.
+- **`build_source_for_provider` se extrajo de `sync_provider`** a una función
+  compartida en `commands.rs`, reutilizada por la ficha de serie de F4 para reconstruir
+  el `Source` y llamar a `series_detail()` bajo demanda.
+- **Genero de películas/series filtra sobre el JSON crudo de TMDB (`json_each`)**, sin
+  tabla de nombres de género: el criterio de aceptación es sobre tiempos de respuesta y
+  coherencia, no sobre mostrar el nombre "Acción" en vez del id `28` — eso es trabajo de
+  interfaz de F5.
+
+**Verificación real (no queda en el repo).** Con el proveedor Xtream real del usuario
+(el mismo de F2/F3), se sincronizó a la base de datos real de la aplicación (no una de
+prueba): 615 canales, ~14.000 películas y ~7.900 series tras la normalización real de
+F3. Contra ese catálogo completo: `/api/movies`, `/api/series`, `/api/live/channels`,
+`/api/search`, `/api/home` respondieron todos entre 15 y 40 ms — muy por debajo del
+límite de 100 ms del criterio de aceptación. `/api/series/:id` con recarga bajo demanda
+(primera visita, sin caché) tardó ~3 s por la llamada real a `get_series_info` del
+proveedor — esperado y documentado, no es una regresión del límite de 100 ms de las
+rutas de solo lectura.
+
+**Deuda técnica pendiente.**
+- Heredada de fases anteriores (ver entradas previas).
+- Sin nombres de género legibles (solo ids numéricos de TMDB) — F5.
+- Paginación por cursor no es exacta combinada con `sort` != "recientes" (ver arriba).
+- El proveedor de prueba en la base de datos real quedó con el nombre "P" (un
+  placeholder de test): cosmético, se puede renombrar desde Ajustes cuando exista la
+  opción de editar (no construida todavía).
+
+---
+
 ## 2026-08-30 — F1 Capa de fuentes
 
 **Qué se ha construido.** Trait `Source` (`#[async_trait]`) en `sources/mod.rs` con

@@ -69,11 +69,14 @@ fn content_type_for(filename: &str) -> &'static str {
 /// origen distinto al del servidor (`http://localhost:1420` en dev, `tauri://localhost`
 /// empaquetado), y este servidor solo escucha en 127.0.0.1 sin cookies ni sesión (R2).
 /// Se revisará al abrir la LAN en la fase F10.
-pub fn build_router(image_cache_dir: PathBuf) -> Router {
-    Router::new()
+pub fn build_router(image_cache_dir: PathBuf, db_path: PathBuf) -> Router {
+    let health_and_images = Router::new()
         .route("/api/health", get(health))
         .route("/img/:size/:image_id", get(serve_image))
-        .with_state(image_cache_dir)
+        .with_state(image_cache_dir);
+
+    health_and_images
+        .merge(super::api::catalog_router(db_path))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
 }
 
@@ -87,7 +90,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_endpoint_returns_ok_status() {
-        let response = build_router(std::env::temp_dir())
+        let response = build_router(std::env::temp_dir(), std::env::temp_dir())
             .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -101,7 +104,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_route_rejects_path_traversal() {
-        let response = build_router(std::env::temp_dir())
+        let response = build_router(std::env::temp_dir(), std::env::temp_dir())
             .oneshot(Request::builder().uri("/img/w500/..%2f..%2fetc").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -115,7 +118,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("w500_abc.jpg"), b"fake-jpeg-bytes").unwrap();
 
-        let response = build_router(dir.clone())
+        let response = build_router(dir.clone(), std::env::temp_dir())
             .oneshot(Request::builder().uri("/img/w500/abc.jpg").body(Body::empty()).unwrap())
             .await
             .unwrap();

@@ -4,10 +4,26 @@ export type AccountStatus = { auth_ok: boolean, status: string, expires_at: numb
 
 export type AddProviderInput = { kind: ProviderKind, name: string, base_url: string, username: string | null, password: string | null, m3u_url: string | null, user_agent: string | null, };
 
+export type CategorySummary = { id: number, name: string, };
+
+export type ChannelSummary = { id: number, display_name: string, logo_url: string | null, category_id: number | null, has_catchup: boolean, };
+
+export type ChannelsPage = { items: Array<ChannelSummary>, next_cursor: number | null, };
+
+export type ContinueWatchingItem = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
+
+export type EpisodeSummary = { id: number, series_source_id: number, season: bigint, number: bigint, title: string | null, overview: string | null, still_path: string | null, duration_s: number | null, };
+
+export type FavoriteInput = { item_kind: string, item_id: number, };
+
+export type FavoriteItem = { item_kind: string, item_id: number, };
+
 /**
  * Estado del núcleo devuelto por `GET /api/health`.
  */
 export type HealthStatus = { status: string, version: string, };
+
+export type HomeResponse = { continue_watching: Array<ContinueWatchingItem>, recent_movies: Array<MovieSummary>, };
 
 export type M3uValidation = { channel_count: number, movie_count: number, series_count: number, 
 /**
@@ -16,6 +32,16 @@ export type M3uValidation = { channel_count: number, movie_count: number, series
  * como proveedor Xtream en vez de M3U.
  */
 suggested_xtream: XtreamSuggestion | null, };
+
+export type MovieDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, runtime_min: number | null, genres: number[], tmdb_state: string, sources: Array<MovieSourceSummary>, };
+
+export type MovieSourceSummary = { id: number, provider_id: number, remote_id: string, quality: string | null, language: string | null, container: string | null, };
+
+export type MovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, };
+
+export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | null, };
+
+export type PlaybackProgressInput = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
 
 /**
  * Tipo de proveedor, igual que la columna `kind` de `providers` en `docs/DATA-MODEL.md`.
@@ -26,6 +52,16 @@ export type ProviderKind = "xtream" | "m3u";
  * Vista de un proveedor para la interfaz: nunca lleva `credential_ref` (regla R5).
  */
 export type ProviderSummary = { id: number, name: string, kind: ProviderKind, base_url_display: string, username: string | null, max_connections: number, expires_at: number | null, enabled: boolean, last_sync_at: number | null, };
+
+export type SearchHitResponse = { item_kind: string, item_id: number, title: string, };
+
+export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, };
+
+export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, episodes: Array<EpisodeSummary>, };
+
+export type SeriesPage = { items: Array<SeriesSummary>, next_cursor: number | null, };
+
+export type SeriesSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, };
 
 /**
  * Progreso emitido al frontend por eventos de Tauri (`sync://progress`).

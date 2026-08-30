@@ -1,0 +1,692 @@
+//! Consultas de lectura para la API HTTP de F4. Separadas de `queries.rs` (que cubre la
+//! escritura del sincronizador) por claridad; siguen siendo el único sitio con SQL para
+//! estos datos.
+//!
+//! Paginación por cursor (`after` = último `id` visto, nunca offset, regla R4). Con
+//! filtros combinados con un orden distinto al de inserción, el cursor se aproxima con
+//! `id` como desempate: es un límite conocido y documentado, no un descuido — hacer
+//! keyset pagination exacto por cada combinación de orden/filtro no compensaba el tiempo
+//! en esta fase, sin una interfaz real todavía que lo ejercite (llega en F5).
+
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
+
+use super::{now_epoch, Result};
+
+pub struct CategoryRow {
+    pub id: i64,
+    pub name: String,
+}
+
+pub fn list_categories(conn: &Connection, kind: &str) -> Result<Vec<CategoryRow>> {
+    let mut stmt = conn.prepare("SELECT id, name FROM categories WHERE kind = ?1 ORDER BY name")?;
+    let rows = stmt.query_map(params![kind], |row| Ok(CategoryRow { id: row.get(0)?, name: row.get(1)? }))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub struct ChannelListItem {
+    pub id: i64,
+    pub display_name: String,
+    pub logo_url: Option<String>,
+    pub category_id: Option<i64>,
+    pub has_catchup: bool,
+}
+
+pub fn list_channels_page(
+    conn: &Connection,
+    category_id: Option<i64>,
+    search: Option<&str>,
+    after: Option<i64>,
+    limit: i64,
+) -> Result<Vec<ChannelListItem>> {
+    let mut sql = String::from(
+        "SELECT id, display_name, logo_url, category_id, has_catchup FROM channels WHERE 1=1",
+    );
+    let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+    if let Some(cat) = category_id {
+        sql.push_str(" AND category_id = ?");
+        args.push(Box::new(cat));
+    }
+    if let Some(q) = search {
+        sql.push_str(" AND display_name LIKE ? ESCAPE '\\'");
+        args.push(Box::new(like_pattern(q)));
+    }
+    if let Some(a) = after {
+        sql.push_str(" AND id > ?");
+        args.push(Box::new(a));
+    }
+    sql.push_str(" ORDER BY sort_order IS NULL, sort_order, id LIMIT ?");
+    args.push(Box::new(limit));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter().map(|b| b.as_ref())), |row| {
+        Ok(ChannelListItem {
+            id: row.get(0)?,
+            display_name: row.get(1)?,
+            logo_url: row.get(2)?,
+            category_id: row.get(3)?,
+            has_catchup: row.get::<_, i64>(4)? != 0,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MovieSort {
+    AddedDesc,
+    TitleAsc,
+    YearDesc,
+    RatingDesc,
+}
+
+pub struct MovieListItem {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+    pub rating: Option<f64>,
+    pub tmdb_state: String,
+}
+
+pub fn list_movies_page(
+    conn: &Connection,
+    genre: Option<i64>,
+    year: Option<i32>,
+    quality: Option<&str>,
+    sort: MovieSort,
+    after: Option<i64>,
+    limit: i64,
+) -> Result<Vec<MovieListItem>> {
+    let mut sql = String::from("SELECT DISTINCT m.id, m.clean_title, m.year, m.poster_path, m.rating, m.tmdb_state FROM movies m");
+    if quality.is_some() {
+        sql.push_str(" JOIN movie_sources ms ON ms.movie_id = m.id");
+    }
+    sql.push_str(" WHERE 1=1");
+
+    let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+    if let Some(g) = genre {
+        sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(m.genres) WHERE value = ?)");
+        args.push(Box::new(g));
+    }
+    if let Some(y) = year {
+        sql.push_str(" AND m.year = ?");
+        args.push(Box::new(y));
+    }
+    if let Some(q) = quality {
+        sql.push_str(" AND ms.quality = ?");
+        args.push(Box::new(q.to_string()));
+    }
+    let (cursor_op, order) = match sort {
+        MovieSort::AddedDesc => ("<", "m.id DESC"),
+        MovieSort::TitleAsc => (">", "m.clean_title ASC, m.id ASC"),
+        MovieSort::YearDesc => ("<", "m.year DESC, m.id DESC"),
+        MovieSort::RatingDesc => ("<", "m.rating DESC, m.id DESC"),
+    };
+    if let Some(a) = after {
+        sql.push_str(&format!(" AND m.id {cursor_op} ?"));
+        args.push(Box::new(a));
+    }
+    sql.push_str(&format!(" ORDER BY {order} LIMIT ?"));
+    args.push(Box::new(limit));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter().map(|b| b.as_ref())), |row| {
+        Ok(MovieListItem {
+            id: row.get(0)?,
+            clean_title: row.get(1)?,
+            year: row.get(2)?,
+            poster_path: row.get(3)?,
+            rating: row.get(4)?,
+            tmdb_state: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub struct MovieSourceItem {
+    pub id: i64,
+    pub provider_id: i64,
+    pub remote_id: String,
+    pub quality: Option<String>,
+    pub language: Option<String>,
+    pub container: Option<String>,
+}
+
+pub struct MovieDetail {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
+    pub rating: Option<f64>,
+    pub runtime_min: Option<i32>,
+    pub genres: Vec<i64>,
+    pub tmdb_state: String,
+    pub sources: Vec<MovieSourceItem>,
+}
+
+pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
+    let base = conn
+        .query_row(
+            "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres, tmdb_state
+             FROM movies WHERE id = ?1",
+            params![id],
+            |row| {
+                let genres_json: Option<String> = row.get(8)?;
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i32>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<f64>>(6)?,
+                    row.get::<_, Option<i32>>(7)?,
+                    genres_json,
+                    row.get::<_, String>(9)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres_json, tmdb_state)) = base else {
+        return Ok(None);
+    };
+
+    let genres: Vec<i64> = genres_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+
+    let mut stmt = conn.prepare(
+        "SELECT id, provider_id, remote_id, quality, language, container FROM movie_sources WHERE movie_id = ?1",
+    )?;
+    let sources = stmt
+        .query_map(params![id], |row| {
+            Ok(MovieSourceItem {
+                id: row.get(0)?,
+                provider_id: row.get(1)?,
+                remote_id: row.get(2)?,
+                quality: row.get(3)?,
+                language: row.get(4)?,
+                container: row.get(5)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(Some(MovieDetail { id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres, tmdb_state, sources }))
+}
+
+pub struct SeriesListItem {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+    pub rating: Option<f64>,
+    pub tmdb_state: String,
+}
+
+pub fn list_series_page(
+    conn: &Connection,
+    genre: Option<i64>,
+    year: Option<i32>,
+    after: Option<i64>,
+    limit: i64,
+) -> Result<Vec<SeriesListItem>> {
+    let mut sql = String::from("SELECT id, clean_title, year, poster_path, rating, tmdb_state FROM series WHERE 1=1");
+    let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+    if let Some(g) = genre {
+        sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(genres) WHERE value = ?)");
+        args.push(Box::new(g));
+    }
+    if let Some(y) = year {
+        sql.push_str(" AND year = ?");
+        args.push(Box::new(y));
+    }
+    if let Some(a) = after {
+        sql.push_str(" AND id < ?");
+        args.push(Box::new(a));
+    }
+    sql.push_str(" ORDER BY id DESC LIMIT ?");
+    args.push(Box::new(limit));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter().map(|b| b.as_ref())), |row| {
+        Ok(SeriesListItem { id: row.get(0)?, clean_title: row.get(1)?, year: row.get(2)?, poster_path: row.get(3)?, rating: row.get(4)?, tmdb_state: row.get(5)? })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub struct SeriesSourceItem {
+    pub id: i64,
+    pub provider_id: i64,
+    pub remote_id: String,
+    pub detail_synced_at: Option<i64>,
+}
+
+pub struct EpisodeItem {
+    pub id: i64,
+    pub series_source_id: i64,
+    pub remote_id: String,
+    pub season: i64,
+    pub number: i64,
+    pub title: Option<String>,
+    pub overview: Option<String>,
+    pub still_path: Option<String>,
+    pub duration_s: Option<i64>,
+}
+
+pub struct SeriesDetail {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
+    pub rating: Option<f64>,
+    pub genres: Vec<i64>,
+    pub tmdb_state: String,
+    pub sources: Vec<SeriesSourceItem>,
+    pub episodes: Vec<EpisodeItem>,
+}
+
+pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
+    let base = conn
+        .query_row(
+            "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, genres, tmdb_state FROM series WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i32>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<f64>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
+            },
+        )
+        .optional()?;
+
+    let Some((id, clean_title, year, overview, poster_path, backdrop_path, rating, genres_json, tmdb_state)) = base else {
+        return Ok(None);
+    };
+    let genres: Vec<i64> = genres_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+
+    let mut source_stmt = conn.prepare("SELECT id, provider_id, remote_id, detail_synced_at FROM series_sources WHERE series_id = ?1")?;
+    let sources = source_stmt
+        .query_map(params![id], |row| {
+            Ok(SeriesSourceItem { id: row.get(0)?, provider_id: row.get(1)?, remote_id: row.get(2)?, detail_synced_at: row.get(3)? })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut episode_stmt = conn.prepare(
+        "SELECT e.id, e.series_source_id, e.remote_id, e.season, e.number, e.title, e.overview, e.still_path, e.duration_s
+         FROM episodes e JOIN series_sources ss ON ss.id = e.series_source_id
+         WHERE ss.series_id = ?1 ORDER BY e.season, e.number",
+    )?;
+    let episodes = episode_stmt
+        .query_map(params![id], |row| {
+            Ok(EpisodeItem {
+                id: row.get(0)?,
+                series_source_id: row.get(1)?,
+                remote_id: row.get(2)?,
+                season: row.get(3)?,
+                number: row.get(4)?,
+                title: row.get(5)?,
+                overview: row.get(6)?,
+                still_path: row.get(7)?,
+                duration_s: row.get(8)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    Ok(Some(SeriesDetail { id, clean_title, year, overview, poster_path, backdrop_path, rating, genres, tmdb_state, sources, episodes }))
+}
+
+/// `series_source_id` es de la primera fuente que tenga esta serie; se usa cuando hace
+/// falta pedir `series_detail()` bajo demanda (ver `docs/XTREAM-API.md`).
+pub fn oldest_series_source_needing_detail(conn: &Connection, series_id: i64, staleness_seconds: i64) -> Result<Option<(i64, i64)>> {
+    conn.query_row(
+        "SELECT id, provider_id FROM series_sources
+         WHERE series_id = ?1 AND (detail_synced_at IS NULL OR detail_synced_at < ?2)
+         ORDER BY id LIMIT 1",
+        params![series_id, now_epoch() - staleness_seconds],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn upsert_episodes(conn: &Connection, series_source_id: i64, episodes: &[crate::sources::model::RawEpisode]) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO episodes (series_source_id, remote_id, season, number, title, still_path, duration_s, container)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+         ON CONFLICT(series_source_id, remote_id) DO UPDATE SET
+            season = excluded.season, number = excluded.number, title = excluded.title,
+            still_path = excluded.still_path, duration_s = excluded.duration_s, container = excluded.container",
+    )?;
+    for ep in episodes {
+        stmt.execute(params![series_source_id, ep.remote_id, ep.season, ep.number, ep.title, ep.still_url, ep.duration_s, ep.container_extension])?;
+    }
+    Ok(())
+}
+
+pub fn mark_series_source_detail_synced(conn: &Connection, series_source_id: i64) -> Result<()> {
+    conn.execute("UPDATE series_sources SET detail_synced_at = ?1 WHERE id = ?2", params![now_epoch(), series_source_id])?;
+    Ok(())
+}
+
+pub struct SearchHit {
+    pub item_kind: String,
+    pub item_id: i64,
+    pub title: String,
+}
+
+pub fn search(conn: &Connection, query: &str, limit_per_kind: i64) -> Result<Vec<SearchHit>> {
+    let mut stmt = conn.prepare(
+        "SELECT item_kind, item_id, title FROM search_index WHERE search_index MATCH ?1
+         ORDER BY rank LIMIT ?2",
+    )?;
+    // FTS5 necesita una consulta bien formada; una entrada vacía o con solo espacios no
+    // debe reventar, solo no encontrar nada.
+    let fts_query = format!("{}*", fts_escape(query));
+    let rows = stmt
+        .query_map(params![fts_query, limit_per_kind * 3], |row| {
+            Ok(SearchHit { item_kind: row.get(0)?, item_id: row.get(1)?, title: row.get(2)? })
+        })
+        .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>());
+
+    match rows {
+        Ok(hits) => Ok(hits),
+        Err(_) => Ok(Vec::new()), // consulta FTS5 mal formada (p. ej. solo símbolos): sin resultados, no error 500
+    }
+}
+
+fn fts_escape(query: &str) -> String {
+    let cleaned: String = query.chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect();
+    format!("\"{}\"", cleaned.trim())
+}
+
+fn like_pattern(input: &str) -> String {
+    let escaped = input.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    format!("%{escaped}%")
+}
+
+// ─────────────── Continuar viendo, recientes, favoritos ───────────────
+
+pub fn ensure_default_profile(conn: &Connection) -> Result<i64> {
+    if let Some(id) = conn.query_row("SELECT id FROM profiles ORDER BY id LIMIT 1", [], |row| row.get(0)).optional()? {
+        return Ok(id);
+    }
+    conn.execute(
+        "INSERT INTO profiles (name, adult_ok, created_at) VALUES ('Perfil', 0, ?1)",
+        params![now_epoch()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub struct PlaybackItem {
+    pub item_kind: String,
+    pub item_id: i64,
+    pub position_s: i64,
+    pub duration_s: Option<i64>,
+    pub finished: bool,
+    pub played_at: i64,
+}
+
+pub fn upsert_playback_progress(
+    conn: &Connection,
+    profile_id: i64,
+    item_kind: &str,
+    item_id: i64,
+    position_s: i64,
+    duration_s: Option<i64>,
+) -> Result<()> {
+    // Terminado a partir del 90% (ver docs/PRD.md / F6); se calcula aquí porque es la
+    // única escritura de progreso, no hace falta duplicarlo en cada llamador.
+    let finished = duration_s.is_some_and(|d| d > 0 && (position_s as f64 / d as f64) >= 0.9);
+    conn.execute(
+        "INSERT INTO playback_state (profile_id, item_kind, item_id, position_s, duration_s, finished, played_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+         ON CONFLICT(profile_id, item_kind, item_id) DO UPDATE SET
+            position_s = excluded.position_s, duration_s = excluded.duration_s,
+            finished = excluded.finished, played_at = excluded.played_at",
+        params![profile_id, item_kind, item_id, position_s, duration_s, finished as i64, now_epoch()],
+    )?;
+    Ok(())
+}
+
+pub fn list_continue_watching(conn: &Connection, profile_id: i64, limit: i64) -> Result<Vec<PlaybackItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT item_kind, item_id, position_s, duration_s, finished, played_at FROM playback_state
+         WHERE profile_id = ?1 AND finished = 0 ORDER BY played_at DESC LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![profile_id, limit], |row| {
+        Ok(PlaybackItem {
+            item_kind: row.get(0)?,
+            item_id: row.get(1)?,
+            position_s: row.get(2)?,
+            duration_s: row.get(3)?,
+            finished: row.get::<_, i64>(4)? != 0,
+            played_at: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn list_recent_movies(conn: &Connection, limit: i64) -> Result<Vec<MovieListItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, clean_title, year, poster_path, rating, tmdb_state FROM movies ORDER BY added_at DESC, id DESC LIMIT ?1",
+    )?;
+    let rows = stmt.query_map(params![limit], |row| {
+        Ok(MovieListItem { id: row.get(0)?, clean_title: row.get(1)?, year: row.get(2)?, poster_path: row.get(3)?, rating: row.get(4)?, tmdb_state: row.get(5)? })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn list_favorites(conn: &Connection, profile_id: i64) -> Result<Vec<(String, i64)>> {
+    let mut stmt = conn.prepare("SELECT item_kind, item_id FROM favorites WHERE profile_id = ?1 ORDER BY added_at DESC")?;
+    let rows = stmt.query_map(params![profile_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn add_favorite(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO favorites (profile_id, item_kind, item_id, added_at) VALUES (?1, ?2, ?3, ?4)
+         ON CONFLICT(profile_id, item_kind, item_id) DO NOTHING",
+        params![profile_id, item_kind, item_id, now_epoch()],
+    )?;
+    Ok(())
+}
+
+pub fn remove_favorite(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM favorites WHERE profile_id = ?1 AND item_kind = ?2 AND item_id = ?3",
+        params![profile_id, item_kind, item_id],
+    )?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::queries::{self, ProviderKind, TitleFields};
+    use crate::db::schema::open_connection_at;
+    use crate::sources::model::{RawMovie, RawSeries};
+    use std::collections::HashMap;
+    use std::path::Path;
+
+    fn memory_conn() -> Connection {
+        open_connection_at(Path::new(":memory:")).unwrap()
+    }
+
+    fn seed_movie(conn: &Connection, provider_id: i64, title: &str, year: Option<i32>, genres: Option<&str>, quality: Option<&str>) -> i64 {
+        let raw = RawMovie {
+            remote_id: title.to_string(),
+            category_remote_id: None,
+            raw_title: title.to_string(),
+            container_extension: None,
+            logo_url: None,
+            added_at: Some(now_epoch()),
+            rating: None,
+            tmdb_id: None,
+        };
+        let match_key = format!("{}-{}", title.to_lowercase().replace(' ', "-"), year.map(|y| y.to_string()).unwrap_or_default());
+        let fields = TitleFields { clean_title: title, year, match_key: &match_key, quality, language: None };
+        queries::upsert_movie(conn, provider_id, &HashMap::new(), &raw, &fields).unwrap();
+        let id: i64 = conn.query_row("SELECT id FROM movies WHERE match_key = ?1", params![match_key], |r| r.get(0)).unwrap();
+        if let Some(g) = genres {
+            conn.execute("UPDATE movies SET genres = ?1 WHERE id = ?2", params![g, id]).unwrap();
+        }
+        id
+    }
+
+    #[test]
+    fn list_movies_filters_by_genre_via_json_each() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        seed_movie(&conn, provider_id, "Accion Uno", Some(2020), Some("[28,12]"), None);
+        seed_movie(&conn, provider_id, "Drama Uno", Some(2020), Some("[18]"), None);
+
+        let action = list_movies_page(&conn, Some(28), None, None, MovieSort::AddedDesc, None, 50).unwrap();
+        assert_eq!(action.len(), 1);
+        assert_eq!(action[0].clean_title, "Accion Uno");
+    }
+
+    #[test]
+    fn list_movies_filters_by_year_and_quality() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        seed_movie(&conn, provider_id, "Peli 2020 4K", Some(2020), None, Some("4K"));
+        seed_movie(&conn, provider_id, "Peli 2021 HD", Some(2021), None, Some("HD"));
+
+        let by_year = list_movies_page(&conn, None, Some(2020), None, MovieSort::AddedDesc, None, 50).unwrap();
+        assert_eq!(by_year.len(), 1);
+
+        let by_quality = list_movies_page(&conn, None, None, Some("4K"), MovieSort::AddedDesc, None, 50).unwrap();
+        assert_eq!(by_quality.len(), 1);
+        assert_eq!(by_quality[0].clean_title, "Peli 2020 4K");
+    }
+
+    #[test]
+    fn list_movies_pagination_cursor_excludes_seen_ids() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        for i in 0..5 {
+            seed_movie(&conn, provider_id, &format!("Peli {i}"), Some(2020), None, None);
+        }
+
+        let first_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, 2).unwrap();
+        assert_eq!(first_page.len(), 2);
+        let cursor = first_page.last().unwrap().id;
+
+        let second_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, Some(cursor), 2).unwrap();
+        assert_eq!(second_page.len(), 2);
+        assert!(second_page.iter().all(|m| m.id != cursor));
+    }
+
+    #[test]
+    fn get_movie_includes_sources() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let id = seed_movie(&conn, provider_id, "Peli", Some(2020), Some("[28]"), None);
+
+        let detail = get_movie(&conn, id).unwrap().unwrap();
+        assert_eq!(detail.clean_title, "Peli");
+        assert_eq!(detail.genres, vec![28]);
+        assert_eq!(detail.sources.len(), 1);
+    }
+
+    #[test]
+    fn get_movie_returns_none_when_missing() {
+        let conn = memory_conn();
+        assert!(get_movie(&conn, 999).unwrap().is_none());
+    }
+
+    #[test]
+    fn search_finds_movies_channels_and_series_after_rebuild() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        seed_movie(&conn, provider_id, "Aventura Espacial", Some(2020), None, None);
+
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Aventura Serie".into(), cover_url: None, plot: None, release_date: None };
+        let fields = TitleFields { clean_title: "Aventura Serie", year: None, match_key: "aventura-serie-0000", quality: None, language: None };
+        queries::upsert_series(&conn, provider_id, &series_raw, &fields).unwrap();
+
+        queries::rebuild_search_index(&conn).unwrap();
+
+        let hits = search(&conn, "Aventura", 10).unwrap();
+        assert_eq!(hits.len(), 2);
+        assert!(hits.iter().any(|h| h.item_kind == "movie"));
+        assert!(hits.iter().any(|h| h.item_kind == "series"));
+    }
+
+    #[test]
+    fn search_with_garbage_input_returns_empty_not_error() {
+        let conn = memory_conn();
+        queries::rebuild_search_index(&conn).unwrap();
+        let hits = search(&conn, "***", 10).unwrap();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn playback_progress_marks_finished_at_90_percent() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        upsert_playback_progress(&conn, profile_id, "movie", 1, 85, Some(100)).unwrap();
+
+        let finished: i64 = conn.query_row("SELECT finished FROM playback_state WHERE profile_id=?1", params![profile_id], |r| r.get(0)).unwrap();
+        assert_eq!(finished, 0);
+
+        upsert_playback_progress(&conn, profile_id, "movie", 1, 95, Some(100)).unwrap();
+        let finished: i64 = conn.query_row("SELECT finished FROM playback_state WHERE profile_id=?1", params![profile_id], |r| r.get(0)).unwrap();
+        assert_eq!(finished, 1);
+    }
+
+    #[test]
+    fn continue_watching_excludes_finished_items() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        upsert_playback_progress(&conn, profile_id, "movie", 1, 50, Some(100)).unwrap(); // no terminado
+        upsert_playback_progress(&conn, profile_id, "movie", 2, 99, Some(100)).unwrap(); // terminado
+
+        let continuing = list_continue_watching(&conn, profile_id, 10).unwrap();
+        assert_eq!(continuing.len(), 1);
+        assert_eq!(continuing[0].item_id, 1);
+    }
+
+    #[test]
+    fn favorites_add_is_idempotent_and_remove_works() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        add_favorite(&conn, profile_id, "movie", 1).unwrap();
+        add_favorite(&conn, profile_id, "movie", 1).unwrap(); // repetir: no debe fallar
+
+        assert_eq!(list_favorites(&conn, profile_id).unwrap().len(), 1);
+
+        remove_favorite(&conn, profile_id, "movie", 1).unwrap();
+        assert!(list_favorites(&conn, profile_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ensure_default_profile_is_idempotent() {
+        let conn = memory_conn();
+        let first = ensure_default_profile(&conn).unwrap();
+        let second = ensure_default_profile(&conn).unwrap();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn list_categories_filters_by_kind() {
+        use crate::sources::model::{MediaKind, RawCategory};
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        queries::upsert_categories(&conn, provider_id, MediaKind::Live, &[RawCategory { remote_id: "1".into(), kind: MediaKind::Live, name: "ESPAÑA".into() }]).unwrap();
+        queries::upsert_categories(&conn, provider_id, MediaKind::Movie, &[RawCategory { remote_id: "2".into(), kind: MediaKind::Movie, name: "ACCION".into() }]).unwrap();
+
+        let live = list_categories(&conn, "live").unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].name, "ESPAÑA");
+    }
+}

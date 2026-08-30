@@ -209,22 +209,28 @@ pub async fn sync_provider(app: AppHandle, stream_guard: State<'_, Arc<StreamGua
         .map_err(|err| err.to_string())?
         .ok_or("proveedor no encontrado")?;
 
-    let source: Arc<dyn Source + Send + Sync> = match row.kind {
+    let source = build_source_for_provider(row).await?;
+    spawn_sync(app, provider_id, source, stream_guard);
+    Ok(())
+}
+
+/// Reconstruye el `Source` de un proveedor ya guardado, leyendo su credencial del
+/// keychain. Reutilizado por `sync_provider` y por la ficha de serie de F4 (bajo
+/// demanda, cuando toca refrescar `series_detail`).
+pub(crate) async fn build_source_for_provider(row: queries::ProviderRow) -> CmdResult<Arc<dyn Source + Send + Sync>> {
+    match row.kind {
         ProviderKind::Xtream => {
             let username = row.username.unwrap_or_default();
             let credential_ref = row.credential_ref.ok_or("proveedor sin credenciales guardadas")?;
             let password = keychain::read_secret(&credential_ref).map_err(|err| err.to_string())?;
-            Arc::new(XtreamSource::new(row.base_url, username, password, None).map_err(|err| err.to_string())?)
+            Ok(Arc::new(XtreamSource::new(row.base_url, username, password, None).map_err(|err| err.to_string())?))
         }
         ProviderKind::M3u => {
             let credential_ref = row.credential_ref.ok_or("proveedor sin URL guardada")?;
             let url = keychain::read_secret(&credential_ref).map_err(|err| err.to_string())?;
-            Arc::new(fetch_m3u_source(&url).await?)
+            Ok(Arc::new(fetch_m3u_source(&url).await?))
         }
-    };
-
-    spawn_sync(app, provider_id, source, stream_guard);
-    Ok(())
+    }
 }
 
 #[tauri::command]

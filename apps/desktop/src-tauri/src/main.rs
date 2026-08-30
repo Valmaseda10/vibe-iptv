@@ -40,17 +40,15 @@ fn main() {
         .manage(ServerPort(port))
         .manage(StreamGuard::new())
         .setup(move |app| {
-            let image_cache_dir = app
-                .path()
-                .app_data_dir()
-                .expect("no se pudo resolver el directorio de datos")
-                .join("images");
+            let app_data_dir = app.path().app_data_dir().expect("no se pudo resolver el directorio de datos");
+            let image_cache_dir = app_data_dir.join("images");
+            let db_path = db::schema::resolve_db_path(app.handle()).expect("no se pudo resolver la ruta de la base de datos");
 
             let listener = listener
                 .try_clone()
                 .expect("no se pudo clonar el socket local");
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = serve(listener, image_cache_dir).await {
+                if let Err(err) = serve(listener, image_cache_dir, db_path).await {
                     tracing::error!(error = %err, "el servidor local se detuvo inesperadamente");
                 }
             });
