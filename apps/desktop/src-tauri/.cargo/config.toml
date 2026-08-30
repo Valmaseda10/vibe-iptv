@@ -1,0 +1,4 @@
+[env]
+# Los tipos derivados con ts-rs se exportan aquí; el frontend los importa desde
+# src/lib/api-types.ts y nunca los edita a mano.
+TS_RS_EXPORT_DIR = { value = "../src/lib", relative = true }
