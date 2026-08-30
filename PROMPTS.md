@@ -13,7 +13,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F2 Base de datos y sincronización
 - [x] F3 Normalización y TMDB
 - [x] F4 API local y tipos
-- [ ] F5 Cascarón de interfaz
+- [x] F5 Cascarón de interfaz (primera versión, sin iterar contigo — ver DECISIONS.md)
 - [ ] F6 Reproductor
 - [ ] F7 EPG y directo
 - [ ] F8 Búsqueda, favoritos, continuar viendo

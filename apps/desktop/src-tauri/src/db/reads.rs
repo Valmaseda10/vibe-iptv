@@ -10,6 +10,8 @@
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
 
+use crate::util::redact;
+
 use super::{now_epoch, Result};
 
 pub struct CategoryRow {
@@ -59,10 +61,14 @@ pub fn list_channels_page(
 
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params_from_iter(args.iter().map(|b| b.as_ref())), |row| {
+        // logo_url del proveedor se redacta antes de salir de la capa de datos: la API
+        // HTTP no debe filtrar URLs de proveedor (regla R5), aunque un logo en concreto
+        // no suela llevar credenciales.
+        let raw_logo: Option<String> = row.get(2)?;
         Ok(ChannelListItem {
             id: row.get(0)?,
             display_name: row.get(1)?,
-            logo_url: row.get(2)?,
+            logo_url: raw_logo.map(|url| redact(&url)),
             category_id: row.get(3)?,
             has_catchup: row.get::<_, i64>(4)? != 0,
         })
@@ -688,5 +694,29 @@ mod tests {
         let live = list_categories(&conn, "live").unwrap();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].name, "ESPAÑA");
+    }
+
+    #[test]
+    fn list_channels_redacts_credentials_embedded_in_logo_url() {
+        use crate::sources::model::RawChannel;
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let channel = RawChannel {
+            remote_id: "1".into(),
+            category_remote_id: None,
+            raw_name: "Canal".into(),
+            logo_url: Some("http://panel.example.com/live/juan/hunter2/logo.png".into()),
+            epg_channel_id: None,
+            has_catchup: false,
+            catchup_days: 0,
+            sort_order: None,
+        };
+        let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
+        queries::upsert_channel(&conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+
+        let channels = list_channels_page(&conn, None, None, None, 50).unwrap();
+        let logo = channels[0].logo_url.as_deref().unwrap();
+        assert!(!logo.contains("juan"));
+        assert!(!logo.contains("hunter2"));
     }
 }

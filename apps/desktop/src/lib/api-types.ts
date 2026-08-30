@@ -12,7 +12,7 @@ export type ChannelsPage = { items: Array<ChannelSummary>, next_cursor: number |
 
 export type ContinueWatchingItem = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
 
-export type EpisodeSummary = { id: number, series_source_id: number, season: bigint, number: bigint, title: string | null, overview: string | null, still_path: string | null, duration_s: number | null, };
+export type EpisodeSummary = { id: number, series_source_id: number, season: number, number: number, title: string | null, overview: string | null, still_path: string | null, duration_s: number | null, };
 
 export type FavoriteInput = { item_kind: string, item_id: number, };
 

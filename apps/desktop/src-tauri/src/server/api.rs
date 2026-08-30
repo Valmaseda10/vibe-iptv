@@ -212,7 +212,9 @@ pub struct EpisodeSummary {
     pub id: i64,
     #[ts(type = "number")]
     pub series_source_id: i64,
+    #[ts(type = "number")]
     pub season: i64,
+    #[ts(type = "number")]
     pub number: i64,
     pub title: Option<String>,
     pub overview: Option<String>,

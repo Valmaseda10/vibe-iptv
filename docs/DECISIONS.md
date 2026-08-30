@@ -233,6 +233,68 @@ rutas de solo lectura.
 
 ---
 
+## 2026-08-31 — F5 Cascarón de interfaz
+
+**Aviso importante sobre esta fase.** `PROMPTS.md` dice explícitamente "Fase 5 es de
+diseño: itera pantalla a pantalla, no aceptes la primera versión" — pero esta fase se
+hizo en modo autónomo, sin que el usuario estuviera delante para revisarla ni pedir
+cambios. Lo que hay aquí es una primera versión funcional y razonablemente cuidada, no
+el resultado de esa iteración. Verificado: `tsc --noEmit` limpio, `npm run tauri dev`
+arranca sin errores de compilación. **No verificado: cómo se ve ni se siente de verdad**
+— no hay forma de comprobar visualmente una interfaz desde este entorno. Cuando el
+usuario la abra, hay que tratarlo como el punto de partida de la iteración que pide
+`PROMPTS.md`, no como una fase cerrada de verdad en el sentido que ahí se describe.
+
+**Qué se ha construido.** Las 8 pantallas: Inicio (filas de continuar viendo/recientes),
+Directo (lista virtualizada con filtro de categoría), Películas y Series (rejillas
+virtualizadas con scroll infinito por cursor), Detalle de película y de serie (fondo a
+sangre con degradado, sinopsis, metadatos; la de serie con selector de temporada),
+Buscar (instantáneo, rebote de 150 ms) y Ajustes (de F2/F3, reencajada en el nuevo
+layout). Barra lateral colapsable con iconos SVG propios (sin librería de iconos).
+`components/VirtualPosterGrid.tsx` implementa la rejilla con TanStack Virtual: columnas
+recalculadas por `ResizeObserver`, filas virtualizadas, scroll infinito, y navegación por
+flechas con reintento de foco por `requestAnimationFrame` (la tarjeta destino puede no
+existir aún en el DOM al pulsar la flecha, por estar virtualizada). `Row.tsx` hace lo
+mismo en horizontal para las filas de Inicio. Estados de carga con esqueletos
+(`animate-pulse`), nunca un spinner centrado. Escape vuelve atrás en las fichas de
+detalle.
+
+**Decisiones tomadas.**
+- **`@tanstack/react-virtual` añadido** (dependencia nueva, justificada: pedida
+  explícitamente por `docs/CLAUDE.md`/`PROMPTS.md` para rejillas y listas grandes).
+- **Iconos SVG propios en vez de una librería** (`lucide-react`, etc.): media docena de
+  trazos simples no justifican una dependencia nueva.
+- **`GET /api/*` se llama por `fetch` desde React, no por comandos Tauri.** Con F4 ya
+  construido, el catálogo pasa a consumirse por HTTP tal como describe
+  `docs/ARCHITECTURE.md`; los comandos Tauri de F2/F3 (proveedores, TMDB) se quedan como
+  están hasta que F4 los cubra también, si es que llega a hacerlo.
+- **El logo de canal se sigue sirviendo desde la URL directa del proveedor**, sin
+  proxy ni caché en disco (a diferencia de portadas/fondos de TMDB, que sí pasan por
+  `/img/*`). Ya se redactan credenciales si las hubiera (fix de F5 en `db/reads.rs`), pero
+  no hay caché de logos: se consideró fuera de alcance de esta fase.
+- **Botones de "Reproducir" y de canales están deshabilitados/sin acción**, con un
+  `title` explicando que llegan en F6/F7: mejor un botón visiblemente inerte que uno que
+  aparente funcionar y no haga nada.
+
+**Un bug real de R5 encontrado revisando esta fase, no relacionado con el frontend en
+sí:** `GET /api/live/channels` (F4) devolvía `logo_url` tal cual venía del proveedor,
+contradiciendo el propio comentario del fichero ("ninguna respuesta lleva... URLs del
+proveedor"). Corregido pasando `logo_url` por `redact()` en `db/reads.rs` antes de
+salir de la capa de datos, con un test que confirma que credenciales embebidas en un
+logo (`/live/usuario/contraseña/logo.png`) no llegan a la respuesta HTTP.
+
+**Deuda técnica pendiente.**
+- Toda la de fases anteriores.
+- **La propia fase, en el sentido de `PROMPTS.md`**: falta la iteración con el usuario
+  screen a screen que el plan de fases da por hecha.
+- Caché/proxy de logos de canal (ver arriba).
+- Navegación por teclado cubierta a nivel de fila/rejilla (flechas + Enter + Escape en
+  fichas); no hay todavía un sistema de "TV navigation" más completo (focus trapping en
+  modales, indicadores de dirección) — razonable para v1 de escritorio con ratón y
+  teclado, insuficiente si se apunta a mando a distancia sin más ajustes.
+
+---
+
 ## 2026-08-30 — F1 Capa de fuentes
 
 **Qué se ha construido.** Trait `Source` (`#[async_trait]`) en `sources/mod.rs` con

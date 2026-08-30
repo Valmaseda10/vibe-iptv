@@ -137,7 +137,7 @@ export function SettingsScreen() {
   }
 
   return (
-    <main className="mx-auto max-w-3xl p-8">
+    <div className="mx-auto max-w-3xl p-8">
       <h1 className="mb-6 text-3xl font-semibold">Ajustes — Proveedores</h1>
 
       <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
@@ -353,6 +353,6 @@ export function SettingsScreen() {
           })}
         </ul>
       </section>
-    </main>
+    </div>
   );
 }
