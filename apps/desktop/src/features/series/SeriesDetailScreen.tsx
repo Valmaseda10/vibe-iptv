@@ -51,6 +51,7 @@ export function SeriesDetailScreen() {
         </button>
         <h1 className="max-w-2xl text-4xl font-bold sm:text-5xl">{data.clean_title}</h1>
         <div className="flex flex-wrap items-center gap-3 text-sm text-neutral-300">
+          {data.age_rating && <span className="rounded border border-neutral-500 px-1.5 py-0.5 text-xs font-semibold">{data.age_rating}</span>}
           {data.year && <span>{data.year}</span>}
           {data.rating != null && <span>★ {data.rating.toFixed(1)}</span>}
         </div>

@@ -32,6 +32,8 @@ export type FeaturedItem = { id: number, clean_title: string, year: number | nul
 
 export type ForgotPasswordInput = { email: string, };
 
+export type GenreSummary = { id: number, name: string, };
+
 /**
  * Estado del núcleo devuelto por `GET /api/health`.
  */
@@ -67,13 +69,24 @@ export type MovieDetailResponse = { id: number, clean_title: string, year: numbe
  * Clave de YouTube del tráiler, si hay uno — `None` tanto si no hay como si
  * todavía no se ha comprobado (la ficha lo comprueba sola al abrirse).
  */
-trailer_key: string | null, sources: Array<MovieSourceSummary>, };
+trailer_key: string | null, 
+/**
+ * Certificación por edad de TMDB (p. ej. "16", "PG-13") — `None` si TMDB no tiene
+ * clasificación para esto, o si todavía no se ha comprobado. Nunca del proveedor.
+ */
+age_rating: string | null, sources: Array<MovieSourceSummary>, };
 
 export type MovieSourceSummary = { id: number, provider_id: number, remote_id: string, quality: string | null, language: string | null, container: string | null, };
 
 export type MovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, };
 
-export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | null, };
+export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | null, 
+/**
+ * Solo presente cuando el orden no es "recientes" — ver el comentario de cabecera
+ * de `db::reads` sobre paginación por cursor compuesto. El cliente solo tiene que
+ * devolvérselo tal cual a la página siguiente, nunca interpretarlo.
+ */
+next_cursor_key: string | null, };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 
@@ -137,9 +150,9 @@ export type SearchHitResponse = { item_kind: string, item_id: number, title: str
 
 export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, };
 
-export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, trailer_key: string | null, episodes: Array<EpisodeSummary>, };
+export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, trailer_key: string | null, age_rating: string | null, episodes: Array<EpisodeSummary>, };
 
-export type SeriesPage = { items: Array<SeriesSummary>, next_cursor: number | null, };
+export type SeriesPage = { items: Array<SeriesSummary>, next_cursor: number | null, next_cursor_key: string | null, };
 
 export type SeriesSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, };
 

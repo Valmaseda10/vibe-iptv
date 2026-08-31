@@ -11,7 +11,7 @@ use axum::{routing::get, Json, Router};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use crate::catalog::tmdb::{TmdbClient, TMDB_API_KEY_CREDENTIAL_REF};
+use crate::catalog::tmdb::{TmdbClient, TmdbExtras, TMDB_API_KEY_CREDENTIAL_REF};
 use crate::db::reads::{self, MovieSort};
 use crate::db::{queries, schema, DbError};
 use crate::util::keychain;
@@ -124,6 +124,10 @@ pub struct MoviesPage {
     pub items: Vec<MovieSummary>,
     #[ts(type = "number | null")]
     pub next_cursor: Option<i64>,
+    /// Solo presente cuando el orden no es "recientes" — ver el comentario de cabecera
+    /// de `db::reads` sobre paginación por cursor compuesto. El cliente solo tiene que
+    /// devolvérselo tal cual a la página siguiente, nunca interpretarlo.
+    pub next_cursor_key: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -163,6 +167,9 @@ pub struct MovieDetailResponse {
     /// Clave de YouTube del tráiler, si hay uno — `None` tanto si no hay como si
     /// todavía no se ha comprobado (la ficha lo comprueba sola al abrirse).
     pub trailer_key: Option<String>,
+    /// Certificación por edad de TMDB (p. ej. "16", "PG-13") — `None` si TMDB no tiene
+    /// clasificación para esto, o si todavía no se ha comprobado. Nunca del proveedor.
+    pub age_rating: Option<String>,
     pub sources: Vec<MovieSourceSummary>,
 }
 
@@ -180,6 +187,7 @@ impl From<reads::MovieDetail> for MovieDetailResponse {
             genres: row.genres,
             tmdb_state: row.tmdb_state,
             trailer_key: row.youtube_trailer_key,
+            age_rating: row.age_rating,
             sources: row.sources.into_iter().map(Into::into).collect(),
         }
     }
@@ -209,6 +217,7 @@ pub struct SeriesPage {
     pub items: Vec<SeriesSummary>,
     #[ts(type = "number | null")]
     pub next_cursor: Option<i64>,
+    pub next_cursor_key: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -250,6 +259,7 @@ pub struct SeriesDetailResponse {
     pub genres: Vec<i64>,
     pub tmdb_state: String,
     pub trailer_key: Option<String>,
+    pub age_rating: Option<String>,
     pub episodes: Vec<EpisodeSummary>,
 }
 
@@ -486,6 +496,9 @@ struct MoviesQuery {
     quality: Option<String>,
     sort: Option<String>,
     after: Option<i64>,
+    /// Ver `MoviesPage.next_cursor_key`: se manda tal cual de vuelta, sin que el cliente
+    /// necesite saber qué significa para cada orden.
+    after_key: Option<String>,
     limit: Option<i64>,
 }
 
@@ -498,16 +511,78 @@ fn parse_movie_sort(sort: Option<&str>) -> MovieSort {
     }
 }
 
+/// Reconstruye el `PageCursor` tipado a partir de los dos parámetros sueltos de la URL
+/// (`after`, `after_key`) — el tipo de la clave depende del orden pedido, no de lo que
+/// venga en la propia cadena.
+fn parse_page_cursor(sort_key: Option<SortKeyKind>, after: Option<i64>, after_key: Option<&str>) -> Option<reads::PageCursor> {
+    let id = after?;
+    let key = match sort_key {
+        Some(SortKeyKind::Text) => Some(reads::CursorKey::Text),
+        Some(SortKeyKind::Int) => after_key.and_then(|k| k.parse::<i32>().ok()).map(reads::CursorKey::Int),
+        Some(SortKeyKind::Float) => after_key.and_then(|k| k.parse::<f64>().ok()).map(reads::CursorKey::Float),
+        None => None,
+    };
+    Some(reads::PageCursor { id, key })
+}
+
+/// Qué *tipo* de clave le corresponde a cada orden — no el valor en sí, que llega en la
+/// petición. `None` es "recientes" (sin clave, solo `id`).
+#[derive(Clone, Copy)]
+enum SortKeyKind {
+    Text,
+    Int,
+    Float,
+}
+
+fn movie_sort_cursor_key(sort: MovieSort) -> Option<SortKeyKind> {
+    match sort {
+        MovieSort::AddedDesc => None,
+        MovieSort::TitleAsc => Some(SortKeyKind::Text),
+        MovieSort::YearDesc => Some(SortKeyKind::Int),
+        MovieSort::RatingDesc => Some(SortKeyKind::Float),
+    }
+}
+
+fn series_sort_cursor_key(sort: reads::SeriesSort) -> Option<SortKeyKind> {
+    match sort {
+        reads::SeriesSort::AddedDesc => None,
+        reads::SeriesSort::TitleAsc => Some(SortKeyKind::Text),
+        reads::SeriesSort::YearDesc => Some(SortKeyKind::Int),
+        reads::SeriesSort::RatingDesc => Some(SortKeyKind::Float),
+    }
+}
+
+fn parse_series_sort(sort: Option<&str>) -> reads::SeriesSort {
+    match sort {
+        Some("title") => reads::SeriesSort::TitleAsc,
+        Some("year") => reads::SeriesSort::YearDesc,
+        Some("rating") => reads::SeriesSort::RatingDesc,
+        _ => reads::SeriesSort::AddedDesc,
+    }
+}
+
 async fn get_movies(State(state): State<CatalogState>, Query(query): Query<MoviesQuery>) -> Result<Json<MoviesPage>, ApiError> {
     let limit = clamp_limit(query.limit);
     let sort = parse_movie_sort(query.sort.as_deref());
+    let cursor = parse_page_cursor(movie_sort_cursor_key(sort), query.after, query.after_key.as_deref());
+    let after_key = query.after_key.clone();
     let items = with_db(state.db_path, move |conn| {
         let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
-        reads::list_movies_page(conn, query.genre, query.year, query.quality.as_deref(), sort, query.after, limit, include_adult)
+        reads::list_movies_page(conn, query.genre, query.year, query.quality.as_deref(), sort, cursor, after_key.as_deref(), limit, include_adult)
     })
     .await?;
-    let next_cursor = if items.len() as i64 == limit { items.last().map(|m| m.id) } else { None };
-    Ok(Json(MoviesPage { items: items.into_iter().map(Into::into).collect(), next_cursor }))
+    let (next_cursor, next_cursor_key) = if items.len() as i64 == limit {
+        match items.last() {
+            Some(last) => {
+                let (cursor, key) = reads::movie_page_cursor(sort, last);
+                (Some(cursor.id), key)
+            }
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+    Ok(Json(MoviesPage { items: items.into_iter().map(Into::into).collect(), next_cursor, next_cursor_key }))
 }
 
 /// Ficha de película: si el tráiler no se ha comprobado nunca (`trailer_checked_at` a
@@ -522,9 +597,12 @@ async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumP
 
     if movie.trailer_checked_at.is_none() {
         if let Some(tmdb_id) = movie.tmdb_id {
-            match fetch_and_store_movie_trailer(db_path, id, tmdb_id).await {
-                Ok(key) => movie.youtube_trailer_key = key,
-                Err(err) => tracing::warn!(movie_id = id, error = %err, "no se pudo comprobar el tráiler"),
+            match fetch_and_store_movie_extras(db_path, id, tmdb_id).await {
+                Ok(extras) => {
+                    movie.youtube_trailer_key = extras.trailer_key;
+                    movie.age_rating = extras.age_rating;
+                }
+                Err(err) => tracing::warn!(movie_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
             }
         }
     }
@@ -533,22 +611,54 @@ async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumP
 }
 
 /// Lee la clave de TMDB del keychain (si no hay ninguna configurada, falla rápido y sin
-/// red — igual que `commands::spawn_tmdb_matching`), pide el tráiler, y lo guarda.
-async fn fetch_and_store_movie_trailer(db_path: PathBuf, movie_id: i64, tmdb_id: i64) -> Result<Option<String>, String> {
+/// red — igual que `commands::spawn_tmdb_matching`), pide tráiler+clasificación en una
+/// sola llamada, y los guarda juntos.
+async fn fetch_and_store_movie_extras(db_path: PathBuf, movie_id: i64, tmdb_id: i64) -> Result<TmdbExtras, String> {
     let api_key = keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).map_err(|err| err.to_string())?;
-    let trailer_key = TmdbClient::new(api_key).movie_trailer_key(tmdb_id).await.map_err(|err| err.to_string())?;
-    let stored = trailer_key.clone();
-    with_db(db_path, move |conn| queries::set_movie_trailer(conn, movie_id, stored.as_deref())).await.map_err(|err| err.to_string())?;
-    Ok(trailer_key)
+    let extras = TmdbClient::new(api_key).movie_extras(tmdb_id).await.map_err(|err| err.to_string())?;
+    let stored = extras.clone();
+    with_db(db_path, move |conn| queries::set_movie_extras(conn, movie_id, stored.trailer_key.as_deref(), stored.age_rating.as_deref()))
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(extras)
 }
 
-/// Igual que `fetch_and_store_movie_trailer`, pero para series (`/tv/{id}/videos`).
-async fn fetch_and_store_series_trailer(db_path: PathBuf, series_id: i64, tmdb_id: i64) -> Result<Option<String>, String> {
+/// Igual que `fetch_and_store_movie_extras`, pero para series (`/tv/{id}`).
+async fn fetch_and_store_series_extras(db_path: PathBuf, series_id: i64, tmdb_id: i64) -> Result<TmdbExtras, String> {
     let api_key = keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).map_err(|err| err.to_string())?;
-    let trailer_key = TmdbClient::new(api_key).tv_trailer_key(tmdb_id).await.map_err(|err| err.to_string())?;
-    let stored = trailer_key.clone();
-    with_db(db_path, move |conn| queries::set_series_trailer(conn, series_id, stored.as_deref())).await.map_err(|err| err.to_string())?;
-    Ok(trailer_key)
+    let extras = TmdbClient::new(api_key).tv_extras(tmdb_id).await.map_err(|err| err.to_string())?;
+    let stored = extras.clone();
+    with_db(db_path, move |conn| queries::set_series_extras(conn, series_id, stored.trailer_key.as_deref(), stored.age_rating.as_deref()))
+        .await
+        .map_err(|err| err.to_string())?;
+    Ok(extras)
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct GenreSummary {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub name: String,
+}
+
+impl From<reads::GenreNameRow> for GenreSummary {
+    fn from(row: reads::GenreNameRow) -> Self {
+        Self { id: row.id, name: row.name }
+    }
+}
+
+#[derive(Deserialize)]
+struct GenresQuery {
+    /// "movie" o "tv" — los catálogos de género de TMDB no son exactamente el mismo
+    /// (p. ej. "Acción y aventura" solo existe en el de series).
+    kind: String,
+}
+
+async fn get_genres(State(state): State<CatalogState>, Query(query): Query<GenresQuery>) -> Result<Json<Vec<GenreSummary>>, ApiError> {
+    let kind = if query.kind == "tv" { "tv" } else { "movie" };
+    let rows = with_db(state.db_path, move |conn| reads::list_genre_names(conn, kind)).await?;
+    Ok(Json(rows.into_iter().map(Into::into).collect()))
 }
 
 #[derive(Deserialize)]
@@ -556,19 +666,34 @@ struct SeriesQuery {
     profile_id: i64,
     genre: Option<i64>,
     year: Option<i32>,
+    sort: Option<String>,
     after: Option<i64>,
+    after_key: Option<String>,
     limit: Option<i64>,
 }
 
 async fn get_series_list(State(state): State<CatalogState>, Query(query): Query<SeriesQuery>) -> Result<Json<SeriesPage>, ApiError> {
     let limit = clamp_limit(query.limit);
+    let sort = parse_series_sort(query.sort.as_deref());
+    let cursor = parse_page_cursor(series_sort_cursor_key(sort), query.after, query.after_key.as_deref());
+    let after_key = query.after_key.clone();
     let items = with_db(state.db_path, move |conn| {
         let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
-        reads::list_series_page(conn, query.genre, query.year, query.after, limit, include_adult)
+        reads::list_series_page(conn, query.genre, query.year, sort, cursor, after_key.as_deref(), limit, include_adult)
     })
     .await?;
-    let next_cursor = if items.len() as i64 == limit { items.last().map(|s| s.id) } else { None };
-    Ok(Json(SeriesPage { items: items.into_iter().map(Into::into).collect(), next_cursor }))
+    let (next_cursor, next_cursor_key) = if items.len() as i64 == limit {
+        match items.last() {
+            Some(last) => {
+                let (cursor, key) = reads::series_page_cursor(sort, last);
+                (Some(cursor.id), key)
+            }
+            None => (None, None),
+        }
+    } else {
+        (None, None)
+    };
+    Ok(Json(SeriesPage { items: items.into_iter().map(Into::into).collect(), next_cursor, next_cursor_key }))
 }
 
 /// Si el detalle de la serie no se ha pedido nunca o hace más de 7 días (ver
@@ -593,9 +718,12 @@ async fn get_series_detail(State(state): State<CatalogState>, AxumPath(id): Axum
 
     if series.trailer_checked_at.is_none() {
         if let Some(tmdb_id) = series.tmdb_id {
-            match fetch_and_store_series_trailer(db_path, id, tmdb_id).await {
-                Ok(key) => series.youtube_trailer_key = key,
-                Err(err) => tracing::warn!(series_id = id, error = %err, "no se pudo comprobar el tráiler"),
+            match fetch_and_store_series_extras(db_path, id, tmdb_id).await {
+                Ok(extras) => {
+                    series.youtube_trailer_key = extras.trailer_key;
+                    series.age_rating = extras.age_rating;
+                }
+                Err(err) => tracing::warn!(series_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
             }
         }
     }
@@ -611,6 +739,7 @@ async fn get_series_detail(State(state): State<CatalogState>, AxumPath(id): Axum
         genres: series.genres,
         tmdb_state: series.tmdb_state,
         trailer_key: series.youtube_trailer_key,
+        age_rating: series.age_rating,
         episodes: series.episodes.into_iter().map(Into::into).collect(),
     }))
 }
@@ -852,6 +981,7 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/movies/:id", get(get_movie_detail))
         .route("/api/series", get(get_series_list))
         .route("/api/series/:id", get(get_series_detail))
+        .route("/api/genres", get(get_genres))
         .route("/api/search", get(get_search))
         .route("/api/epg/now", get(get_epg_now))
         .route("/api/epg/grid", get(get_epg_grid))
@@ -955,7 +1085,7 @@ mod tests {
         {
             let conn = open_connection_at(&db_path).unwrap();
             conn.execute("UPDATE movies SET tmdb_state = 'matched', tmdb_id = 603 WHERE id = 1", []).unwrap();
-            write_queries::set_movie_trailer(&conn, 1, Some("ya-en-cache")).unwrap();
+            write_queries::set_movie_extras(&conn, 1, Some("ya-en-cache"), Some("16")).unwrap();
         }
         let router = catalog_router(db_path.clone());
 
@@ -963,6 +1093,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["trailer_key"], "ya-en-cache");
+        assert_eq!(json["age_rating"], "16");
 
         let _ = std::fs::remove_file(&db_path);
     }
@@ -1121,6 +1252,65 @@ mod tests {
         let json = body_json(response).await;
         assert_eq!(json["items"].as_array().unwrap().len(), 2);
         assert!(json["next_cursor"].is_number());
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Cubre justo el fallo que se encontró probando en vivo: `next_cursor_key` tiene
+    /// que viajar de verdad en la respuesta HTTP para un orden que no sea "recientes" —
+    /// si se queda `null`, la página siguiente no tiene con qué reconstruir el cursor
+    /// compuesto y el filtro deja de aplicarse en silencio.
+    #[tokio::test]
+    async fn movies_pagination_by_rating_round_trips_the_cursor_key_over_http() {
+        let db_path = seeded_db(); // "Peli de Prueba", sin rating (None).
+        {
+            let conn = open_connection_at(&db_path).unwrap();
+            let provider_id = write_queries::insert_provider(&conn, ProviderKind::Xtream, "P2", "http://y", None, 1, None).unwrap();
+            for (title, rating) in [("Alta", 9.0), ("Media", 5.0)] {
+                let raw = RawMovie {
+                    remote_id: title.to_string(),
+                    category_remote_id: None,
+                    raw_title: title.to_string(),
+                    container_extension: None,
+                    logo_url: None,
+                    added_at: None,
+                    rating: None,
+                    tmdb_id: None,
+                };
+                let match_key = format!("{}-0000", title.to_lowercase());
+                let fields = TitleFields { clean_title: title, year: None, match_key: &match_key, quality: None, language: None };
+                write_queries::upsert_movie(&conn, provider_id, &HashMap::new(), &raw, &fields).unwrap();
+                // `upsert_movie` no escribe `rating` (solo lo rellena el emparejamiento
+                // con TMDB) — se fija a mano para no depender de esa otra pieza aquí.
+                conn.execute("UPDATE movies SET rating = ?1 WHERE match_key = ?2", rusqlite::params![rating, match_key]).unwrap();
+            }
+        }
+
+        let router = catalog_router(db_path.clone());
+        let first = router
+            .clone()
+            .oneshot(Request::builder().uri(format!("/api/movies?profile_id={TEST_PROFILE_ID}&sort=rating&limit=1")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let first_json = body_json(first).await;
+        assert_eq!(first_json["items"][0]["clean_title"], "Alta");
+        let next_cursor = first_json["next_cursor"].as_i64().unwrap();
+        let next_cursor_key = first_json["next_cursor_key"].as_str().unwrap();
+        assert_eq!(next_cursor_key.parse::<f64>().unwrap(), 9.0); // el formato exacto (Rust omite ".0") no es lo que importa aquí.
+
+        let second = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/movies?profile_id={TEST_PROFILE_ID}&sort=rating&limit=1&after={next_cursor}&after_key={next_cursor_key}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let second_json = body_json(second).await;
+        // Sin el cursor arreglado, esta segunda página repetiría "Alta" en vez de
+        // avanzar a la siguiente por nota.
+        assert_eq!(second_json["items"][0]["clean_title"], "Media");
 
         let _ = std::fs::remove_file(&db_path);
     }

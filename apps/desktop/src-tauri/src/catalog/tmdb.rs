@@ -186,29 +186,79 @@ impl TmdbClient {
         })
     }
 
-    /// Clave de YouTube del mejor tráiler disponible, o `None` si no hay ninguno — nunca
-    /// un error solo por no encontrar tráiler, eso es un resultado válido, no un fallo.
-    /// Se pide bajo demanda al abrir la ficha (`server::api`), nunca durante el
-    /// emparejamiento masivo: con catálogos de hasta 100.000 títulos (regla R4) no tiene
-    /// sentido gastar una llamada de más por título que puede que nadie abra nunca.
-    pub async fn movie_trailer_key(&self, tmdb_id: i64) -> Result<Option<String>> {
-        self.trailer_key(&format!("/movie/{tmdb_id}/videos")).await
+    /// Tráiler + clasificación por edad en una sola llamada (`append_to_response`, en
+    /// vez de dos peticiones sueltas): ambos se comprueban juntos, bajo demanda, al abrir
+    /// la ficha (`server::api`) — nunca durante el emparejamiento masivo. Con catálogos
+    /// de hasta 100.000 títulos (regla R4) no tiene sentido gastar peticiones de más en
+    /// contenido que puede que nadie abra nunca. Ninguno de los dos es un error si no
+    /// hay dato: TMDB simplemente no siempre tiene tráiler o certificación para todo.
+    pub async fn movie_extras(&self, tmdb_id: i64) -> Result<TmdbExtras> {
+        let response: MovieExtrasResponse = self
+            .get_json(&format!("/movie/{tmdb_id}"), &[("language", "es-ES"), ("append_to_response", "videos,release_dates")])
+            .await?;
+        Ok(TmdbExtras {
+            trailer_key: pick_trailer(&response.videos.results),
+            age_rating: pick_certification(response.release_dates.results.iter().map(|c| {
+                (c.iso_3166_1.as_str(), c.release_dates.iter().find_map(|r| non_empty(&r.certification)))
+            })),
+        })
     }
 
-    pub async fn tv_trailer_key(&self, tmdb_id: i64) -> Result<Option<String>> {
-        self.trailer_key(&format!("/tv/{tmdb_id}/videos")).await
+    pub async fn tv_extras(&self, tmdb_id: i64) -> Result<TmdbExtras> {
+        let response: TvExtrasResponse = self
+            .get_json(&format!("/tv/{tmdb_id}"), &[("language", "es-ES"), ("append_to_response", "videos,content_ratings")])
+            .await?;
+        Ok(TmdbExtras {
+            trailer_key: pick_trailer(&response.videos.results),
+            age_rating: pick_certification(response.content_ratings.results.iter().map(|c| (c.iso_3166_1.as_str(), non_empty(&c.rating)))),
+        })
     }
 
-    async fn trailer_key(&self, path: &str) -> Result<Option<String>> {
-        let response: VideosResponse = self.get_json(path, &[("language", "es-ES")]).await?;
-        if let Some(key) = pick_trailer(&response.results) {
-            return Ok(Some(key));
+    /// Los ~19 géneros de película y ~16 de serie de TMDB, casi estáticos — se piden una
+    /// vez por sincronización con clave de TMDB (`commands::spawn_tmdb_matching`), nunca
+    /// por título: es la misma llamada sirva para 10 películas o para 100.000.
+    pub async fn movie_genres(&self, language: &str) -> Result<Vec<(i64, String)>> {
+        let response: GenreListResponse = self.get_json("/genre/movie/list", &[("language", language)]).await?;
+        Ok(response.genres.into_iter().map(|g| (g.id, g.name)).collect())
+    }
+
+    pub async fn tv_genres(&self, language: &str) -> Result<Vec<(i64, String)>> {
+        let response: GenreListResponse = self.get_json("/genre/tv/list", &[("language", language)]).await?;
+        Ok(response.genres.into_iter().map(|g| (g.id, g.name)).collect())
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TmdbExtras {
+    pub trailer_key: Option<String>,
+    pub age_rating: Option<String>,
+}
+
+fn non_empty(s: &str) -> Option<&str> {
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
+/// España primero; si TMDB no tiene certificación para España, Estados Unidos (la
+/// región con más cobertura de certificaciones en TMDB); si tampoco, la primera que
+/// haya de cualquier país — mejor una clasificación aproximada que ninguna.
+fn pick_certification<'a>(entries: impl Iterator<Item = (&'a str, Option<&'a str>)>) -> Option<String> {
+    let mut us = None;
+    let mut any = None;
+    for (country, cert) in entries {
+        let Some(cert) = cert else { continue };
+        if country == "ES" {
+            return Some(cert.to_string());
         }
-        // Muchos tráilers solo están subidos en inglés; TMDB no hace fallback de idioma
-        // por sí solo en este endpoint como sí hace `search/*`.
-        let response: VideosResponse = self.get_json(path, &[("language", "en-US")]).await?;
-        Ok(pick_trailer(&response.results))
+        if country == "US" {
+            us.get_or_insert(cert.to_string());
+        }
+        any.get_or_insert(cert.to_string());
     }
+    us.or(any)
 }
 
 /// Prefiere un tráiler "oficial" en YouTube; si no hay ninguno marcado como oficial,
@@ -368,6 +418,18 @@ async fn store_outcome(conn: &AsyncMutex<Connection>, kind: MediaKind, id: i64, 
         MediaKind::Movie => queries::update_movie_tmdb_result(&conn, id, &db_outcome),
         _ => queries::update_series_tmdb_result(&conn, id, &db_outcome),
     };
+}
+
+/// Pide los nombres de género de película y de serie a TMDB — sin tocar la base de
+/// datos aquí: mantener una `&Connection` (que no es `Sync`) viva a través de un
+/// `.await` dejaría el futuro entero sin poder mandarse entre hilos, y esto lo llama
+/// `commands::spawn_tmdb_matching` dentro de una tarea de `tauri::async_runtime::spawn`
+/// que sí lo exige. El guardado en sí (`queries::upsert_genre_names`, sin await) lo hace
+/// quien llame, ya con la conexión en la mano.
+pub async fn fetch_genre_names(client: &TmdbClient) -> (Vec<(i64, String)>, Vec<(i64, String)>) {
+    let movie = client.movie_genres("es-ES").await.unwrap_or_default();
+    let tv = client.tv_genres("es-ES").await.unwrap_or_default();
+    (movie, tv)
 }
 
 pub struct MatchSummary {
@@ -554,7 +616,7 @@ struct MovieDetailsResponse {
     runtime: Option<i32>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct VideosResponse {
     #[serde(default)]
     results: Vec<VideoWire>,
@@ -583,6 +645,66 @@ struct TvDetailsResponse {
     vote_average: Option<f64>,
     #[serde(default)]
     genres: Vec<GenreObj>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct MovieExtrasResponse {
+    #[serde(default)]
+    videos: VideosResponse,
+    #[serde(default)]
+    release_dates: ReleaseDatesResponse,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ReleaseDatesResponse {
+    #[serde(default)]
+    results: Vec<ReleaseDatesCountry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReleaseDatesCountry {
+    iso_3166_1: String,
+    #[serde(default)]
+    release_dates: Vec<ReleaseDateEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReleaseDateEntry {
+    #[serde(default)]
+    certification: String,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct TvExtrasResponse {
+    #[serde(default)]
+    videos: VideosResponse,
+    #[serde(default)]
+    content_ratings: ContentRatingsResponse,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ContentRatingsResponse {
+    #[serde(default)]
+    results: Vec<ContentRatingCountry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ContentRatingCountry {
+    iso_3166_1: String,
+    #[serde(default)]
+    rating: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenreListResponse {
+    #[serde(default)]
+    genres: Vec<GenreNameObj>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GenreNameObj {
+    id: i64,
+    name: String,
 }
 
 #[cfg(test)]
@@ -756,38 +878,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn movie_trailer_key_returns_the_official_one() {
-        let state = MockState::default();
-        queue(&state, 200, r#"{"results":[{"key":"abc123","site":"YouTube","type":"Trailer","official":true}]}"#);
-        let base_url = spawn_mock_server(state).await;
-        let client = TmdbClient::with_base_url("key", base_url);
-
-        assert_eq!(client.movie_trailer_key(603).await.unwrap(), Some("abc123".to_string()));
-    }
-
-    #[tokio::test]
-    async fn movie_trailer_key_falls_back_to_english_when_spanish_has_none() {
-        let state = MockState::default();
-        queue(&state, 200, r#"{"results":[]}"#); // es-ES
-        queue(&state, 200, r#"{"results":[{"key":"en-key","site":"YouTube","type":"Trailer","official":true}]}"#); // en-US
-        let base_url = spawn_mock_server(state).await;
-        let client = TmdbClient::with_base_url("key", base_url);
-
-        assert_eq!(client.movie_trailer_key(603).await.unwrap(), Some("en-key".to_string()));
-    }
-
-    #[tokio::test]
-    async fn movie_trailer_key_is_none_when_nothing_found_in_either_language() {
-        let state = MockState::default();
-        queue(&state, 200, r#"{"results":[]}"#);
-        queue(&state, 200, r#"{"results":[]}"#);
-        let base_url = spawn_mock_server(state).await;
-        let client = TmdbClient::with_base_url("key", base_url);
-
-        assert_eq!(client.movie_trailer_key(603).await.unwrap(), None);
-    }
-
-    #[tokio::test]
     async fn tv_details_has_no_runtime() {
         let state = MockState::default();
         queue(&state, 200, r#"{"id":1399,"overview":"o","genres":[{"id":18,"name":"Drama"}]}"#);
@@ -797,6 +887,77 @@ mod tests {
         let details = client.tv_details(1399, "es-ES").await.unwrap();
         assert_eq!(details.runtime_min, None);
         assert_eq!(details.genre_ids, vec![18]);
+    }
+
+    #[test]
+    fn pick_certification_prefers_spain_over_everything() {
+        let entries = vec![("US", Some("PG-13")), ("ES", Some("12")), ("FR", Some("10"))];
+        assert_eq!(pick_certification(entries.into_iter()), Some("12".to_string()));
+    }
+
+    #[test]
+    fn pick_certification_falls_back_to_us_without_spain() {
+        let entries = vec![("FR", Some("10")), ("US", Some("PG-13"))];
+        assert_eq!(pick_certification(entries.into_iter()), Some("PG-13".to_string()));
+    }
+
+    #[test]
+    fn pick_certification_falls_back_to_any_country_as_last_resort() {
+        let entries = vec![("FR", Some("10"))];
+        assert_eq!(pick_certification(entries.into_iter()), Some("10".to_string()));
+    }
+
+    #[test]
+    fn pick_certification_none_when_every_entry_is_empty() {
+        let entries = vec![("ES", None), ("US", None)];
+        assert_eq!(pick_certification(entries.into_iter()), None);
+    }
+
+    #[tokio::test]
+    async fn movie_extras_combines_trailer_and_spanish_certification_in_one_call() {
+        let state = MockState::default();
+        let call_count = Arc::clone(&state.call_count);
+        queue(
+            &state,
+            200,
+            r#"{"id":603,"videos":{"results":[{"key":"abc123","site":"YouTube","type":"Trailer","official":true}]},
+                "release_dates":{"results":[{"iso_3166_1":"US","release_dates":[{"certification":"R"}]},
+                                             {"iso_3166_1":"ES","release_dates":[{"certification":"16"}]}]}}"#,
+        );
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        let extras = client.movie_extras(603).await.unwrap();
+        assert_eq!(extras.trailer_key, Some("abc123".to_string()));
+        assert_eq!(extras.age_rating, Some("16".to_string()));
+        assert_eq!(call_count.load(Ordering::SeqCst), 1); // una sola llamada, no dos.
+    }
+
+    #[tokio::test]
+    async fn tv_extras_reads_content_ratings() {
+        let state = MockState::default();
+        queue(
+            &state,
+            200,
+            r#"{"id":1399,"videos":{"results":[]},"content_ratings":{"results":[{"iso_3166_1":"ES","rating":"16"}]}}"#,
+        );
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        let extras = client.tv_extras(1399).await.unwrap();
+        assert_eq!(extras.trailer_key, None);
+        assert_eq!(extras.age_rating, Some("16".to_string()));
+    }
+
+    #[tokio::test]
+    async fn movie_genres_parses_id_and_name_pairs() {
+        let state = MockState::default();
+        queue(&state, 200, r#"{"genres":[{"id":28,"name":"Acción"},{"id":18,"name":"Drama"}]}"#);
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        let genres = client.movie_genres("es-ES").await.unwrap();
+        assert_eq!(genres, vec![(28, "Acción".to_string()), (18, "Drama".to_string())]);
     }
 
     #[tokio::test]

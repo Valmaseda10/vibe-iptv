@@ -455,22 +455,39 @@ pub fn update_series_tmdb_result(conn: &Connection, series_id: i64, outcome: &Tm
     Ok(())
 }
 
-/// Guarda el resultado de comprobar el tráiler (F "premium"): `trailer_key` a `None` es
-/// un resultado válido ("se comprobó y no hay tráiler"), no un fallo — `trailer_checked_at`
-/// es lo que distingue eso de "todavía no se ha comprobado" (ver migración 006).
-pub fn set_movie_trailer(conn: &Connection, movie_id: i64, trailer_key: Option<&str>) -> Result<()> {
+/// Guarda el resultado de comprobar el tráiler y la clasificación por edad (F
+/// "premium"): ambos a `None` es un resultado válido ("se comprobó y TMDB no tenía
+/// nada"), no un fallo — `trailer_checked_at` es lo que distingue eso de "todavía no se
+/// ha comprobado" (ver migraciones 006 y 007). Se piden juntos en una sola llamada a
+/// TMDB (`TmdbClient::movie_extras`), así que también se guardan juntos.
+/// "premium") en la misma pasada — ambos se piden juntos en una sola llamada a TMDB
+/// (`TmdbClient::movie_extras`), así que también se guardan juntos.
+pub fn set_movie_extras(conn: &Connection, movie_id: i64, trailer_key: Option<&str>, age_rating: Option<&str>) -> Result<()> {
     conn.execute(
-        "UPDATE movies SET youtube_trailer_key = ?1, trailer_checked_at = ?2 WHERE id = ?3",
-        params![trailer_key, now_epoch(), movie_id],
+        "UPDATE movies SET youtube_trailer_key = ?1, age_rating = ?2, trailer_checked_at = ?3 WHERE id = ?4",
+        params![trailer_key, age_rating, now_epoch(), movie_id],
     )?;
     Ok(())
 }
 
-pub fn set_series_trailer(conn: &Connection, series_id: i64, trailer_key: Option<&str>) -> Result<()> {
+pub fn set_series_extras(conn: &Connection, series_id: i64, trailer_key: Option<&str>, age_rating: Option<&str>) -> Result<()> {
     conn.execute(
-        "UPDATE series SET youtube_trailer_key = ?1, trailer_checked_at = ?2 WHERE id = ?3",
-        params![trailer_key, now_epoch(), series_id],
+        "UPDATE series SET youtube_trailer_key = ?1, age_rating = ?2, trailer_checked_at = ?3 WHERE id = ?4",
+        params![trailer_key, age_rating, now_epoch(), series_id],
     )?;
+    Ok(())
+}
+
+/// Nombres de género de TMDB (F "premium"): se piden una vez con la clave de API, casi
+/// nunca cambian, y no dependen de ningún proveedor ni categoría concreta.
+pub fn upsert_genre_names(conn: &Connection, kind: &str, genres: &[(i64, String)]) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO genre_names (kind, tmdb_genre_id, name) VALUES (?1, ?2, ?3)
+         ON CONFLICT(kind, tmdb_genre_id) DO UPDATE SET name = excluded.name",
+    )?;
+    for (id, name) in genres {
+        stmt.execute(params![kind, id, name])?;
+    }
     Ok(())
 }
 

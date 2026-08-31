@@ -2,11 +2,15 @@
 //! escritura del sincronizador) por claridad; siguen siendo el único sitio con SQL para
 //! estos datos.
 //!
-//! Paginación por cursor (`after` = último `id` visto, nunca offset, regla R4). Con
-//! filtros combinados con un orden distinto al de inserción, el cursor se aproxima con
-//! `id` como desempate: es un límite conocido y documentado, no un descuido — hacer
-//! keyset pagination exacto por cada combinación de orden/filtro no compensaba el tiempo
-//! en esta fase, sin una interfaz real todavía que lo ejercite (llega en F5).
+//! Paginación por cursor, nunca offset (regla R4). Para el orden natural (recientes,
+//! `id DESC`) el cursor es solo el último `id` visto. Para cualquier otro orden
+//! (título, año, nota — F "premium": filtros reales en Películas/Series) el `id` solo
+//! no basta como cursor: hacía falta también el valor de la propia columna de orden,
+//! comparado como valor compuesto `(columna, id) < (?, ?)` — si no, "después del id
+//! 500" no dice nada sobre dónde seguir cuando se ordena por título. Esto era una
+//! limitación conocida y documentada desde F4 ("sin una interfaz real que lo ejercite
+//! todavía"); con los filtros de verdad ya en la interfaz, tocaba arreglarlo de verdad
+//! en vez de seguir aproximando con solo el `id`.
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, ToSql};
 
@@ -22,6 +26,21 @@ pub struct CategoryRow {
 /// `include_adult` en `false` oculta las categorías marcadas `is_adult` (control
 /// parental, F8): mientras no se desbloquee con el PIN, ni siquiera aparecen en el
 /// selector de categorías.
+pub struct GenreNameRow {
+    pub id: i64,
+    pub name: String,
+}
+
+/// Nombres de género de TMDB para el selector de filtros de Películas/Series — sin
+/// esto, lo único que hay son los ids numéricos que `movies.genres`/`series.genres`
+/// guardan tal cual vienen de TMDB. Vacío hasta la primera sincronización con clave de
+/// TMDB (`commands::spawn_tmdb_matching`), no es un error.
+pub fn list_genre_names(conn: &Connection, kind: &str) -> Result<Vec<GenreNameRow>> {
+    let mut stmt = conn.prepare("SELECT tmdb_genre_id, name FROM genre_names WHERE kind = ?1 ORDER BY name")?;
+    let rows = stmt.query_map(params![kind], |row| Ok(GenreNameRow { id: row.get(0)?, name: row.get(1)? }))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 pub fn list_categories(conn: &Connection, kind: &str, include_adult: bool) -> Result<Vec<CategoryRow>> {
     let sql = if include_adult {
         "SELECT id, name FROM categories WHERE kind = ?1 ORDER BY name"
@@ -106,6 +125,22 @@ pub struct MovieListItem {
     pub tmdb_state: String,
 }
 
+/// Cursor de una página: siempre lleva el último `id` visto, y además el valor de la
+/// propia columna de orden cuando el orden no es "recientes" — sin eso, "sigue después
+/// del id 500" no basta para saber por dónde continuar ordenando por título/año/nota.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PageCursor {
+    pub id: i64,
+    pub key: Option<CursorKey>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CursorKey {
+    Text,
+    Int(i32),
+    Float(f64),
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn list_movies_page(
     conn: &Connection,
@@ -113,7 +148,8 @@ pub fn list_movies_page(
     year: Option<i32>,
     quality: Option<&str>,
     sort: MovieSort,
-    after: Option<i64>,
+    after: Option<PageCursor>,
+    after_text: Option<&str>,
     limit: i64,
     include_adult: bool,
 ) -> Result<Vec<MovieListItem>> {
@@ -145,15 +181,50 @@ pub fn list_movies_page(
         sql.push_str(" AND ms.quality = ?");
         args.push(Box::new(q.to_string()));
     }
-    let (cursor_op, order) = match sort {
-        MovieSort::AddedDesc => ("<", "m.id DESC"),
-        MovieSort::TitleAsc => (">", "m.clean_title ASC, m.id ASC"),
-        MovieSort::YearDesc => ("<", "m.year DESC, m.id DESC"),
-        MovieSort::RatingDesc => ("<", "m.rating DESC, m.id DESC"),
+
+    let order = match sort {
+        MovieSort::AddedDesc => "m.id DESC",
+        MovieSort::TitleAsc => "m.clean_title ASC, m.id ASC",
+        MovieSort::YearDesc => "m.year DESC, m.id DESC",
+        MovieSort::RatingDesc => "m.rating DESC, m.id DESC",
     };
-    if let Some(a) = after {
-        sql.push_str(&format!(" AND m.id {cursor_op} ?"));
-        args.push(Box::new(a));
+    if let Some(cursor) = after {
+        match (sort, cursor.key) {
+            (MovieSort::AddedDesc, _) => {
+                sql.push_str(" AND m.id < ?");
+                args.push(Box::new(cursor.id));
+            }
+            (MovieSort::TitleAsc, Some(CursorKey::Text)) => {
+                sql.push_str(" AND (m.clean_title, m.id) > (?, ?)");
+                args.push(Box::new(after_text.unwrap_or_default().to_string()));
+                args.push(Box::new(cursor.id));
+            }
+            (MovieSort::YearDesc, Some(CursorKey::Int(y))) => {
+                sql.push_str(" AND (m.year, m.id) < (?, ?)");
+                args.push(Box::new(y));
+                args.push(Box::new(cursor.id));
+            }
+            (MovieSort::RatingDesc, Some(CursorKey::Float(r))) => {
+                sql.push_str(" AND (m.rating, m.id) < (?, ?)");
+                args.push(Box::new(r));
+                args.push(Box::new(cursor.id));
+            }
+            // La última película vista no tenía año/nota (NULL): SQLite ordena los NULL
+            // al final en DESC, así que seguir significa quedarse dentro de ese mismo
+            // grupo sin dato, por id — sin este caso, un cursor con clave `None` no
+            // filtraría nada y la página se repetiría en bucle.
+            (MovieSort::YearDesc, None) => {
+                sql.push_str(" AND m.year IS NULL AND m.id < ?");
+                args.push(Box::new(cursor.id));
+            }
+            (MovieSort::RatingDesc, None) => {
+                sql.push_str(" AND m.rating IS NULL AND m.id < ?");
+                args.push(Box::new(cursor.id));
+            }
+            // Cursor sin la clave que le toca a este orden (petición inconsistente, o
+            // primera página): se ignora en vez de fallar la consulta entera.
+            _ => {}
+        }
     }
     sql.push_str(&format!(" ORDER BY {order} LIMIT ?"));
     args.push(Box::new(limit));
@@ -170,6 +241,21 @@ pub fn list_movies_page(
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Construye el cursor de la página siguiente a partir del último ítem devuelto — el
+/// mismo tipo de dato en las dos puntas (aquí y donde se compara) evita que se cuele un
+/// desajuste entre cómo se genera el cursor y cómo se interpreta.
+pub fn movie_page_cursor(sort: MovieSort, last: &MovieListItem) -> (PageCursor, Option<String>) {
+    match sort {
+        MovieSort::AddedDesc => (PageCursor { id: last.id, key: None }, None),
+        MovieSort::TitleAsc => (PageCursor { id: last.id, key: Some(CursorKey::Text) }, Some(last.clean_title.clone())),
+        // El texto (segundo elemento) es lo único que de verdad viaja al cliente como
+        // `next_cursor_key` — sin él, la próxima petición no tendría forma de reconstruir
+        // el valor de año/nota, solo el id, y el filtro del cursor no se aplicaría nunca.
+        MovieSort::YearDesc => (PageCursor { id: last.id, key: last.year.map(CursorKey::Int) }, last.year.map(|y| y.to_string())),
+        MovieSort::RatingDesc => (PageCursor { id: last.id, key: last.rating.map(CursorKey::Float) }, last.rating.map(|r| r.to_string())),
+    }
 }
 
 pub struct MovieSourceItem {
@@ -197,6 +283,7 @@ pub struct MovieDetail {
     pub tmdb_id: Option<i64>,
     pub youtube_trailer_key: Option<String>,
     pub trailer_checked_at: Option<i64>,
+    pub age_rating: Option<String>,
     pub sources: Vec<MovieSourceItem>,
 }
 
@@ -204,7 +291,7 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
     let base = conn
         .query_row(
             "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres, tmdb_state,
-                    tmdb_id, youtube_trailer_key, trailer_checked_at
+                    tmdb_id, youtube_trailer_key, trailer_checked_at, age_rating
              FROM movies WHERE id = ?1",
             params![id],
             |row| {
@@ -223,6 +310,7 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
                     row.get::<_, Option<i64>>(10)?,
                     row.get::<_, Option<String>>(11)?,
                     row.get::<_, Option<i64>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             },
         )
@@ -242,6 +330,7 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
         tmdb_id,
         youtube_trailer_key,
         trailer_checked_at,
+        age_rating,
     )) = base
     else {
         return Ok(None);
@@ -279,6 +368,7 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
         tmdb_id,
         youtube_trailer_key,
         trailer_checked_at,
+        age_rating,
         sources,
     }))
 }
@@ -292,11 +382,24 @@ pub struct SeriesListItem {
     pub tmdb_state: String,
 }
 
+/// Igual que `MovieSort`: se comparten los cuatro órdenes, pero es un tipo aparte porque
+/// series no tiene calidad como filtro (`series_sources` no la guarda por episodio).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeriesSort {
+    AddedDesc,
+    TitleAsc,
+    YearDesc,
+    RatingDesc,
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn list_series_page(
     conn: &Connection,
     genre: Option<i64>,
     year: Option<i32>,
-    after: Option<i64>,
+    sort: SeriesSort,
+    after: Option<PageCursor>,
+    after_text: Option<&str>,
     limit: i64,
     include_adult: bool,
 ) -> Result<Vec<SeriesListItem>> {
@@ -320,11 +423,46 @@ pub fn list_series_page(
         sql.push_str(" AND year = ?");
         args.push(Box::new(y));
     }
-    if let Some(a) = after {
-        sql.push_str(" AND id < ?");
-        args.push(Box::new(a));
+
+    let order = match sort {
+        SeriesSort::AddedDesc => "id DESC",
+        SeriesSort::TitleAsc => "clean_title ASC, id ASC",
+        SeriesSort::YearDesc => "year DESC, id DESC",
+        SeriesSort::RatingDesc => "rating DESC, id DESC",
+    };
+    if let Some(cursor) = after {
+        match (sort, cursor.key) {
+            (SeriesSort::AddedDesc, _) => {
+                sql.push_str(" AND id < ?");
+                args.push(Box::new(cursor.id));
+            }
+            (SeriesSort::TitleAsc, Some(CursorKey::Text)) => {
+                sql.push_str(" AND (clean_title, id) > (?, ?)");
+                args.push(Box::new(after_text.unwrap_or_default().to_string()));
+                args.push(Box::new(cursor.id));
+            }
+            (SeriesSort::YearDesc, Some(CursorKey::Int(y))) => {
+                sql.push_str(" AND (year, id) < (?, ?)");
+                args.push(Box::new(y));
+                args.push(Box::new(cursor.id));
+            }
+            (SeriesSort::RatingDesc, Some(CursorKey::Float(r))) => {
+                sql.push_str(" AND (rating, id) < (?, ?)");
+                args.push(Box::new(r));
+                args.push(Box::new(cursor.id));
+            }
+            (SeriesSort::YearDesc, None) => {
+                sql.push_str(" AND year IS NULL AND id < ?");
+                args.push(Box::new(cursor.id));
+            }
+            (SeriesSort::RatingDesc, None) => {
+                sql.push_str(" AND rating IS NULL AND id < ?");
+                args.push(Box::new(cursor.id));
+            }
+            _ => {}
+        }
     }
-    sql.push_str(" ORDER BY id DESC LIMIT ?");
+    sql.push_str(&format!(" ORDER BY {order} LIMIT ?"));
     args.push(Box::new(limit));
 
     let mut stmt = conn.prepare(&sql)?;
@@ -332,6 +470,15 @@ pub fn list_series_page(
         Ok(SeriesListItem { id: row.get(0)?, clean_title: row.get(1)?, year: row.get(2)?, poster_path: row.get(3)?, rating: row.get(4)?, tmdb_state: row.get(5)? })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn series_page_cursor(sort: SeriesSort, last: &SeriesListItem) -> (PageCursor, Option<String>) {
+    match sort {
+        SeriesSort::AddedDesc => (PageCursor { id: last.id, key: None }, None),
+        SeriesSort::TitleAsc => (PageCursor { id: last.id, key: Some(CursorKey::Text) }, Some(last.clean_title.clone())),
+        SeriesSort::YearDesc => (PageCursor { id: last.id, key: last.year.map(CursorKey::Int) }, last.year.map(|y| y.to_string())),
+        SeriesSort::RatingDesc => (PageCursor { id: last.id, key: last.rating.map(CursorKey::Float) }, last.rating.map(|r| r.to_string())),
+    }
 }
 
 pub struct SeriesSourceItem {
@@ -366,6 +513,7 @@ pub struct SeriesDetail {
     pub tmdb_id: Option<i64>,
     pub youtube_trailer_key: Option<String>,
     pub trailer_checked_at: Option<i64>,
+    pub age_rating: Option<String>,
     pub sources: Vec<SeriesSourceItem>,
     pub episodes: Vec<EpisodeItem>,
 }
@@ -374,7 +522,7 @@ pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
     let base = conn
         .query_row(
             "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, genres, tmdb_state,
-                    tmdb_id, youtube_trailer_key, trailer_checked_at
+                    tmdb_id, youtube_trailer_key, trailer_checked_at, age_rating
              FROM series WHERE id = ?1",
             params![id],
             |row| {
@@ -391,13 +539,27 @@ pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
                     row.get::<_, Option<i64>>(9)?,
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<i64>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
                 ))
             },
         )
         .optional()?;
 
-    let Some((id, clean_title, year, overview, poster_path, backdrop_path, rating, genres_json, tmdb_state, tmdb_id, youtube_trailer_key, trailer_checked_at)) =
-        base
+    let Some((
+        id,
+        clean_title,
+        year,
+        overview,
+        poster_path,
+        backdrop_path,
+        rating,
+        genres_json,
+        tmdb_state,
+        tmdb_id,
+        youtube_trailer_key,
+        trailer_checked_at,
+        age_rating,
+    )) = base
     else {
         return Ok(None);
     };
@@ -444,6 +606,7 @@ pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
         tmdb_id,
         youtube_trailer_key,
         trailer_checked_at,
+        age_rating,
         sources,
         episodes,
     }))
@@ -1352,11 +1515,11 @@ mod tests {
         let adult_id = seed_movie(&conn, provider_id, "Peli Adulta", Some(2020), None, None);
         conn.execute("UPDATE movie_sources SET category_id = ?1 WHERE movie_id = ?2", params![adult_cat["18"], adult_id]).unwrap();
 
-        let hidden = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, 50, false).unwrap();
+        let hidden = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, None, 50, false).unwrap();
         assert!(hidden.iter().all(|m| m.clean_title != "Peli Adulta"));
         assert!(hidden.iter().any(|m| m.clean_title == "Peli Normal"));
 
-        let unlocked = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, 50, true).unwrap();
+        let unlocked = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, None, 50, true).unwrap();
         assert!(unlocked.iter().any(|m| m.clean_title == "Peli Adulta"));
     }
 
@@ -1367,7 +1530,7 @@ mod tests {
         seed_movie(&conn, provider_id, "Accion Uno", Some(2020), Some("[28,12]"), None);
         seed_movie(&conn, provider_id, "Drama Uno", Some(2020), Some("[18]"), None);
 
-        let action = list_movies_page(&conn, Some(28), None, None, MovieSort::AddedDesc, None, 50, true).unwrap();
+        let action = list_movies_page(&conn, Some(28), None, None, MovieSort::AddedDesc, None, None, 50, true).unwrap();
         assert_eq!(action.len(), 1);
         assert_eq!(action[0].clean_title, "Accion Uno");
     }
@@ -1379,10 +1542,10 @@ mod tests {
         seed_movie(&conn, provider_id, "Peli 2020 4K", Some(2020), None, Some("4K"));
         seed_movie(&conn, provider_id, "Peli 2021 HD", Some(2021), None, Some("HD"));
 
-        let by_year = list_movies_page(&conn, None, Some(2020), None, MovieSort::AddedDesc, None, 50, true).unwrap();
+        let by_year = list_movies_page(&conn, None, Some(2020), None, MovieSort::AddedDesc, None, None, 50, true).unwrap();
         assert_eq!(by_year.len(), 1);
 
-        let by_quality = list_movies_page(&conn, None, None, Some("4K"), MovieSort::AddedDesc, None, 50, true).unwrap();
+        let by_quality = list_movies_page(&conn, None, None, Some("4K"), MovieSort::AddedDesc, None, None, 50, true).unwrap();
         assert_eq!(by_quality.len(), 1);
         assert_eq!(by_quality[0].clean_title, "Peli 2020 4K");
     }
@@ -1395,13 +1558,66 @@ mod tests {
             seed_movie(&conn, provider_id, &format!("Peli {i}"), Some(2020), None, None);
         }
 
-        let first_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, 2, true).unwrap();
+        let first_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, None, 2, true).unwrap();
         assert_eq!(first_page.len(), 2);
         let cursor = first_page.last().unwrap().id;
 
-        let second_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, Some(cursor), 2, true).unwrap();
+        let second_page =
+            list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, Some(PageCursor { id: cursor, key: None }), None, 2, true).unwrap();
         assert_eq!(second_page.len(), 2);
         assert!(second_page.iter().all(|m| m.id != cursor));
+    }
+
+    /// El bug real que arregla el cursor compuesto: antes, pedir "después del id X"
+    /// ordenando por título no tenía ninguna relación con el orden real, así que la
+    /// segunda página podía repetir o saltarse títulos. Con nombres elegidos a propósito
+    /// para que el orden alfabético NO coincida con el orden de inserción (ids), esto
+    /// habría fallado con la implementación vieja.
+    #[test]
+    fn list_movies_pagination_by_title_is_exact_even_when_alphabetical_order_differs_from_insertion_order() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        for title in ["Zorro", "Amanecer", "Medianoche", "Beta", "Yugo"] {
+            seed_movie(&conn, provider_id, title, Some(2020), None, None);
+        }
+
+        let mut seen = Vec::new();
+        let mut cursor: Option<PageCursor> = None;
+        let mut after_text: Option<String> = None;
+        loop {
+            let page = list_movies_page(&conn, None, None, None, MovieSort::TitleAsc, cursor, after_text.as_deref(), 2, true).unwrap();
+            if page.is_empty() {
+                break;
+            }
+            for item in &page {
+                seen.push(item.clean_title.clone());
+            }
+            let (next_cursor, next_key) = movie_page_cursor(MovieSort::TitleAsc, page.last().unwrap());
+            cursor = Some(next_cursor);
+            after_text = next_key;
+            if page.len() < 2 {
+                break;
+            }
+        }
+
+        assert_eq!(seen, vec!["Amanecer", "Beta", "Medianoche", "Yugo", "Zorro"]);
+    }
+
+    #[test]
+    fn list_movies_pagination_by_rating_is_exact() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        for (title, rating) in [("Baja", 3.0), ("Alta", 9.5), ("Media", 6.0)] {
+            let id = seed_movie(&conn, provider_id, title, Some(2020), None, None);
+            conn.execute("UPDATE movies SET rating = ?1 WHERE id = ?2", params![rating, id]).unwrap();
+        }
+
+        let first = list_movies_page(&conn, None, None, None, MovieSort::RatingDesc, None, None, 2, true).unwrap();
+        assert_eq!(first.iter().map(|m| m.clean_title.as_str()).collect::<Vec<_>>(), vec!["Alta", "Media"]);
+
+        let (cursor, _) = movie_page_cursor(MovieSort::RatingDesc, first.last().unwrap());
+        let second = list_movies_page(&conn, None, None, None, MovieSort::RatingDesc, Some(cursor), None, 2, true).unwrap();
+        assert_eq!(second.iter().map(|m| m.clean_title.as_str()).collect::<Vec<_>>(), vec!["Baja"]);
     }
 
     #[test]
@@ -1759,8 +1975,8 @@ mod tests {
         let fields = TitleFields { clean_title: "Serie Adulta", year: None, match_key: "serie-adulta-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &map, &series, &fields).unwrap();
 
-        assert!(list_series_page(&conn, None, None, None, 50, false).unwrap().is_empty());
-        assert_eq!(list_series_page(&conn, None, None, None, 50, true).unwrap().len(), 1);
+        assert!(list_series_page(&conn, None, None, SeriesSort::AddedDesc, None, None, 50, false).unwrap().is_empty());
+        assert_eq!(list_series_page(&conn, None, None, SeriesSort::AddedDesc, None, None, 50, true).unwrap().len(), 1);
     }
 
     /// Series sincronizadas antes de la migración 005 (o cuyo proveedor no da
@@ -1783,7 +1999,34 @@ mod tests {
         let fields = TitleFields { clean_title: "Serie Sin Categoría", year: None, match_key: "serie-sin-categoria-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series, &fields).unwrap();
 
-        assert_eq!(list_series_page(&conn, None, None, None, 50, false).unwrap().len(), 1);
+        assert_eq!(list_series_page(&conn, None, None, SeriesSort::AddedDesc, None, None, 50, false).unwrap().len(), 1);
+    }
+
+    /// Mismo bug de fondo que en películas: sin cursor compuesto, ordenar series por
+    /// título con una segunda página repetiría o saltaría resultados.
+    #[test]
+    fn list_series_pagination_by_title_is_exact() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        for (i, title) in ["Zorro", "Amanecer", "Medianoche"].into_iter().enumerate() {
+            let series = crate::sources::model::RawSeries {
+                remote_id: i.to_string(),
+                raw_title: title.into(),
+                category_remote_id: None,
+                cover_url: None,
+                plot: None,
+                release_date: None,
+            };
+            let fields = TitleFields { clean_title: title, year: None, match_key: &format!("serie-{i}"), quality: None, language: None };
+            queries::upsert_series(&conn, provider_id, &HashMap::new(), &series, &fields).unwrap();
+        }
+
+        let first = list_series_page(&conn, None, None, SeriesSort::TitleAsc, None, None, 2, true).unwrap();
+        assert_eq!(first.iter().map(|s| s.clean_title.as_str()).collect::<Vec<_>>(), vec!["Amanecer", "Medianoche"]);
+
+        let (cursor, key) = series_page_cursor(SeriesSort::TitleAsc, first.last().unwrap());
+        let second = list_series_page(&conn, None, None, SeriesSort::TitleAsc, Some(cursor), key.as_deref(), 2, true).unwrap();
+        assert_eq!(second.iter().map(|s| s.clean_title.as_str()).collect::<Vec<_>>(), vec!["Zorro"]);
     }
 
     #[test]

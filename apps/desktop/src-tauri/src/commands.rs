@@ -354,6 +354,9 @@ fn spawn_tmdb_matching(app: AppHandle) {
         };
 
         let client = Arc::new(TmdbClient::new(api_key));
+        let (movie_genres, tv_genres) = tmdb::fetch_genre_names(&client).await;
+        let _ = queries::upsert_genre_names(&conn, "movie", &movie_genres);
+        let _ = queries::upsert_genre_names(&conn, "tv", &tv_genres);
         let app_for_progress = app.clone();
         let on_progress: Arc<dyn Fn(u32, u32) + Send + Sync> = Arc::new(move |current, total| {
             let progress = sync::SyncProgress { provider_id: 0, stage: "tmdb".to_string(), current, total };
