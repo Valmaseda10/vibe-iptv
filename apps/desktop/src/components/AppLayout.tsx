@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
-import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, SettingsIcon, ChevronIcon } from "./icons";
+import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon } from "./icons";
 
 const NAV_ITEMS = [
   { to: "/", label: "Inicio", icon: HomeIcon },
@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { to: "/movies", label: "Películas", icon: MovieIcon },
   { to: "/series", label: "Series", icon: SeriesIcon },
   { to: "/search", label: "Buscar", icon: SearchIcon },
+  { to: "/favorites", label: "Favoritos", icon: HeartIcon },
   { to: "/settings", label: "Ajustes", icon: SettingsIcon },
 ] as const;
 

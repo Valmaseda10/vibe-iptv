@@ -8,6 +8,7 @@ import { movieDetailRoute } from "./routes/movies.$movieId";
 import { seriesRoute } from "./routes/series";
 import { seriesDetailRoute } from "./routes/series.$seriesId";
 import { searchRoute } from "./routes/search";
+import { favoritesRoute } from "./routes/favorites";
 import { settingsRoute } from "./routes/settings";
 import { playerRoute } from "./routes/player.$kind.$id";
 
@@ -20,6 +21,7 @@ const routeTree = rootRoute.addChildren([
   seriesRoute,
   seriesDetailRoute,
   searchRoute,
+  favoritesRoute,
   settingsRoute,
   playerRoute,
 ]);

@@ -353,6 +353,14 @@ pub struct FavoriteItem {
     pub item_kind: String,
     #[ts(type = "number")]
     pub item_id: i64,
+    pub title: String,
+    pub poster_path: Option<String>,
+}
+
+impl From<reads::FavoriteRow> for FavoriteItem {
+    fn from(row: reads::FavoriteRow) -> Self {
+        Self { item_kind: row.item_kind, item_id: row.item_id, title: row.title, poster_path: row.poster_path }
+    }
 }
 
 #[derive(Deserialize, TS)]
@@ -692,7 +700,7 @@ async fn get_favorites(State(state): State<CatalogState>) -> Result<Json<Vec<Fav
         reads::list_favorites(conn, profile_id)
     })
     .await?;
-    Ok(Json(items.into_iter().map(|(item_kind, item_id)| FavoriteItem { item_kind, item_id }).collect()))
+    Ok(Json(items.into_iter().map(Into::into).collect()))
 }
 
 async fn post_favorite(State(state): State<CatalogState>, Json(input): Json<FavoriteInput>) -> Result<StatusCode, ApiError> {

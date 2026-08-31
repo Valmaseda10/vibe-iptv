@@ -22,7 +22,7 @@ export type EpisodeSummary = { id: number, series_source_id: number, season: num
 
 export type FavoriteInput = { item_kind: string, item_id: number, };
 
-export type FavoriteItem = { item_kind: string, item_id: number, };
+export type FavoriteItem = { item_kind: string, item_id: number, title: string, poster_path: string | null, };
 
 /**
  * Estado del núcleo devuelto por `GET /api/health`.

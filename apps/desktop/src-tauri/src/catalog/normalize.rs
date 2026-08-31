@@ -35,7 +35,10 @@ static HASH_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*#\s*"
 static YEAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[(\[](\d{4})[)\]]").unwrap());
 static EPISODE_PATTERNS: LazyLock<[Regex; 4]> = LazyLock::new(|| {
     [
-        Regex::new(r"(?i)s\d{1,2}e\d{1,3}").unwrap(),
+        // `\s*` entre número y "E": un proveedor real usa "S4 E5" con espacio, no solo
+        // "S04E05" pegado (ver docs/DECISIONS.md, F8) — el resto de reglas ya toleraban
+        // el espacio (T1 E2), esta se había quedado más estricta sin motivo.
+        Regex::new(r"(?i)\bs\d{1,2}\s*e\d{1,3}\b").unwrap(),
         Regex::new(r"(?i)\b\d{1,2}x\d{1,3}\b").unwrap(),
         Regex::new(r"(?i)\bT\d{1,2}\s*E\d{1,3}\b").unwrap(),
         Regex::new(r"(?i)Temporada\s*\d{1,2}.{0,15}?Cap[ií]tulo\s*\d{1,3}").unwrap(),
@@ -426,6 +429,16 @@ mod tests {
     fn episode_pattern_sxxexx_is_stripped() {
         let n = normalize("Serie S01E02");
         assert_eq!(n.clean_title, "Serie");
+    }
+
+    #[test]
+    fn episode_pattern_sx_space_ex_is_stripped() {
+        // Visto en un proveedor real (F8): "S4 E5" con espacio, no pegado. Sin este
+        // caso, cada episodio quedaba como una "serie" distinta en el catálogo.
+        let n = normalize("La Casa de Papel S4 E5");
+        assert_eq!(n.clean_title, "La Casa de Papel");
+        let n2 = normalize("La Casa de Papel S4 E7");
+        assert_eq!(n2.clean_title, n.clean_title, "deben normalizar al mismo título para agruparse");
     }
 
     #[test]

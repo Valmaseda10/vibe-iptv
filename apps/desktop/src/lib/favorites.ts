@@ -24,7 +24,12 @@ export function useFavorites() {
       const previous = queryClient.getQueryData<FavoriteItem[]>(["favorites"]);
       queryClient.setQueryData<FavoriteItem[]>(["favorites"], (old) => {
         const list = old ?? [];
-        return next ? [...list, { item_kind: itemKind, item_id: itemId }] : list.filter((f) => !(f.item_kind === itemKind && f.item_id === itemId));
+        // Título/portada reales llegan al `invalidateQueries` de `onSettled`, un
+        // instante después; el marcador optimista no los necesita porque nada lo
+        // pinta antes de que eso ocurra (isFavorite() solo mira kind+id).
+        return next
+          ? [...list, { item_kind: itemKind, item_id: itemId, title: "", poster_path: null }]
+          : list.filter((f) => !(f.item_kind === itemKind && f.item_id === itemId));
       });
       return { previous };
     },

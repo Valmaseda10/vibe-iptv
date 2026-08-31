@@ -28,7 +28,9 @@ static TVG_URL_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)x-tvg-ur
 // títulos es de la fase F3, no de aquí.
 static EPISODE_PATTERNS: LazyLock<[Regex; 4]> = LazyLock::new(|| {
     [
-        Regex::new(r"(?i)s(\d{1,2})e(\d{1,3})").unwrap(),
+        // `\s*` entre número y "E": visto en un proveedor real como "S4 E5" con espacio,
+        // no solo "S04E05" pegado (ver docs/DECISIONS.md, F8).
+        Regex::new(r"(?i)\bs(\d{1,2})\s*e(\d{1,3})\b").unwrap(),
         Regex::new(r"(?i)\b(\d{1,2})x(\d{1,3})\b").unwrap(),
         Regex::new(r"(?i)\bT(\d{1,2})\s*E(\d{1,3})\b").unwrap(),
         Regex::new(r"(?i)Temporada\s*(\d{1,2}).{0,15}?Cap[ií]tulo\s*(\d{1,3})").unwrap(),
@@ -493,6 +495,15 @@ mod tests {
         let detail = source.series_detail(&otra_serie_mas.remote_id).await.unwrap();
         assert_eq!(detail.episodes[0].season, 3);
         assert_eq!(detail.episodes[0].number, 1);
+    }
+
+    #[test]
+    fn extract_episode_accepts_a_space_between_season_and_episode() {
+        // Visto en un proveedor real (F8): "S4 E5" con espacio, no "S04E05" pegado.
+        let (title, season, number) = extract_episode("La Casa de Papel S4 E5").unwrap();
+        assert_eq!(title, "La Casa de Papel");
+        assert_eq!(season, 4);
+        assert_eq!(number, 5);
     }
 
     #[tokio::test]

@@ -822,9 +822,25 @@ pub fn list_next_episodes(conn: &Connection, profile_id: i64, limit: i64) -> Res
             .query_map(params![series_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
 
-        if let Some((episode_id, season, number, episode_title, still_path)) = find_next_episode(&all_episodes, last_season, last_number) {
-            results.push(NextEpisodeRow { series_id, series_title, poster_path: series_poster, episode_id, season, number, episode_title, still_path });
+        let Some((episode_id, season, number, episode_title, still_path)) = find_next_episode(&all_episodes, last_season, last_number) else {
+            continue;
+        };
+
+        // El "siguiente" episodio es por definición uno que no se ha empezado; si ya
+        // tiene su propio progreso guardado (se tocó fuera de orden, o es el mismo que
+        // "continuar viendo" por cualquier motivo), no se sugiere aquí — se encontró
+        // probando de verdad: sin este filtro, la fila podía reanudar a mitad en vez de
+        // empezar desde el principio, confundiendo las dos filas entre sí.
+        let already_has_progress: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM playback_state WHERE profile_id = ?1 AND item_kind = 'episode' AND item_id = ?2)",
+            params![profile_id, episode_id],
+            |row| row.get(0),
+        )?;
+        if already_has_progress {
+            continue;
         }
+
+        results.push(NextEpisodeRow { series_id, series_title, poster_path: series_poster, episode_id, season, number, episode_title, still_path });
     }
 
     Ok(results)
@@ -863,10 +879,36 @@ pub fn list_recent_movies(conn: &Connection, limit: i64) -> Result<Vec<MovieList
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
-pub fn list_favorites(conn: &Connection, profile_id: i64) -> Result<Vec<(String, i64)>> {
+pub struct FavoriteRow {
+    pub item_kind: String,
+    pub item_id: i64,
+    pub title: String,
+    pub poster_path: Option<String>,
+}
+
+/// Favoritos con título y portada de verdad (F8) — antes solo `item_kind`/`item_id` en
+/// crudo, suficiente para el conmutador pero no para poder ver la lista en ningún sitio.
+/// Solo canal/película/serie tienen sentido aquí (no episodios sueltos): coincide con
+/// dónde vive el conmutador en la interfaz.
+pub fn list_favorites(conn: &Connection, profile_id: i64) -> Result<Vec<FavoriteRow>> {
     let mut stmt = conn.prepare("SELECT item_kind, item_id FROM favorites WHERE profile_id = ?1 ORDER BY added_at DESC")?;
-    let rows = stmt.query_map(params![profile_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    let raw: Vec<(String, i64)> = stmt.query_map(params![profile_id], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut items = Vec::with_capacity(raw.len());
+    for (item_kind, item_id) in raw {
+        let enriched: Option<(String, Option<String>)> = match item_kind.as_str() {
+            "movie" => conn.query_row("SELECT clean_title, poster_path FROM movies WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
+            "series" => conn.query_row("SELECT clean_title, poster_path FROM series WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
+            "channel" => conn.query_row("SELECT display_name, NULL FROM channels WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
+            _ => None,
+        };
+        // El ítem pudo borrarse del catálogo desde que se marcó como favorito: se
+        // salta, no se enseña un favorito roto.
+        if let Some((title, poster_path)) = enriched {
+            items.push(FavoriteRow { item_kind, item_id, title, poster_path });
+        }
+    }
+    Ok(items)
 }
 
 pub fn add_favorite(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64) -> Result<()> {
@@ -1200,15 +1242,44 @@ mod tests {
     }
 
     #[test]
+    fn list_next_episodes_skips_a_candidate_that_already_has_its_own_progress() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let (_, episode_ids) = seed_series_with_episodes(&conn, provider_id, "Mi Serie", &[(1, 1), (1, 2), (1, 3)]);
+
+        upsert_playback_progress(&conn, profile_id, "episode", episode_ids[0], 1200, Some(1200)).unwrap();
+        // El "siguiente" (episode_ids[1]) ya se tocó fuera de orden en algún momento:
+        // no debe sugerirse como "empieza desde cero" — confundiría con "continuar viendo".
+        upsert_playback_progress(&conn, profile_id, "episode", episode_ids[1], 300, Some(1200)).unwrap();
+
+        assert!(list_next_episodes(&conn, profile_id, 10).unwrap().is_empty());
+    }
+
+    #[test]
     fn favorites_add_is_idempotent_and_remove_works() {
         let conn = memory_conn();
         let profile_id = ensure_default_profile(&conn).unwrap();
-        add_favorite(&conn, profile_id, "movie", 1).unwrap();
-        add_favorite(&conn, profile_id, "movie", 1).unwrap(); // repetir: no debe fallar
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let movie_id = seed_movie(&conn, provider_id, "Favorita", Some(2020), None, None);
 
-        assert_eq!(list_favorites(&conn, profile_id).unwrap().len(), 1);
+        add_favorite(&conn, profile_id, "movie", movie_id).unwrap();
+        add_favorite(&conn, profile_id, "movie", movie_id).unwrap(); // repetir: no debe fallar
 
-        remove_favorite(&conn, profile_id, "movie", 1).unwrap();
+        let favorites = list_favorites(&conn, profile_id).unwrap();
+        assert_eq!(favorites.len(), 1);
+        assert_eq!(favorites[0].title, "Favorita");
+
+        remove_favorite(&conn, profile_id, "movie", movie_id).unwrap();
+        assert!(list_favorites(&conn, profile_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn favorites_skips_entries_whose_catalog_item_was_deleted() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        // item_id 999 no existe en `movies`.
+        add_favorite(&conn, profile_id, "movie", 999).unwrap();
         assert!(list_favorites(&conn, profile_id).unwrap().is_empty());
     }
 

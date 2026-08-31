@@ -711,10 +711,43 @@ ya no arrastra sus canales de zapping de pruebas anteriores.
 - Favoritos sin conmutador en las filas de canal de `LiveScreen` (sí en tarjetas de
   película/serie y en sus fichas, que es donde `docs/PROMPTS.md` lo pide literalmente:
   "tarjeta y ficha" — un canal no tiene "ficha" en esta app).
-- Un test de F6 (`tier_two_remuxes_a_live_ts_channel_to_fragmented_mp4`) salió
-  intermitente una vez al correr la batería completa (pasa siempre en solitario):
-  contención de puertos/procesos ffmpeg entre tests en paralelo, no una regresión de
-  F8. Pendiente de investigar si vuelve a aparecer.
+- Dos tests salieron intermitentes una vez cada uno al correr la batería completa
+  (pasan siempre en solitario): `tier_two_remuxes_a_live_ts_channel_to_fragmented_mp4`
+  (F6, contención de puertos/procesos ffmpeg) y `seeded_db()` en `server::api`
+  (contención de ficheros SQLite temporales). Ninguno es una regresión real, los dos
+  apuntan a lo mismo: mucho test en paralelo compitiendo por puertos/ficheros
+  temporales. Pendiente de mirar si conviene bajar el paralelismo de `cargo test` en
+  este proyecto o dar más unicidad a los recursos temporales.
+
+**Segunda vuelta tras probarlo el usuario: tres fallos reales.**
+1. **La búsqueda de series enseñaba un resultado por episodio, no uno por serie**
+   ("La Casa de Papel S4 E5", "S1 E3"... como entradas de serie sueltas). Causa real:
+   el patrón de episodio `S\d+E\d+` de `catalog::normalize`/`sources::m3u` exigía los
+   dígitos pegados a la "E" (`S04E05`); este proveedor real usa espacio (`S4 E5`), así
+   que el título nunca se limpiaba, cada episodio sacaba un `match_key` distinto, y cada
+   uno acababa siendo una fila de `series` por sí solo. Arreglado añadiendo `\s*` entre
+   número y "E" en las dos copias del patrón (con test que confirma que "S4 E5" y
+   "S4 E7" normalizan al mismo título). El catálogo ya sincronizado no se corrige solo:
+   hace falta resincronizar para que `delete_orphaned_movies_and_series` limpie las
+   filas de serie huérfanas que deja el `match_key` nuevo — mismo mecanismo que ya
+   documentó F3 para el mismo tipo de problema.
+2. **No había forma de ver la lista de favoritos en ningún sitio.** El conmutador
+   cambiaba, pero `docs/PROMPTS.md` nunca decía explícitamente "y una pantalla para
+   verlos" — un descuido real, no una decisión consciente. `GET /api/favorites` ahora
+   devuelve título y portada (antes solo `item_kind`/`item_id`), y hay una pantalla
+   nueva **Favoritos** en el menú, agrupada por película/serie/canal.
+3. **"Siguiente episodio" a veces reanudaba a mitad en vez de empezar desde el
+   principio.** `list_next_episodes` calculaba bien cuál era el episodio siguiente, pero
+   no comprobaba si ese episodio ya tenía su propio progreso guardado (tocado fuera de
+   orden en algún momento, por ejemplo probando F6). Al abrirlo, el reproductor hacía
+   exactamente lo que tiene que hacer con progreso guardado: reanudar donde se dejó — el
+   fallo no estaba ahí, sino en sugerir como "para empezar de cero" algo que no lo
+   estaba. Arreglado excluyendo de la fila cualquier candidato con progreso propio ya
+   guardado.
+
+---
+
+## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la
   interfaz sobre el vídeo. Empotrarlo requiere manejo de handles nativos de ventana y
