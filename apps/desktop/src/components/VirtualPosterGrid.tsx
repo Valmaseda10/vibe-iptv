@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { PosterCard, PosterCardSkeleton } from "./PosterCard";
+import { useFavorites } from "../lib/favorites";
 
 export type GridItem = {
   id: number;
@@ -16,6 +17,8 @@ type VirtualPosterGridProps = {
   onLoadMore: () => void;
   onOpen: (id: number) => void;
   emptyMessage: string;
+  /** Presente activa el conmutador de favorito en cada tarjeta (F8); "movie" o "series". */
+  favoriteKind?: string;
 };
 
 const CARD_WIDTH = 192; // 176px tarjeta (44 * 4) + 16px de separación
@@ -28,10 +31,11 @@ const ROW_HEIGHT = 300;
  * Flechas para moverse entre tarjetas: como la rejilla está virtualizada, la tarjeta
  * destino puede no existir todavía en el DOM al pulsar la flecha, así que primero se
  * desplaza la fila con `scrollToIndex` y el foco se aplica en el siguiente pintado. */
-export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, onOpen, emptyMessage }: VirtualPosterGridProps) {
+export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, onOpen, emptyMessage, favoriteKind }: VirtualPosterGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(4);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
+  const { isFavorite, toggleFavorite } = useFavorites();
 
   useEffect(() => {
     const el = parentRef.current;
@@ -128,6 +132,11 @@ export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, o
                       posterPath={item.posterPath}
                       subtitle={item.subtitle}
                       onOpen={() => onOpen(item.id)}
+                      favorite={
+                        favoriteKind
+                          ? { isFavorite: isFavorite(favoriteKind, item.id), onToggle: () => toggleFavorite(favoriteKind, item.id, !isFavorite(favoriteKind, item.id)) }
+                          : undefined
+                      }
                     />
                   ))}
             </div>

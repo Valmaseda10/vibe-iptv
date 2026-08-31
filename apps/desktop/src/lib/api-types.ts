@@ -10,7 +10,7 @@ export type ChannelSummary = { id: number, display_name: string, logo_url: strin
 
 export type ChannelsPage = { items: Array<ChannelSummary>, next_cursor: number | null, };
 
-export type ContinueWatchingItem = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
+export type ContinueWatchingItem = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, title: string, subtitle: string | null, poster_path: string | null, };
 
 export type EpgGridProgramme = { channel_id: number, title: string, subtitle: string | null, start_ts: number, stop_ts: number, category: string | null, };
 
@@ -29,7 +29,7 @@ export type FavoriteItem = { item_kind: string, item_id: number, };
  */
 export type HealthStatus = { status: string, version: string, };
 
-export type HomeResponse = { continue_watching: Array<ContinueWatchingItem>, recent_movies: Array<MovieSummary>, };
+export type HomeResponse = { continue_watching: Array<ContinueWatchingItem>, next_episodes: Array<NextEpisodeItem>, recent_movies: Array<MovieSummary>, };
 
 export type M3uValidation = { channel_count: number, movie_count: number, series_count: number, 
 /**
@@ -46,6 +46,12 @@ export type MovieSourceSummary = { id: number, provider_id: number, remote_id: s
 export type MovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, };
 
 export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | null, };
+
+export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
+
+export type ParentalStatus = { has_pin: boolean, unlocked: boolean, };
+
+export type ParentalUnlockInput = { pin: string, };
 
 export type PlaybackProgressInput = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
 
@@ -82,6 +88,12 @@ export type SeriesDetailResponse = { id: number, clean_title: string, year: numb
 export type SeriesPage = { items: Array<SeriesSummary>, next_cursor: number | null, };
 
 export type SeriesSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, };
+
+export type SetParentalPinInput = { 
+/**
+ * `None` quita el PIN (desactiva el control parental).
+ */
+pin: string | null, };
 
 /**
  * Progreso emitido al frontend por eventos de Tauri (`sync://progress`).

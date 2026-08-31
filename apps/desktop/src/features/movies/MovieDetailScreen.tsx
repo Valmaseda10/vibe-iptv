@@ -2,12 +2,15 @@ import { useEffect } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, useApiBase, imagePath } from "../../lib/api-client";
+import { useFavorites } from "../../lib/favorites";
+import { HeartIcon } from "../../components/icons";
 import type { MovieDetailResponse } from "../../lib/api-types";
 
 export function MovieDetailScreen() {
   const { movieId } = useParams({ from: "/movies/$movieId" });
   const navigate = useNavigate();
   const { data: base } = useApiBase();
+  const { isFavorite, toggleFavorite } = useFavorites();
   const { data, isPending, isError } = useQuery({
     queryKey: ["movie", movieId],
     queryFn: () => apiGet<MovieDetailResponse>(`/api/movies/${movieId}`),
@@ -48,13 +51,22 @@ export function MovieDetailScreen() {
         </div>
         {data.overview && <p className="max-w-2xl text-neutral-300">{data.overview}</p>}
 
-        <div className="flex gap-3 pt-2">
+        <div className="flex items-center gap-3 pt-2">
           <button
             type="button"
             onClick={() => navigate({ to: "/player/$kind/$id", params: { kind: "movie", id: movieId } })}
             className="rounded-lg bg-red-600 px-6 py-3 font-medium text-white outline-none hover:bg-red-500"
           >
             ▶ Reproducir
+          </button>
+          <button
+            type="button"
+            onClick={() => toggleFavorite("movie", data.id, !isFavorite("movie", data.id))}
+            aria-pressed={isFavorite("movie", data.id)}
+            className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-3 text-sm outline-none hover:bg-neutral-900"
+          >
+            <HeartIcon filled={isFavorite("movie", data.id)} className={`h-5 w-5 ${isFavorite("movie", data.id) ? "text-red-500" : ""}`} />
+            {isFavorite("movie", data.id) ? "En favoritos" : "Añadir a favoritos"}
           </button>
         </div>
 

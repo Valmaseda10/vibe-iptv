@@ -643,7 +643,78 @@ funcionan perfectamente con su programación real.**
 
 ---
 
-## Deuda técnica conocida desde el diseño
+## 2026-08-31 — F8 Búsqueda, favoritos y continuar viendo
+
+**Construida de manera autónoma.** La búsqueda instantánea (FTS5, rebote 150 ms,
+agrupada por tipo) ya existía desde F5, adelantada a esta fase; aquí se ha completado lo
+que quedaba: navegación real de resultados de canal (antes no hacía nada), favoritos de
+verdad, "continuar viendo" con datos reales en vez de solo IDs, "siguiente episodio" y
+control parental con PIN.
+
+**Qué se ha construido.**
+- **Favoritos**: `useFavorites()` (una lista, actualización optimista) y un
+  `HeartIcon` conmutable en la esquina de cada tarjeta de `VirtualPosterGrid` (con
+  `favoriteKind="movie"|"series"`) y en la ficha de película/serie, junto al botón de
+  reproducir. El backend ya existía de F4 (`GET/POST/DELETE /api/favorites`); no ha
+  hecho falta tocarlo.
+- **Continuar viendo con datos reales**: `GET /api/home` antes solo daba
+  `item_kind`/`item_id` en crudo, y el frontend no podía pintar nada útil con eso.
+  `reads::list_continue_watching` ahora enriquece cada fila con título y portada de la
+  tabla que corresponda (película, o serie+temporada+episodio para un episodio) — una
+  consulta por ítem, no una `UNION`: son como mucho unas pocas decenas de filas.
+  **Directo se excluye a propósito**: un canal no se "continúa", y sin este filtro cada
+  canal visto por zapping aparecía para siempre con 0% visto — encontrado probando
+  contra los datos reales del usuario, no en el diseño de la tabla.
+- **Siguiente episodio pendiente por serie**: `reads::list_next_episodes` mira, por cada
+  serie con algún episodio en `playback_state`, cuál fue el último reproducido y calcula
+  el inmediatamente siguiente (misma temporada, número mayor; o el primero de la
+  siguiente temporada) — misma lógica que `findNextEpisode` de `PlayerScreen.tsx`, ahora
+  también en el servidor. Nueva fila "Siguiente episodio" en Inicio.
+- **Control parental con PIN**: `util::parental` (hash SHA-256, nunca el PIN en claro;
+  `ParentalGuard` en memoria — el desbloqueo nunca se persiste, se pierde al reiniciar
+  la app a propósito). `GET /api/parental/status`, `POST /api/parental/{pin,unlock,lock}`.
+  Mientras no se desbloquea, `list_categories`/`list_channels_page`/`list_movies_page`
+  excluyen lo marcado `is_adult` — series no tiene columna de categoría, así que no hay
+  nada que ocultar ahí a ese nivel. Sección nueva en Ajustes para establecer/cambiar/
+  quitar el PIN y desbloquear.
+- **Quién marca una categoría como adulta**: no hay endpoint ni UI para hacerlo a mano
+  todavía. `queries::upsert_categories` aplica una heurística por nombre (`XXX`,
+  `ADULT`, `+18`, `18+`, `EROTIC`...) en cada sincronización — vista en paneles Xtream
+  reales, no inventada. Renombrar una categoría la reclasifica sola en la siguiente
+  sincronización.
+
+**Decisiones tomadas.**
+- **Sin marcado manual de categorías adultas todavía**: la heurística por nombre cubre
+  el caso real típico sin necesitar una pantalla nueva; corregirla a mano si se
+  equivoca es deuda pendiente, no un olvido.
+- **`sha2` es una dependencia nueva justificada**: hashear un PIN a mano sin una
+  librería de criptografía real habría sido peor que usar una ya revisada, aun para un
+  PIN corto.
+- **El desbloqueo del PIN es un `Arc<AtomicBool>` en memoria, no en SQLite ni en el
+  keychain**: es exactamente lo que pide el control parental (se vuelve a pedir el PIN
+  al reiniciar la app), y evita el riesgo de guardar "desbloqueado" por error donde no
+  tocaba.
+- **Cambiar o quitar un PIN exige haberlo desbloqueado antes** (si ya existía uno): así
+  no basta con tener la app abierta para quitárselo a otra persona sin saberlo.
+- **`GET /api/parental/unlock` nunca distingue "no hay PIN" de "PIN equivocado"** en la
+  respuesta: los dos casos dan el mismo 400, para no revelar por accidente si hay un PIN
+  configurado a quien solo está probando códigos.
+
+**Verificado contra los datos reales del usuario** (sin tocar ninguna credencial): tras
+el arreglo de directo-excluido-de-continuar-viendo, `GET /api/home` devuelve su
+película real en curso ("El día de la revelación", 2376/8834 s) con título correcto, y
+ya no arrastra sus canales de zapping de pruebas anteriores.
+
+**Deuda técnica pendiente.**
+- Toda la de fases anteriores.
+- Sin UI para marcar/corregir a mano qué categoría es adulta (ver decisión arriba).
+- Favoritos sin conmutador en las filas de canal de `LiveScreen` (sí en tarjetas de
+  película/serie y en sus fichas, que es donde `docs/PROMPTS.md` lo pide literalmente:
+  "tarjeta y ficha" — un canal no tiene "ficha" en esta app).
+- Un test de F6 (`tier_two_remuxes_a_live_ts_channel_to_fragmented_mp4`) salió
+  intermitente una vez al correr la batería completa (pasa siempre en solitario):
+  contención de puertos/procesos ffmpeg entre tests en paralelo, no una regresión de
+  F8. Pendiente de investigar si vuelve a aparecer.
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la
   interfaz sobre el vídeo. Empotrarlo requiere manejo de handles nativos de ventana y

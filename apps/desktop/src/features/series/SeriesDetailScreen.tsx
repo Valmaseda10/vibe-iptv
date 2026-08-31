@@ -2,12 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, useApiBase, imagePath } from "../../lib/api-client";
+import { useFavorites } from "../../lib/favorites";
+import { HeartIcon } from "../../components/icons";
 import type { EpisodeSummary, SeriesDetailResponse } from "../../lib/api-types";
 
 export function SeriesDetailScreen() {
   const { seriesId } = useParams({ from: "/series/$seriesId" });
   const navigate = useNavigate();
   const { data: base } = useApiBase();
+  const { isFavorite, toggleFavorite } = useFavorites();
   const { data, isPending, isError } = useQuery({
     queryKey: ["series", seriesId],
     // series_detail() puede llamarse bajo demanda en el núcleo (primera visita o caché
@@ -50,6 +53,18 @@ export function SeriesDetailScreen() {
           {data.rating != null && <span>★ {data.rating.toFixed(1)}</span>}
         </div>
         {data.overview && <p className="max-w-2xl text-neutral-300">{data.overview}</p>}
+
+        <div className="flex items-center gap-3 pt-2">
+          <button
+            type="button"
+            onClick={() => toggleFavorite("series", data.id, !isFavorite("series", data.id))}
+            aria-pressed={isFavorite("series", data.id)}
+            className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-3 text-sm outline-none hover:bg-neutral-900"
+          >
+            <HeartIcon filled={isFavorite("series", data.id)} className={`h-5 w-5 ${isFavorite("series", data.id) ? "text-red-500" : ""}`} />
+            {isFavorite("series", data.id) ? "En favoritos" : "Añadir a favoritos"}
+          </button>
+        </div>
 
         {seasons.length === 0 ? (
           <p className="pt-6 text-sm text-neutral-500">

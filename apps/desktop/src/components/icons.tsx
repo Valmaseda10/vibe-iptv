@@ -68,6 +68,15 @@ export function ChevronIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function HeartIcon(props: SVGProps<SVGSVGElement> & { filled?: boolean }) {
+  const { filled, ...rest } = props;
+  return (
+    <Icon fill={filled ? "currentColor" : "none"} {...rest}>
+      <path d="M12 20.5s-7.5-4.6-9.8-9C.6 8 1.8 4.5 5 3.6c2-.6 3.9.2 5 1.8 1.1-1.6 3-2.4 5-1.8 3.2.9 4.4 4.4 2.8 7.9-2.3 4.4-9.8 9-9.8 9Z" />
+    </Icon>
+  );
+}
+
 export function GuideIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Icon {...props}>

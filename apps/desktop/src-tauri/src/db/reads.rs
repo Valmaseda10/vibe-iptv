@@ -19,8 +19,16 @@ pub struct CategoryRow {
     pub name: String,
 }
 
-pub fn list_categories(conn: &Connection, kind: &str) -> Result<Vec<CategoryRow>> {
-    let mut stmt = conn.prepare("SELECT id, name FROM categories WHERE kind = ?1 ORDER BY name")?;
+/// `include_adult` en `false` oculta las categorías marcadas `is_adult` (control
+/// parental, F8): mientras no se desbloquee con el PIN, ni siquiera aparecen en el
+/// selector de categorías.
+pub fn list_categories(conn: &Connection, kind: &str, include_adult: bool) -> Result<Vec<CategoryRow>> {
+    let sql = if include_adult {
+        "SELECT id, name FROM categories WHERE kind = ?1 ORDER BY name"
+    } else {
+        "SELECT id, name FROM categories WHERE kind = ?1 AND is_adult = 0 ORDER BY name"
+    };
+    let mut stmt = conn.prepare(sql)?;
     let rows = stmt.query_map(params![kind], |row| Ok(CategoryRow { id: row.get(0)?, name: row.get(1)? }))?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
@@ -33,17 +41,22 @@ pub struct ChannelListItem {
     pub has_catchup: bool,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn list_channels_page(
     conn: &Connection,
     category_id: Option<i64>,
     search: Option<&str>,
     after: Option<i64>,
     limit: i64,
+    include_adult: bool,
 ) -> Result<Vec<ChannelListItem>> {
     let mut sql = String::from(
         "SELECT id, display_name, logo_url, category_id, has_catchup FROM channels WHERE 1=1",
     );
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+    if !include_adult {
+        sql.push_str(" AND (category_id IS NULL OR category_id NOT IN (SELECT id FROM categories WHERE is_adult = 1))");
+    }
     if let Some(cat) = category_id {
         sql.push_str(" AND category_id = ?");
         args.push(Box::new(cat));
@@ -93,6 +106,7 @@ pub struct MovieListItem {
     pub tmdb_state: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn list_movies_page(
     conn: &Connection,
     genre: Option<i64>,
@@ -101,6 +115,7 @@ pub fn list_movies_page(
     sort: MovieSort,
     after: Option<i64>,
     limit: i64,
+    include_adult: bool,
 ) -> Result<Vec<MovieListItem>> {
     let mut sql = String::from("SELECT DISTINCT m.id, m.clean_title, m.year, m.poster_path, m.rating, m.tmdb_state FROM movies m");
     if quality.is_some() {
@@ -109,6 +124,15 @@ pub fn list_movies_page(
     sql.push_str(" WHERE 1=1");
 
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+    if !include_adult {
+        // Se oculta si TODAS sus fuentes son de categorías adultas (control parental,
+        // F8) — más precisamente, se excluye si tiene alguna fuente en una categoría
+        // adulta: mejor ocultar de más que enseñar de menos en un filtro parental.
+        sql.push_str(
+            " AND NOT EXISTS (SELECT 1 FROM movie_sources ms2 JOIN categories c ON c.id = ms2.category_id
+                               WHERE ms2.movie_id = m.id AND c.is_adult = 1)",
+        );
+    }
     if let Some(g) = genre {
         sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(m.genres) WHERE value = ?)");
         args.push(Box::new(g));
@@ -590,6 +614,15 @@ pub fn epg_grid(conn: &Connection, channel_ids: &[i64], from_ts: i64, to_ts: i64
 
 // ─────────────── Continuar viendo, recientes, favoritos ───────────────
 
+/// `None` si el perfil no tiene PIN configurado todavía (control parental sin activar:
+/// no hay nada que ocultar). Ver `util::parental`.
+pub fn get_profile_pin_hash(conn: &Connection, profile_id: i64) -> Result<Option<String>> {
+    conn.query_row("SELECT pin_hash FROM profiles WHERE id = ?1", params![profile_id], |row| row.get(0))
+        .optional()
+        .map(|opt| opt.flatten())
+        .map_err(Into::into)
+}
+
 pub fn ensure_default_profile(conn: &Connection) -> Result<i64> {
     if let Some(id) = conn.query_row("SELECT id FROM profiles ORDER BY id LIMIT 1", [], |row| row.get(0)).optional()? {
         return Ok(id);
@@ -654,10 +687,13 @@ pub fn get_playback_progress(conn: &Connection, profile_id: i64, item_kind: &str
     .map_err(Into::into)
 }
 
-pub fn list_continue_watching(conn: &Connection, profile_id: i64, limit: i64) -> Result<Vec<PlaybackItem>> {
+fn list_continue_watching_raw(conn: &Connection, profile_id: i64, limit: i64) -> Result<Vec<PlaybackItem>> {
+    // Directo excluido a propósito: un canal no se "continúa", se sintoniza o no. Sin
+    // este filtro, cada canal por el que se hace zapping aparecía aquí con 0% visto
+    // para siempre (encontrado probando contra datos reales, F8).
     let mut stmt = conn.prepare(
         "SELECT item_kind, item_id, position_s, duration_s, finished, played_at FROM playback_state
-         WHERE profile_id = ?1 AND finished = 0 ORDER BY played_at DESC LIMIT ?2",
+         WHERE profile_id = ?1 AND finished = 0 AND item_kind != 'channel' ORDER BY played_at DESC LIMIT ?2",
     )?;
     let rows = stmt.query_map(params![profile_id, limit], |row| {
         Ok(PlaybackItem {
@@ -670,6 +706,151 @@ pub fn list_continue_watching(conn: &Connection, profile_id: i64, limit: i64) ->
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub struct ContinueWatchingRow {
+    pub item_kind: String,
+    pub item_id: i64,
+    pub position_s: i64,
+    pub duration_s: Option<i64>,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub poster_path: Option<String>,
+}
+
+/// Fila de `continuar viendo` con título y portada de verdad (F8) — antes solo daba
+/// `item_kind`/`item_id` en crudo y el frontend no tenía forma de pintar nada útil. Una
+/// consulta por ítem (no una sola con `UNION`): son como mucho unas pocas decenas de
+/// filas, y cada tipo (película/episodio/canal) se enriquece de una tabla distinta.
+pub fn list_continue_watching(conn: &Connection, profile_id: i64, limit: i64) -> Result<Vec<ContinueWatchingRow>> {
+    let raw = list_continue_watching_raw(conn, profile_id, limit)?;
+    let mut items = Vec::with_capacity(raw.len());
+
+    for r in raw {
+        let enriched = match r.item_kind.as_str() {
+            "movie" => conn
+                .query_row("SELECT clean_title, poster_path FROM movies WHERE id = ?1", params![r.item_id], |row| {
+                    Ok((row.get::<_, String>(0)?, None::<String>, row.get::<_, Option<String>>(1)?))
+                })
+                .optional()?,
+            "episode" => conn
+                .query_row(
+                    "SELECT s.clean_title, e.season, e.number, e.title, e.still_path, s.poster_path
+                     FROM episodes e JOIN series_sources ss ON ss.id = e.series_source_id JOIN series s ON s.id = ss.series_id
+                     WHERE e.id = ?1",
+                    params![r.item_id],
+                    |row| {
+                        let series_title: String = row.get(0)?;
+                        let season: i64 = row.get(1)?;
+                        let number: i64 = row.get(2)?;
+                        let episode_title: Option<String> = row.get(3)?;
+                        let still_path: Option<String> = row.get(4)?;
+                        let series_poster: Option<String> = row.get(5)?;
+                        let subtitle = format!("T{season} E{number}{}", episode_title.map(|t| format!(" · {t}")).unwrap_or_default());
+                        Ok((series_title, Some(subtitle), still_path.or(series_poster)))
+                    },
+                )
+                .optional()?,
+            // "channel" no llega aquí: `list_continue_watching_raw` ya lo excluye
+            // (directo no se "continúa"). El catch-all cubre igualmente cualquier otro
+            // valor inesperado en `item_kind`.
+            _ => None,
+        };
+
+        // El ítem pudo borrarse del catálogo desde que se guardó el progreso (una
+        // resincronización que ya no lo trae): se salta en vez de enseñar un hueco.
+        if let Some((title, subtitle, poster_path)) = enriched {
+            items.push(ContinueWatchingRow { item_kind: r.item_kind, item_id: r.item_id, position_s: r.position_s, duration_s: r.duration_s, title, subtitle, poster_path });
+        }
+    }
+
+    Ok(items)
+}
+
+pub struct NextEpisodeRow {
+    pub series_id: i64,
+    pub series_title: String,
+    pub poster_path: Option<String>,
+    pub episode_id: i64,
+    pub season: i64,
+    pub number: i64,
+    pub episode_title: Option<String>,
+    pub still_path: Option<String>,
+}
+
+/// Series en las que el perfil ha visto algo, con el episodio pendiente inmediatamente
+/// después del último reproducido — "siguiente episodio pendiente por serie" de F8. No
+/// es "reanudar donde lo dejaste" (eso ya es `continue_watching`): aquí el episodio en
+/// sí puede no tener ningún progreso guardado todavía.
+pub fn list_next_episodes(conn: &Connection, profile_id: i64, limit: i64) -> Result<Vec<NextEpisodeRow>> {
+    let mut series_stmt = conn.prepare(
+        "SELECT s.id, s.clean_title, s.poster_path, MAX(ps.played_at) AS last_played
+         FROM playback_state ps
+         JOIN episodes e ON e.id = ps.item_id AND ps.item_kind = 'episode'
+         JOIN series_sources ss ON ss.id = e.series_source_id
+         JOIN series s ON s.id = ss.series_id
+         WHERE ps.profile_id = ?1
+         GROUP BY s.id
+         ORDER BY last_played DESC
+         LIMIT ?2",
+    )?;
+    let series_rows: Vec<(i64, String, Option<String>)> = series_stmt
+        .query_map(params![profile_id, limit], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut results = Vec::new();
+    for (series_id, series_title, series_poster) in series_rows {
+        let last_episode: Option<(i64, i64)> = conn
+            .query_row(
+                "SELECT e.season, e.number FROM playback_state ps
+                 JOIN episodes e ON e.id = ps.item_id AND ps.item_kind = 'episode'
+                 JOIN series_sources ss ON ss.id = e.series_source_id
+                 WHERE ps.profile_id = ?1 AND ss.series_id = ?2
+                 ORDER BY ps.played_at DESC LIMIT 1",
+                params![profile_id, series_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((last_season, last_number)) = last_episode else { continue };
+
+        let mut episodes_stmt = conn.prepare(
+            "SELECT e.id, e.season, e.number, e.title, e.still_path
+             FROM episodes e JOIN series_sources ss ON ss.id = e.series_source_id
+             WHERE ss.series_id = ?1",
+        )?;
+        let all_episodes: Vec<(i64, i64, i64, Option<String>, Option<String>)> = episodes_stmt
+            .query_map(params![series_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+
+        if let Some((episode_id, season, number, episode_title, still_path)) = find_next_episode(&all_episodes, last_season, last_number) {
+            results.push(NextEpisodeRow { series_id, series_title, poster_path: series_poster, episode_id, season, number, episode_title, still_path });
+        }
+    }
+
+    Ok(results)
+}
+
+/// Misma lógica que `PlayerScreen.tsx`'s `findNextEpisode`: siguiente número dentro de
+/// la misma temporada, o el primero de la siguiente temporada que tenga episodios.
+fn find_next_episode(
+    episodes: &[(i64, i64, i64, Option<String>, Option<String>)],
+    last_season: i64,
+    last_number: i64,
+) -> Option<(i64, i64, i64, Option<String>, Option<String>)> {
+    let mut same_season: Vec<_> = episodes.iter().filter(|(_, season, _, _, _)| *season == last_season).collect();
+    same_season.sort_by_key(|(_, _, number, _, _)| *number);
+    if let Some(next) = same_season.into_iter().find(|(_, _, number, _, _)| *number > last_number) {
+        return Some(next.clone());
+    }
+
+    let mut seasons: Vec<i64> = episodes.iter().map(|(_, season, _, _, _)| *season).collect();
+    seasons.sort_unstable();
+    seasons.dedup();
+    let next_season = seasons.into_iter().find(|s| *s > last_season)?;
+
+    let mut next_season_episodes: Vec<_> = episodes.iter().filter(|(_, season, _, _, _)| *season == next_season).collect();
+    next_season_episodes.sort_by_key(|(_, _, number, _, _)| *number);
+    next_season_episodes.into_iter().next().cloned()
 }
 
 pub fn list_recent_movies(conn: &Connection, limit: i64) -> Result<Vec<MovieListItem>> {
@@ -740,13 +921,39 @@ mod tests {
     }
 
     #[test]
+    fn list_movies_hides_adult_category_sources_unless_unlocked() {
+        use crate::sources::model::MediaKind;
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let adult_cat = queries::upsert_categories(
+            &conn,
+            provider_id,
+            MediaKind::Movie,
+            &[crate::sources::model::RawCategory { remote_id: "18".into(), kind: MediaKind::Movie, name: "XXX".into() }],
+        )
+        .unwrap();
+        conn.execute("UPDATE categories SET is_adult = 1 WHERE id = ?1", params![adult_cat["18"]]).unwrap();
+
+        seed_movie(&conn, provider_id, "Peli Normal", Some(2020), None, None);
+        let adult_id = seed_movie(&conn, provider_id, "Peli Adulta", Some(2020), None, None);
+        conn.execute("UPDATE movie_sources SET category_id = ?1 WHERE movie_id = ?2", params![adult_cat["18"], adult_id]).unwrap();
+
+        let hidden = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, 50, false).unwrap();
+        assert!(hidden.iter().all(|m| m.clean_title != "Peli Adulta"));
+        assert!(hidden.iter().any(|m| m.clean_title == "Peli Normal"));
+
+        let unlocked = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, 50, true).unwrap();
+        assert!(unlocked.iter().any(|m| m.clean_title == "Peli Adulta"));
+    }
+
+    #[test]
     fn list_movies_filters_by_genre_via_json_each() {
         let conn = memory_conn();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
         seed_movie(&conn, provider_id, "Accion Uno", Some(2020), Some("[28,12]"), None);
         seed_movie(&conn, provider_id, "Drama Uno", Some(2020), Some("[18]"), None);
 
-        let action = list_movies_page(&conn, Some(28), None, None, MovieSort::AddedDesc, None, 50).unwrap();
+        let action = list_movies_page(&conn, Some(28), None, None, MovieSort::AddedDesc, None, 50, true).unwrap();
         assert_eq!(action.len(), 1);
         assert_eq!(action[0].clean_title, "Accion Uno");
     }
@@ -758,10 +965,10 @@ mod tests {
         seed_movie(&conn, provider_id, "Peli 2020 4K", Some(2020), None, Some("4K"));
         seed_movie(&conn, provider_id, "Peli 2021 HD", Some(2021), None, Some("HD"));
 
-        let by_year = list_movies_page(&conn, None, Some(2020), None, MovieSort::AddedDesc, None, 50).unwrap();
+        let by_year = list_movies_page(&conn, None, Some(2020), None, MovieSort::AddedDesc, None, 50, true).unwrap();
         assert_eq!(by_year.len(), 1);
 
-        let by_quality = list_movies_page(&conn, None, None, Some("4K"), MovieSort::AddedDesc, None, 50).unwrap();
+        let by_quality = list_movies_page(&conn, None, None, Some("4K"), MovieSort::AddedDesc, None, 50, true).unwrap();
         assert_eq!(by_quality.len(), 1);
         assert_eq!(by_quality[0].clean_title, "Peli 2020 4K");
     }
@@ -774,11 +981,11 @@ mod tests {
             seed_movie(&conn, provider_id, &format!("Peli {i}"), Some(2020), None, None);
         }
 
-        let first_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, 2).unwrap();
+        let first_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, 2, true).unwrap();
         assert_eq!(first_page.len(), 2);
         let cursor = first_page.last().unwrap().id;
 
-        let second_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, Some(cursor), 2).unwrap();
+        let second_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, Some(cursor), 2, true).unwrap();
         assert_eq!(second_page.len(), 2);
         assert!(second_page.iter().all(|m| m.id != cursor));
     }
@@ -857,12 +1064,139 @@ mod tests {
     fn continue_watching_excludes_finished_items() {
         let conn = memory_conn();
         let profile_id = ensure_default_profile(&conn).unwrap();
-        upsert_playback_progress(&conn, profile_id, "movie", 1, 50, Some(100)).unwrap(); // no terminado
-        upsert_playback_progress(&conn, profile_id, "movie", 2, 99, Some(100)).unwrap(); // terminado
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let movie1 = seed_movie(&conn, provider_id, "Sin terminar", Some(2020), None, None);
+        let movie2 = seed_movie(&conn, provider_id, "Terminada", Some(2020), None, None);
+        upsert_playback_progress(&conn, profile_id, "movie", movie1, 50, Some(100)).unwrap(); // no terminado
+        upsert_playback_progress(&conn, profile_id, "movie", movie2, 99, Some(100)).unwrap(); // terminado
 
         let continuing = list_continue_watching(&conn, profile_id, 10).unwrap();
         assert_eq!(continuing.len(), 1);
-        assert_eq!(continuing[0].item_id, 1);
+        assert_eq!(continuing[0].item_id, movie1);
+        assert_eq!(continuing[0].title, "Sin terminar");
+    }
+
+    #[test]
+    fn continue_watching_skips_items_whose_catalog_entry_was_deleted() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        // item_id 999 no existe en `movies`: se saltó de una resincronización.
+        upsert_playback_progress(&conn, profile_id, "movie", 999, 10, Some(100)).unwrap();
+        assert!(list_continue_watching(&conn, profile_id, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn continue_watching_excludes_channels() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        // Zapping real: cada canal visto queda con position_s=0 para siempre. No debe
+        // aparecer en "continuar viendo" (un canal no se "continúa").
+        upsert_playback_progress(&conn, profile_id, "channel", 1, 0, None).unwrap();
+        assert!(list_continue_watching(&conn, profile_id, 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn continue_watching_enriches_episodes_with_series_title_and_still() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Mi Serie".into(), cover_url: None, plot: None, release_date: None };
+        let fields = TitleFields { clean_title: "Mi Serie", year: None, match_key: "mi-serie-0000", quality: None, language: None };
+        queries::upsert_series(&conn, provider_id, &series_raw, &fields).unwrap();
+        let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources", [], |r| r.get(0)).unwrap();
+
+        let episode = crate::sources::model::RawEpisode {
+            remote_id: "e1".into(),
+            season: 2,
+            number: 5,
+            title: Some("El regreso".into()),
+            container_extension: Some("mp4".into()),
+            duration_s: Some(1200),
+            still_url: Some("/still.jpg".into()),
+        };
+        upsert_episodes(&conn, series_source_id, &[episode]).unwrap();
+        let episode_id: i64 = conn.query_row("SELECT id FROM episodes", [], |r| r.get(0)).unwrap();
+
+        upsert_playback_progress(&conn, profile_id, "episode", episode_id, 30, Some(1200)).unwrap();
+
+        let continuing = list_continue_watching(&conn, profile_id, 10).unwrap();
+        assert_eq!(continuing.len(), 1);
+        assert_eq!(continuing[0].title, "Mi Serie");
+        assert_eq!(continuing[0].subtitle.as_deref(), Some("T2 E5 · El regreso"));
+        assert_eq!(continuing[0].poster_path.as_deref(), Some("/still.jpg"));
+    }
+
+    fn seed_series_with_episodes(conn: &Connection, provider_id: i64, title: &str, episodes: &[(i64, i64)]) -> (i64, Vec<i64>) {
+        let series_raw = RawSeries { remote_id: title.into(), raw_title: title.into(), cover_url: None, plot: None, release_date: None };
+        let match_key = format!("{}-0000", title.to_lowercase().replace(' ', "-"));
+        let fields = TitleFields { clean_title: title, year: None, match_key: &match_key, quality: None, language: None };
+        queries::upsert_series(conn, provider_id, &series_raw, &fields).unwrap();
+        let series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = ?1", params![match_key], |r| r.get(0)).unwrap();
+        let series_source_id: i64 =
+            conn.query_row("SELECT id FROM series_sources WHERE series_id = ?1", params![series_id], |r| r.get(0)).unwrap();
+
+        let raw_episodes: Vec<_> = episodes
+            .iter()
+            .map(|(season, number)| crate::sources::model::RawEpisode {
+                remote_id: format!("s{season}e{number}"),
+                season: *season as u32,
+                number: *number as u32,
+                title: None,
+                container_extension: Some("mp4".into()),
+                duration_s: Some(1200),
+                still_url: None,
+            })
+            .collect();
+        upsert_episodes(conn, series_source_id, &raw_episodes).unwrap();
+
+        let mut stmt = conn.prepare("SELECT id, season, number FROM episodes WHERE series_source_id = ?1").unwrap();
+        let mut rows: Vec<(i64, i64, i64)> =
+            stmt.query_map(params![series_source_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
+        rows.sort_by_key(|(_, season, number)| (*season, *number));
+        (series_id, rows.into_iter().map(|(id, _, _)| id).collect())
+    }
+
+    #[test]
+    fn list_next_episodes_finds_the_one_right_after_the_last_played() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let (series_id, episode_ids) = seed_series_with_episodes(&conn, provider_id, "Mi Serie", &[(1, 1), (1, 2), (1, 3)]);
+
+        upsert_playback_progress(&conn, profile_id, "episode", episode_ids[0], 1200, Some(1200)).unwrap();
+
+        let next = list_next_episodes(&conn, profile_id, 10).unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].series_id, series_id);
+        assert_eq!(next[0].episode_id, episode_ids[1]);
+        assert_eq!((next[0].season, next[0].number), (1, 2));
+    }
+
+    #[test]
+    fn list_next_episodes_crosses_into_the_next_season() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let (_, episode_ids) = seed_series_with_episodes(&conn, provider_id, "Mi Serie", &[(1, 1), (1, 2), (2, 1)]);
+
+        upsert_playback_progress(&conn, profile_id, "episode", episode_ids[1], 1200, Some(1200)).unwrap();
+
+        let next = list_next_episodes(&conn, profile_id, 10).unwrap();
+        assert_eq!(next.len(), 1);
+        assert_eq!(next[0].episode_id, episode_ids[2]);
+        assert_eq!((next[0].season, next[0].number), (2, 1));
+    }
+
+    #[test]
+    fn list_next_episodes_omits_series_already_at_the_last_episode() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let (_, episode_ids) = seed_series_with_episodes(&conn, provider_id, "Mi Serie", &[(1, 1), (1, 2)]);
+
+        upsert_playback_progress(&conn, profile_id, "episode", episode_ids[1], 1200, Some(1200)).unwrap();
+
+        assert!(list_next_episodes(&conn, profile_id, 10).unwrap().is_empty());
     }
 
     #[test]
@@ -894,9 +1228,78 @@ mod tests {
         queries::upsert_categories(&conn, provider_id, MediaKind::Live, &[RawCategory { remote_id: "1".into(), kind: MediaKind::Live, name: "ESPAÑA".into() }]).unwrap();
         queries::upsert_categories(&conn, provider_id, MediaKind::Movie, &[RawCategory { remote_id: "2".into(), kind: MediaKind::Movie, name: "ACCION".into() }]).unwrap();
 
-        let live = list_categories(&conn, "live").unwrap();
+        let live = list_categories(&conn, "live", true).unwrap();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].name, "ESPAÑA");
+    }
+
+    #[test]
+    fn list_categories_hides_adult_ones_unless_unlocked() {
+        use crate::sources::model::{MediaKind, RawCategory};
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let map = queries::upsert_categories(
+            &conn,
+            provider_id,
+            MediaKind::Live,
+            &[
+                RawCategory { remote_id: "1".into(), kind: MediaKind::Live, name: "ESPAÑA".into() },
+                RawCategory { remote_id: "2".into(), kind: MediaKind::Live, name: "XXX".into() },
+            ],
+        )
+        .unwrap();
+        conn.execute("UPDATE categories SET is_adult = 1 WHERE id = ?1", params![map["2"]]).unwrap();
+
+        let hidden = list_categories(&conn, "live", false).unwrap();
+        assert_eq!(hidden.len(), 1);
+        assert_eq!(hidden[0].name, "ESPAÑA");
+
+        let unlocked = list_categories(&conn, "live", true).unwrap();
+        assert_eq!(unlocked.len(), 2);
+    }
+
+    #[test]
+    fn list_channels_hides_adult_category_channels_unless_unlocked() {
+        use crate::sources::model::{MediaKind, RawCategory, RawChannel};
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let map = queries::upsert_categories(
+            &conn,
+            provider_id,
+            MediaKind::Live,
+            &[RawCategory { remote_id: "1".into(), kind: MediaKind::Live, name: "XXX".into() }],
+        )
+        .unwrap();
+        conn.execute("UPDATE categories SET is_adult = 1 WHERE id = ?1", params![map["1"]]).unwrap();
+
+        let channel = RawChannel {
+            remote_id: "1".into(),
+            category_remote_id: Some("1".into()),
+            raw_name: "Canal Adulto".into(),
+            logo_url: None,
+            epg_channel_id: None,
+            has_catchup: false,
+            catchup_days: 0,
+            sort_order: None,
+        };
+        let fields = TitleFields { clean_title: "Canal Adulto", year: None, match_key: "n/a", quality: None, language: None };
+        queries::upsert_channel(&conn, provider_id, &map, &channel, &fields).unwrap();
+
+        assert!(list_channels_page(&conn, None, None, None, 50, false).unwrap().is_empty());
+        assert_eq!(list_channels_page(&conn, None, None, None, 50, true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn profile_pin_hash_roundtrip() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        assert_eq!(get_profile_pin_hash(&conn, profile_id).unwrap(), None);
+
+        queries::set_profile_pin_hash(&conn, profile_id, Some("hash-de-prueba")).unwrap();
+        assert_eq!(get_profile_pin_hash(&conn, profile_id).unwrap().as_deref(), Some("hash-de-prueba"));
+
+        queries::set_profile_pin_hash(&conn, profile_id, None).unwrap();
+        assert_eq!(get_profile_pin_hash(&conn, profile_id).unwrap(), None);
     }
 
     #[test]
@@ -1003,7 +1406,7 @@ mod tests {
         let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
         queries::upsert_channel(&conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
 
-        let channels = list_channels_page(&conn, None, None, None, 50).unwrap();
+        let channels = list_channels_page(&conn, None, None, None, 50, true).unwrap();
         let logo = channels[0].logo_url.as_deref().unwrap();
         assert!(!logo.contains("juan"));
         assert!(!logo.contains("hunter2"));

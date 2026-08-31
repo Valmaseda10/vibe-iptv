@@ -9,6 +9,7 @@ use std::sync::Arc;
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::util::parental::ParentalGuard;
 use crate::util::stream_guard::StreamGuard;
 
 /// Puerto del servidor local, gestionado como estado de Tauri para que el frontend lo
@@ -49,7 +50,10 @@ pub async fn serve(
         tracing::warn!("ffmpeg y/o ffprobe no están en el PATH: el nivel 2 de reproducción no funcionará hasta F10");
     }
 
-    let router = full_router(image_cache_dir, db_path, stream_state);
+    // Se olvida al reiniciar la app a propósito (regla de `util::parental`): el
+    // desbloqueo del PIN nunca se persiste, solo dura la sesión.
+    let parental_guard = ParentalGuard::new();
+    let router = full_router(image_cache_dir, db_path, stream_state, parental_guard);
     axum::serve(listener, router).await
 }
 
@@ -68,8 +72,8 @@ pub async fn serve(
 /// `/api/playback/tier/*` fallaba en silencio por CORS —`<video src>` no lo notó porque
 /// cargar un recurso de vídeo no pasa por CORS, solo `fetch`/`XHR` sí— y el panel de
 /// estadísticas del reproductor se quedó mostrando "nivel desconocido" para siempre.
-fn full_router(image_cache_dir: PathBuf, db_path: PathBuf, stream_state: stream::StreamState) -> Router {
-    routes::build_router(image_cache_dir, db_path)
+fn full_router(image_cache_dir: PathBuf, db_path: PathBuf, stream_state: stream::StreamState, parental_guard: Arc<ParentalGuard>) -> Router {
+    routes::build_router(image_cache_dir, db_path, parental_guard)
         .merge(stream::stream_router(stream_state))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
 }
@@ -89,7 +93,7 @@ mod tests {
             ffmpeg_path: None,
             ffprobe_path: None,
         };
-        let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state);
+        let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state, ParentalGuard::new());
 
         // Una respuesta a una ruta de F6 (fusionada tras el CORS de F4) debe llevar la
         // cabecera igual que una del catálogo: el bug real fue que no la llevaba.

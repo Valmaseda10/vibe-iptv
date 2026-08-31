@@ -33,6 +33,7 @@ export function SeriesScreen() {
           onLoadMore={() => query.fetchNextPage()}
           onOpen={(id) => navigate({ to: "/series/$seriesId", params: { seriesId: String(id) } })}
           emptyMessage="Todavía no hay series sincronizadas. Añade un proveedor en Ajustes."
+          favoriteKind="series"
         />
       </div>
     </div>

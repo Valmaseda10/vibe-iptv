@@ -12,6 +12,12 @@ export function HomeScreen() {
     queryFn: () => apiGet<HomeResponse>("/api/home"),
   });
 
+  function openContinueWatching(itemKind: string, itemId: number) {
+    if (itemKind === "movie") navigate({ to: "/player/$kind/$id", params: { kind: "movie", id: String(itemId) } });
+    else if (itemKind === "episode") navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(itemId) } });
+    else if (itemKind === "channel") navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(itemId) } });
+  }
+
   return (
     <div className="flex flex-col gap-10 py-8">
       <h1 className="px-6 text-3xl font-semibold sm:px-10">Inicio</h1>
@@ -25,11 +31,26 @@ export function HomeScreen() {
           {data.continue_watching.map((item) => (
             <PosterCard
               key={`${item.item_kind}-${item.item_id}`}
-              title={`${item.item_kind === "movie" ? "Película" : item.item_kind === "episode" ? "Episodio" : "Canal"} #${item.item_id}`}
-              posterPath={null}
-              onOpen={() => {
-                if (item.item_kind === "movie") navigate({ to: "/movies/$movieId", params: { movieId: String(item.item_id) } });
-              }}
+              title={item.title}
+              subtitle={item.subtitle ?? progressLabel(item.position_s, item.duration_s)}
+              posterPath={item.poster_path}
+              onOpen={() => openContinueWatching(item.item_kind, item.item_id)}
+            />
+          ))}
+        </Row>
+      ) : null}
+
+      {isPending ? (
+        <SkeletonRow title="Siguiente episodio" />
+      ) : data && data.next_episodes.length > 0 ? (
+        <Row title="Siguiente episodio">
+          {data.next_episodes.map((item) => (
+            <PosterCard
+              key={`next-${item.episode_id}`}
+              title={item.series_title}
+              subtitle={`T${item.season} E${item.number}${item.episode_title ? ` · ${item.episode_title}` : ""}`}
+              posterPath={item.still_path ?? item.poster_path}
+              onOpen={() => navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(item.episode_id) }, search: { seriesId: String(item.series_id) } })}
             />
           ))}
         </Row>
@@ -53,6 +74,12 @@ export function HomeScreen() {
       )}
     </div>
   );
+}
+
+function progressLabel(positionS: number, durationS: number | null): string | undefined {
+  if (!durationS || durationS <= 0) return undefined;
+  const percent = Math.min(100, Math.round((positionS / durationS) * 100));
+  return `${percent}% visto`;
 }
 
 function SkeletonRow({ title }: { title: string }) {

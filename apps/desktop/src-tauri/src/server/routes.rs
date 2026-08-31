@@ -68,13 +68,13 @@ fn content_type_for(filename: &str) -> &'static str {
 /// vivía aquí y solo cubría este router, dejando sin CORS las rutas de F6 (un `fetch()`
 /// del WebView a `/api/playback/tier/*` fallaba en silencio; `<video src>` no lo notó
 /// porque cargar un recurso de vídeo no pasa por CORS, solo `fetch`/`XHR`).
-pub fn build_router(image_cache_dir: PathBuf, db_path: PathBuf) -> Router {
+pub fn build_router(image_cache_dir: PathBuf, db_path: PathBuf, parental_guard: std::sync::Arc<crate::util::parental::ParentalGuard>) -> Router {
     let health_and_images = Router::new()
         .route("/api/health", get(health))
         .route("/img/:size/:image_id", get(serve_image))
         .with_state(image_cache_dir);
 
-    health_and_images.merge(super::api::catalog_router(db_path))
+    health_and_images.merge(super::api::catalog_router(db_path, parental_guard))
 }
 
 #[cfg(test)]
@@ -87,7 +87,7 @@ mod tests {
 
     #[tokio::test]
     async fn health_endpoint_returns_ok_status() {
-        let response = build_router(std::env::temp_dir(), std::env::temp_dir())
+        let response = build_router(std::env::temp_dir(), std::env::temp_dir(), crate::util::parental::ParentalGuard::new())
             .oneshot(Request::builder().uri("/api/health").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -101,7 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn image_route_rejects_path_traversal() {
-        let response = build_router(std::env::temp_dir(), std::env::temp_dir())
+        let response = build_router(std::env::temp_dir(), std::env::temp_dir(), crate::util::parental::ParentalGuard::new())
             .oneshot(Request::builder().uri("/img/w500/..%2f..%2fetc").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -115,7 +115,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("w500_abc.jpg"), b"fake-jpeg-bytes").unwrap();
 
-        let response = build_router(dir.clone(), std::env::temp_dir())
+        let response = build_router(dir.clone(), std::env::temp_dir(), crate::util::parental::ParentalGuard::new())
             .oneshot(Request::builder().uri("/img/w500/abc.jpg").body(Body::empty()).unwrap())
             .await
             .unwrap();

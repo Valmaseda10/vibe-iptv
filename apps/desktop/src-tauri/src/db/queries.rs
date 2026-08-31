@@ -148,6 +148,17 @@ fn media_kind_db(kind: MediaKind) -> &'static str {
     }
 }
 
+/// Nombres de categoría que los paneles Xtream usan de verdad para contenido para
+/// adultos (control parental, F8) — visto en paneles reales, no inventado: casi siempre
+/// en mayúsculas y con variantes de "XXX"/"+18"/"ADULTOS". Es una heurística, igual que
+/// la de `sources::m3u`'s clasificación por `group-title`: se recalcula en cada
+/// sincronización, así que renombrar una categoría la reclasifica sola. No hay manera
+/// de corregirla a mano todavía (deuda pendiente, ver `docs/DECISIONS.md`).
+fn is_adult_category_name(name: &str) -> bool {
+    let upper = name.to_uppercase();
+    ["XXX", "PORN", "ADULT", "+18", "18+", "EROTIC", "ERÓTIC"].iter().any(|kw| upper.contains(kw))
+}
+
 /// Upsert de categorías de un tipo, y mapa `remote_id -> id local` para enlazar
 /// canales/películas con su categoría al insertarlos.
 pub fn upsert_categories(
@@ -159,11 +170,12 @@ pub fn upsert_categories(
     let kind_str = media_kind_db(kind);
     {
         let mut stmt = conn.prepare(
-            "INSERT INTO categories (provider_id, remote_id, kind, name) VALUES (?1, ?2, ?3, ?4)
-             ON CONFLICT(provider_id, kind, remote_id) DO UPDATE SET name = excluded.name",
+            "INSERT INTO categories (provider_id, remote_id, kind, name, is_adult) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(provider_id, kind, remote_id) DO UPDATE SET name = excluded.name, is_adult = excluded.is_adult",
         )?;
         for category in categories {
-            stmt.execute(params![provider_id, category.remote_id, kind_str, category.name])?;
+            let is_adult = is_adult_category_name(&category.name) as i64;
+            stmt.execute(params![provider_id, category.remote_id, kind_str, category.name, is_adult])?;
         }
     }
 
@@ -499,6 +511,14 @@ pub fn set_probe_cache(
     Ok(())
 }
 
+// ─────────────── Control parental (F8) ───────────────
+
+/// `None` quita el PIN (desactiva el control parental). Ver `util::parental`.
+pub fn set_profile_pin_hash(conn: &Connection, profile_id: i64, pin_hash: Option<&str>) -> Result<()> {
+    conn.execute("UPDATE profiles SET pin_hash = ?1 WHERE id = ?2", params![pin_hash, profile_id])?;
+    Ok(())
+}
+
 // ─────────────── EPG (F7) ───────────────
 //
 // Tipo local, no `catalog::epg::Programme`: `queries.rs` no depende de `catalog` (regla
@@ -608,6 +628,39 @@ mod tests {
 
         let total = count_categories(&conn, provider_id).unwrap();
         assert_eq!(total, 2);
+    }
+
+    #[test]
+    fn upsert_categories_marks_adult_ones_by_name_heuristic() {
+        let conn = memory_conn();
+        let provider_id = insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+
+        let cats = vec![
+            RawCategory { remote_id: "1".into(), kind: MediaKind::Live, name: "ESPAÑA".into() },
+            RawCategory { remote_id: "2".into(), kind: MediaKind::Live, name: "XXX ADULTOS 18+".into() },
+        ];
+        upsert_categories(&conn, provider_id, MediaKind::Live, &cats).unwrap();
+
+        let is_adult = |remote_id: &str| -> i64 {
+            conn.query_row(
+                "SELECT is_adult FROM categories WHERE provider_id = ?1 AND remote_id = ?2",
+                params![provider_id, remote_id],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(is_adult("1"), 0);
+        assert_eq!(is_adult("2"), 1);
+    }
+
+    #[test]
+    fn is_adult_category_name_matches_common_real_world_labels() {
+        for name in ["XXX", "Xxx Adultos", "ADULT", "+18", "18+ HD", "EROTIC", "ERÓTICO"] {
+            assert!(is_adult_category_name(name), "debería marcarse como adulta: {name}");
+        }
+        for name in ["ESPAÑA", "DOCUMENTALES", "BUNDESLIGA", "CINE 4K"] {
+            assert!(!is_adult_category_name(name), "no debería marcarse como adulta: {name}");
+        }
     }
 
     #[test]

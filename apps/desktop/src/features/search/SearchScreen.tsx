@@ -44,7 +44,9 @@ export function SearchScreen() {
       {data && data.series.length > 0 && (
         <ResultSection title="Series" hits={data.series} onOpen={(id) => navigate({ to: "/series/$seriesId", params: { seriesId: String(id) } })} />
       )}
-      {data && data.channels.length > 0 && <ResultSection title="Canales" hits={data.channels} onOpen={() => {}} />}
+      {data && data.channels.length > 0 && (
+        <ResultSection title="Canales" hits={data.channels} onOpen={(id) => navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(id) } })} />
+      )}
     </div>
   );
 }

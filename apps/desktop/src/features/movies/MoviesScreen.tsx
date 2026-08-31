@@ -33,6 +33,7 @@ export function MoviesScreen() {
           onLoadMore={() => query.fetchNextPage()}
           onOpen={(id) => navigate({ to: "/movies/$movieId", params: { movieId: String(id) } })}
           emptyMessage="Todavía no hay películas sincronizadas. Añade un proveedor en Ajustes."
+          favoriteKind="movie"
         />
       </div>
     </div>

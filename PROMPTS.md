@@ -16,7 +16,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F5 Cascarón de interfaz (primera versión, sin iterar contigo — ver DECISIONS.md)
 - [x] F6 Reproductor (construido sin iterar contigo por partes como pide esta fase — ver DECISIONS.md)
 - [x] F7 EPG y directo (construido de manera autónoma — ver DECISIONS.md)
-- [ ] F8 Búsqueda, favoritos, continuar viendo
+- [x] F8 Búsqueda, favoritos, continuar viendo (construido de manera autónoma — ver DECISIONS.md)
 - [ ] F9 mpv, catch-up y pulido
 - [ ] F10 Empaquetado y apertura a la LAN
 
