@@ -18,7 +18,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F7 EPG y directo (construido de manera autónoma — ver DECISIONS.md)
 - [x] F8 Búsqueda, favoritos, continuar viendo (construido de manera autónoma — ver DECISIONS.md)
 - [x] F9 mpv, catch-up y pulido (construido de manera autónoma — mpv y catch-up sin verificar contra software/proveedor real, ver DECISIONS.md)
-- [ ] F10 Empaquetado y apertura a la LAN
+- [x] F10 Empaquetado y apertura a la LAN (construido de manera autónoma — modo LAN sin verificar contra un dispositivo real, instalador sin firmar, ver DECISIONS.md)
 
 ---
 

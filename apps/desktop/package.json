@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "build:installer": "tauri build --config src-tauri/tauri.bundle.conf.json"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",

@@ -582,6 +582,47 @@ pub fn record_play_tier(conn: &Connection, profile_id: i64, item_kind: &str, ite
     Ok(())
 }
 
+// ─────────────── Ajustes y modo LAN (F10) ───────────────
+
+/// Guarda (o reemplaza) un ajuste de tipo clave/valor. Sin tabla dedicada por ajuste:
+/// hoy el único uso es `lan_enabled`, ver `migrations/003_lan_pairing.sql`.
+pub fn set_setting(conn: &Connection, key: &str, value: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![key, value],
+    )?;
+    Ok(())
+}
+
+/// Da de alta un dispositivo recién emparejado. `token_hash` ya viene calculado
+/// (`util::pairing::hash_token`): aquí nunca se ve el token en claro.
+pub fn insert_paired_device(conn: &Connection, device_name: &str, token_hash: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO paired_devices (device_name, token_hash, created_at) VALUES (?1, ?2, ?3)",
+        params![device_name, token_hash, now_epoch()],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// Marca un dispositivo como revocado (no se borra: conserva el historial de "quién
+/// tuvo acceso alguna vez"). Idempotente: revocar dos veces no es un error.
+pub fn revoke_paired_device(conn: &Connection, device_id: i64) -> Result<()> {
+    conn.execute(
+        "UPDATE paired_devices SET revoked_at = ?1 WHERE id = ?2 AND revoked_at IS NULL",
+        params![now_epoch(), device_id],
+    )?;
+    Ok(())
+}
+
+/// Actualiza `last_seen_at` en cada petición autenticada de un dispositivo LAN — pura
+/// cortesía informativa para la lista de "dispositivos emparejados" de Ajustes, nunca
+/// bloqueante: si falla, no debe tumbar la petición que la disparó.
+pub fn touch_paired_device_last_seen(conn: &Connection, device_id: i64) -> Result<()> {
+    conn.execute("UPDATE paired_devices SET last_seen_at = ?1 WHERE id = ?2", params![now_epoch(), device_id])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

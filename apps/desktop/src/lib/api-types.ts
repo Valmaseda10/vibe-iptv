@@ -4,6 +4,8 @@ export type AccountStatus = { auth_ok: boolean, status: string, expires_at: numb
 
 export type AddProviderInput = { kind: ProviderKind, name: string, base_url: string, username: string | null, password: string | null, m3u_url: string | null, user_agent: string | null, };
 
+export type BinariesStatus = { ffmpeg: boolean, ffprobe: boolean, mpv: boolean, };
+
 export type CategorySummary = { id: number, name: string, };
 
 export type ChannelSummary = { id: number, display_name: string, logo_url: string | null, category_id: number | null, has_catchup: boolean, };
@@ -31,6 +33,15 @@ export type HealthStatus = { status: string, version: string, };
 
 export type HomeResponse = { continue_watching: Array<ContinueWatchingItem>, next_episodes: Array<NextEpisodeItem>, recent_movies: Array<MovieSummary>, };
 
+export type LanStatusResponse = { enabled: boolean, devices: Array<PairedDeviceItem>, 
+/**
+ * IP de este PC en la red local, para enseñarla junto al código de emparejamiento
+ * (el otro dispositivo la necesita para saber a quién conectarse; no hay ningún
+ * mecanismo de descubrimiento tipo mDNS todavía). `None` si no se pudo determinar
+ * (sin red, por ejemplo) — no es un error, solo no hay nada que enseñar.
+ */
+local_address: string | null, };
+
 export type M3uValidation = { channel_count: number, movie_count: number, series_count: number, 
 /**
  * Presente si la URL es en realidad un `get.php` de Xtream (ver
@@ -48,6 +59,25 @@ export type MovieSummary = { id: number, clean_title: string, year: number | nul
 export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | null, };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
+
+export type PairResponse = { device_id: number, 
+/**
+ * Solo se manda esta vez: no se guarda en claro en ningún sitio (regla R5, mismo
+ * criterio que una credencial de proveedor).
+ */
+token: string, };
+
+export type PairedDeviceItem = { id: number, device_name: string, created_at: number, last_seen_at: number | null, revoked: boolean, };
+
+export type PairingStartResponse = { code: string, 
+/**
+ * Segundos desde ahora hasta que caduca — más cómodo para el frontend que mandar
+ * un instante que no significa nada fuera de este proceso (`std::time::Instant` no
+ * es una fecha de calendario). `u64` -> "number", no "bigint": un TTL de unos
+ * minutos cabe sobrado en `Number.MAX_SAFE_INTEGER` (igual que los `i64` de esta
+ * API, ver `commands::ProviderSummary`).
+ */
+expires_in_s: number, };
 
 export type ParentalStatus = { has_pin: boolean, unlocked: boolean, };
 

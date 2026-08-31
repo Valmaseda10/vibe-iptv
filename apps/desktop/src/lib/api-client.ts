@@ -32,7 +32,11 @@ export async function apiGetOrNull<T>(path: string): Promise<T | null> {
   return response.json() as Promise<T>;
 }
 
-export async function apiPost(path: string, body: unknown): Promise<void> {
+/** Genérico en el tipo de vuelta: la mayoría de llamadas ignoran la respuesta (muchas
+ * rutas dan `204 sin contenido`), pero algunas sí devuelven algo que hace falta leer
+ * (p. ej. el código de emparejamiento de `/api/lan/pairing/start`). Un 204 da
+ * `undefined` en vez de reventar `response.json()` sobre un cuerpo vacío. */
+export async function apiPost<T = void>(path: string, body: unknown): Promise<T> {
   const base = await getApiBase();
   const response = await fetch(`${base}${path}`, {
     method: "POST",
@@ -40,6 +44,8 @@ export async function apiPost(path: string, body: unknown): Promise<void> {
     body: JSON.stringify(body),
   });
   if (!response.ok) throw new Error(`${path} -> ${response.status}`);
+  if (response.status === 204) return undefined as T;
+  return response.json() as Promise<T>;
 }
 
 export async function apiDelete(path: string): Promise<void> {

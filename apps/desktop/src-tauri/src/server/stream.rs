@@ -50,7 +50,28 @@ pub fn stream_router(state: StreamState) -> Router {
         .route("/stream/mpv/:kind/:id", axum::routing::post(post_launch_mpv))
         .route("/stream/catchup/:channel_id", get(get_catchup))
         .route("/api/playback/tier/:kind/:id", get(get_playback_tier))
+        .route("/api/playback/binaries", get(get_binaries_status))
         .with_state(state)
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct BinariesStatus {
+    pub ffmpeg: bool,
+    pub ffprobe: bool,
+    pub mpv: bool,
+}
+
+/// "Comprobación de que existen al arrancar" (F10): el arranque ya deja constancia en el
+/// log (`tracing::warn!` en `server::serve`), pero eso no lo ve nadie en el día a día —
+/// esto le da a Ajustes algo que consultar para enseñar un aviso claro si faltase algún
+/// sidecar, en vez de que el usuario se entere solo cuando intente reproducir algo.
+async fn get_binaries_status(State(state): State<StreamState>) -> axum::Json<BinariesStatus> {
+    axum::Json(BinariesStatus {
+        ffmpeg: state.ffmpeg_path.is_some(),
+        ffprobe: state.ffprobe_path.is_some(),
+        mpv: state.mpv_path.is_some(),
+    })
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]

@@ -831,6 +831,114 @@ ya está confirmado, que era la parte que dependía de este proyecto y no del pr
 
 ---
 
+## 2026-08-31 — F10 Empaquetado y apertura a la LAN
+
+**Construida de manera autónoma**, con dos decisiones consultadas primero (versión
+manual en vez de actualizaciones automáticas; construir el modo LAN entero ahora en vez
+de esperar a que exista un cliente real) y una tercera resuelta a medio camino (la
+config de `externalBin` rompía `cargo check` — ver más abajo).
+
+**Qué se ha construido.**
+
+- **Sidecars (ffmpeg, ffprobe, mpv)**: `media::resolve_binary` ahora mira primero junto
+  al propio ejecutable (`std::env::current_exe()`, con el ajuste de `deps/` bajo `cargo
+  test`) antes de caer al `PATH`. Es la misma convención que usa `tauri-plugin-shell`
+  internamente para sus sidecars (confirmado leyendo su código fuente, no de memoria:
+  `Command::new_sidecar` hace justo esto) — deliberadamente **sin** añadir esa
+  dependencia, que habría obligado a rehacer `StreamGuard`/`media::ffmpeg`/`media::mpv`
+  sobre su modelo de proceso (`CommandChild` no tiene `try_wait`, solo `kill(self)` y
+  eventos de `Stdout`/`Terminated` por canal) para ganar nada que no se pudiera resolver
+  con una función de 20 líneas.
+- **Los binarios no van en el repositorio** (~550 MB): `apps/desktop/src-tauri/binaries/`
+  está en `.gitignore` salvo un `LEEME.md` con de dónde descargarlos, qué nombre exacto
+  darles (`<nombre>-x86_64-pc-windows-msvc.exe`, el sufijo de triple que Tauri retira al
+  empaquetar) y sus hashes SHA-256.
+- **`bundle.active` rompía la compilación normal, no solo el empaquetado.** Primer
+  intento: `tauri.conf.json` con `bundle.active: true` + `externalBin` apuntando a
+  `binaries/`. Resultado real: `cargo check` (sin ninguna intención de generar un
+  instalador) empezó a fallar en seco con "resource path ... doesn't exist" en cuanto
+  faltaba uno de los tres binarios — el build script de `tauri-build` valida
+  `externalBin` en **cualquier** compilación, no solo al empaquetar. Arreglado
+  devolviendo `tauri.conf.json` a `bundle.active: false` (como estaba) y moviendo todo
+  lo de empaquetado a `tauri.bundle.conf.json`, un fichero de config aparte que Tauri
+  fusiona por encima del principal solo cuando se le pide explícitamente
+  (`tauri build --config src-tauri/tauri.bundle.conf.json`, script
+  `npm run build:installer`). `cargo check`/`test`/`tauri dev` vuelven a funcionar sin
+  que los binarios existan siquiera.
+- **Comprobación de que existen al arrancar**: nuevo `GET /api/playback/binaries` (lee
+  el mismo `Option<PathBuf>` que ya se resolvía en F9) y un aviso en Ajustes si falta
+  alguno — antes solo quedaba constancia en el log (`tracing::warn!`), que nadie mira en
+  el día a día.
+- **Migraciones aplicadas antes de servir, no solo al invocar un comando Tauri.**
+  Encontrado revisando `server::serve` para decidir dónde leer el ajuste de LAN: no
+  había ningún `open_connection_at` (el que sí aplica migraciones) en el arranque del
+  servidor — dependía de que el frontend invocara `list_providers` u otro comando Tauri
+  antes de que llegara la primera petición HTTP real, una carrera de verdad en una
+  instalación nueva sin base de datos todavía, no solo teórica. Arreglado abriendo la
+  conexión (con migraciones) una vez al principio de `serve()`, antes de construir
+  ningún estado.
+- **Modo LAN**: `app_settings` (clave/valor, un ajuste nuevo no necesita su propia
+  migración) y `paired_devices` (`migrations/003_lan_pairing.sql`). El servidor sigue
+  atado a un único socket (regla R2) — no hay un segundo `TcpListener` en `0.0.0.0` ni
+  un reinicio al activar el modo LAN: el socket ya escucha en todas las interfaces
+  siempre (`0.0.0.0` cubre loopback también), y lo que de verdad decide si una petición
+  LAN se sirve o se rechaza es `server::lan::require_local_or_paired`, un middleware que
+  se aplica sobre el router ya fusionado (dentro de la capa de CORS, para que un
+  `OPTIONS` de preflight no tenga que pasar por la comprobación de token). Toda petición
+  de loopback pasa igual que siempre, sin tocar nada de esto.
+  - **Emparejamiento**: código de 6 dígitos en memoria (`util::pairing::PairingState`,
+    igual de efímero que `ParentalGuard`), de un solo uso pero **una tecleada
+    equivocada no lo quema** — se descubrió escribiendo el primer test que sí lo hacía
+    fallar mal: quemar el código a la primera hace que emparejar un mando a distancia
+    sea frustrante si te equivocas una vez, así que solo se consume al acertar o al
+    caducar (5 minutos).
+  - **Token por dispositivo**: 32 bytes de `rand` (nueva dependencia directa — ya vivía
+    en el árbol de forma transitoria, esto solo la sube a explícita), solo se guarda su
+    hash SHA-256 (regla R5, mismo criterio que `profiles.pin_hash`). Se entrega una
+    única vez al canjear el código; revocar es `revoked_at = now()`, nunca se borra la
+    fila (conserva el historial de quién tuvo acceso alguna vez).
+  - **"StreamGuard distribuido"** no necesitó código nuevo: todo dispositivo, local o
+    LAN, pasa por el mismo proceso y el mismo `StreamGuard` — es "distribuido" en el
+    sentido de que el PC decide por todos, no en el de coordinar varios procesos (no
+    hay varios procesos que coordinar en esta arquitectura, ver `docs/ARCHITECTURE.md`).
+  - **IP local para enseñar junto al código**: truco de `UdpSocket` "conectado" a una IP
+    pública (no manda ningún paquete de verdad, UDP no tiene apretón de manos; solo hace
+    que el sistema operativo resuelva la interfaz de salida) — sin librería nueva, sin
+    descubrimiento automático (mDNS, etc., que no está construido: el otro dispositivo
+    necesita que se le diga la IP a mano).
+- **`docs/API.md`**: primera versión completa de la API HTTP, pensada para el cliente de
+  Fire TV que llega en una fase posterior.
+
+**Deuda técnica que deja esta fase.**
+- **Nada de esto se ha probado contra un segundo dispositivo real.** El cliente de Fire
+  TV no existe todavía; todos los tests de `server::lan` prueban el middleware
+  inyectando un `ConnectInfo` sintético (no loopback) contra el propio proceso — no
+  contra tráfico de red de verdad llegando por LAN. Antes de confiar en esto con un
+  dispositivo real, probar al menos: que la IP detectada es la correcta en una red con
+  más de una interfaz (VPN, adaptador virtual de Docker/WSL, etc. — el truco del
+  `UdpSocket` puede dar una interfaz "rara" en esos casos), y que el firewall de
+  Windows no bloquea la conexión entrante por defecto (Windows suele preguntar la
+  primera vez que un proceso escucha en una interfaz no loopback; no se ha podido
+  probar ese diálogo).
+- **Sin descubrimiento automático del dispositivo.** El futuro cliente de Fire TV
+  necesita que se le teclee la IP:puerto a mano (o algún QR/mDNS futuro, no construido).
+- **Control parental no es por dispositivo.** El desbloqueo (`ParentalGuard`) es un
+  único booleano por proceso — un dispositivo LAN que desbloquee lo desbloquea para
+  todos los que compartan esta app en ese momento, incluida la propia ventana de
+  escritorio. Aceptable mientras el uso real siga siendo "una familia, un PC".
+- **El instalador no está firmado.** Windows SmartScreen avisará de "editor
+  desconocido" hasta que se firme (fuera de alcance sin un certificado de firma de
+  código, que cuesta dinero y no tenía sentido comprar solo para probarlo en esta
+  máquina).
+- **Licencias de los sidecars.** Ver `apps/desktop/src-tauri/binaries/LEEME.md`: ffmpeg
+  ("full build") y mpv son GPL. Empaquetarlos como sidecars (procesos aparte, nunca
+  enlazados) es agregación, no obliga a que el resto de la app sea GPL — pero si el
+  instalador se comparte con alguien más, hay que ofrecer/enlazar el código fuente
+  exacto de esos binarios, y valdría la pena cambiar a un build **LGPL** de ffmpeg (esta
+  app nunca necesita sus codificadores GPL, solo copia/remuxea).
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

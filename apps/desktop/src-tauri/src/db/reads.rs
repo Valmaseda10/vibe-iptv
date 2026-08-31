@@ -955,6 +955,55 @@ pub fn remove_favorite(conn: &Connection, profile_id: i64, item_kind: &str, item
     Ok(())
 }
 
+// ─────────────── Ajustes y modo LAN (F10) ───────────────
+
+pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
+    conn.query_row("SELECT value FROM app_settings WHERE key = ?1", params![key], |row| row.get(0)).optional().map_err(Into::into)
+}
+
+pub struct PairedDeviceRow {
+    pub id: i64,
+    pub device_name: String,
+    pub created_at: i64,
+    pub last_seen_at: Option<i64>,
+    pub revoked_at: Option<i64>,
+}
+
+/// Todos los dispositivos alguna vez emparejados, revocados incluidos (Ajustes los
+/// enseña tachados en vez de hacerlos desaparecer — conservar el historial es a
+/// propósito, ver `queries::revoke_paired_device`). Nunca incluye el token: no se
+/// guarda en claro en ningún sitio después de entregarlo una vez.
+pub fn list_paired_devices(conn: &Connection) -> Result<Vec<PairedDeviceRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, device_name, created_at, last_seen_at, revoked_at FROM paired_devices ORDER BY created_at DESC",
+    )?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(PairedDeviceRow {
+                id: row.get(0)?,
+                device_name: row.get(1)?,
+                created_at: row.get(2)?,
+                last_seen_at: row.get(3)?,
+                revoked_at: row.get(4)?,
+            })
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Resuelve un token de dispositivo LAN a su id, solo si no ha sido revocado. El
+/// middleware de autenticación (`server::lan`) llama a esto en cada petición no local;
+/// recibe ya el hash (`util::pairing::hash_token`), nunca el token en claro.
+pub fn find_active_device_by_token_hash(conn: &Connection, token_hash: &str) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT id FROM paired_devices WHERE token_hash = ?1 AND revoked_at IS NULL",
+        params![token_hash],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

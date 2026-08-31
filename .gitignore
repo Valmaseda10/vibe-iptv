@@ -1,1 +1,9 @@
 .claude/scheduled_tasks.lock
+
+# Sidecars de F10 (ffmpeg, ffprobe, mpv): ~550 MB en total, no van en el repositorio.
+# Ver apps/desktop/src-tauri/binaries/LEEME.md para descargarlos y colocarlos aquí antes
+# de generar el instalador. `cargo tauri dev`/`build` sin ellos siguen funcionando: la
+# app cae al PATH del sistema (ver media::resolve_binary), solo el instalador final los
+# necesita empaquetados.
+apps/desktop/src-tauri/binaries/*
+!apps/desktop/src-tauri/binaries/LEEME.md

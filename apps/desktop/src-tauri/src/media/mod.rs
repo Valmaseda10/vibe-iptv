@@ -2,15 +2,36 @@ pub mod ffmpeg;
 pub mod mpv;
 pub mod probe;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-/// Localiza un binario auxiliar (`ffmpeg`, `ffprobe`, `mpv`). En v1, mientras F10 no
-/// empaquete los sidecars de Tauri en `src-tauri/binaries/`, se busca en el `PATH` del
-/// sistema: es una simplificación de desarrollo, documentada como deuda en
-/// `docs/DECISIONS.md`. CLAUDE.md prohíbe asumir el PATH en el producto empaquetado, no
-/// en esta fase de desarrollo — F10 sustituye esta función por la ruta del sidecar.
+/// Localiza un binario auxiliar (`ffmpeg`, `ffprobe`, `mpv`). Primero junto al propio
+/// ejecutable: así es como Tauri deja los sidecars declarados en `bundle.externalBin`
+/// en el paquete instalado — el sufijo de triple de compilación del fichero fuente en
+/// `binaries/` (p. ej. `mpv-x86_64-pc-windows-msvc.exe`) se retira al empaquetar, y el
+/// binario queda como `mpv.exe` en la misma carpeta que `vibe-iptv.exe` (misma
+/// convención que usa `tauri-plugin-shell` internamente — no hace falta esa
+/// dependencia solo para esto, que además obligaría a rehacer `StreamGuard` sobre su
+/// modelo de proceso, sin `try_wait`). Si no está ahí (dev, o el usuario lo instaló él
+/// mismo), cae al `PATH` del sistema.
 pub fn resolve_binary(name: &str) -> Option<PathBuf> {
     let exe_name = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+
+    if let Ok(current_exe) = std::env::current_exe() {
+        // Bajo `cargo test`, el ejecutable vive en `target/debug/deps/`: sube un nivel
+        // para mirar en `target/debug/`, donde sí tendría sentido dejar un sidecar de
+        // prueba (mismo ajuste que hace `tauri-plugin-shell` para su propio caso de test).
+        let mut dir = current_exe.parent().map(Path::to_path_buf);
+        if dir.as_deref().and_then(Path::file_name) == Some(std::ffi::OsStr::new("deps")) {
+            dir = dir.and_then(|d| d.parent().map(Path::to_path_buf));
+        }
+        if let Some(dir) = dir {
+            let candidate = dir.join(&exe_name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
     let path_var = std::env::var_os("PATH")?;
     std::env::split_paths(&path_var).map(|dir| dir.join(&exe_name)).find(|p| p.is_file())
 }
@@ -22,5 +43,25 @@ mod tests {
     #[test]
     fn resolve_binary_returns_none_for_something_that_does_not_exist() {
         assert!(resolve_binary("un-binario-que-no-existe-vibe-iptv").is_none());
+    }
+
+    /// Simula el paquete instalado: un fichero junto al ejecutable (con el ajuste de
+    /// `deps/` bajo `cargo test`) debe encontrarse sin tocar el `PATH` para nada.
+    #[test]
+    fn resolve_binary_finds_a_file_next_to_the_current_executable() {
+        let name = "un-sidecar-de-prueba-vibe-iptv";
+        let exe_name = if cfg!(windows) { format!("{name}.exe") } else { name.to_string() };
+
+        let mut dir = std::env::current_exe().unwrap().parent().unwrap().to_path_buf();
+        if dir.file_name() == Some(std::ffi::OsStr::new("deps")) {
+            dir = dir.parent().unwrap().to_path_buf();
+        }
+        let path = dir.join(&exe_name);
+        std::fs::write(&path, b"no es un binario real, solo para la prueba").unwrap();
+
+        let found = resolve_binary(name);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(found, Some(path));
     }
 }

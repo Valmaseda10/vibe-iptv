@@ -1,14 +1,18 @@
 pub mod api;
+pub mod lan;
 pub mod routes;
 pub mod stream;
 
-use std::net::TcpListener as StdTcpListener;
+use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
 
+use crate::db::schema;
+use crate::util::pairing::PairingState;
 use crate::util::parental::ParentalGuard;
 use crate::util::stream_guard::StreamGuard;
 
@@ -38,11 +42,29 @@ pub async fn serve(
     listener.set_nonblocking(true)?;
     let listener = tokio::net::TcpListener::from_std(listener)?;
 
+    // Aplica las migraciones aquí, antes de servir nada. Sin esto había una carrera de
+    // verdad, no solo teórica: en una instalación nueva (fichero de base de datos
+    // inexistente) la primera petición HTTP real llega por `open_readonly_at` (que
+    // nunca comprueba migraciones) y podría adelantarse al primer comando Tauri que sí
+    // las dispara (`list_providers`, vía `open_connection`). De paso, es el sitio
+    // natural para leer el ajuste de LAN antes de construir su estado.
+    let lan_enabled = {
+        let db_path = db_path.clone();
+        tokio::task::spawn_blocking(move || -> crate::db::Result<bool> {
+            let conn = schema::open_connection_at(&db_path)?;
+            lan::read_lan_enabled_setting(&conn)
+        })
+        .await
+        .map_err(std::io::Error::other)?
+        .map_err(std::io::Error::other)?
+    };
+    let lan_state = lan::LanState { db_path: db_path.clone(), enabled: Arc::new(AtomicBool::new(lan_enabled)), pairing: PairingState::new() };
+
     let stream_state = stream::StreamState {
         db_path: db_path.clone(),
         stream_guard,
-        // En v1 se busca en el PATH (ver docs/DECISIONS.md); F10 lo sustituye por el
-        // sidecar empaquetado y esto deja de poder ser `None`.
+        // `resolve_binary` mira primero junto al ejecutable (sidecar empaquetado, F10) y
+        // cae al PATH si no lo encuentra (desarrollo, o el usuario lo instaló él mismo).
         ffmpeg_path: crate::media::resolve_binary("ffmpeg"),
         ffprobe_path: crate::media::resolve_binary("ffprobe"),
         mpv_path: crate::media::resolve_binary("mpv"),
@@ -57,8 +79,10 @@ pub async fn serve(
     // Se olvida al reiniciar la app a propósito (regla de `util::parental`): el
     // desbloqueo del PIN nunca se persiste, solo dura la sesión.
     let parental_guard = ParentalGuard::new();
-    let router = full_router(image_cache_dir, db_path, stream_state, parental_guard);
-    axum::serve(listener, router).await
+    let router = full_router(image_cache_dir, db_path, stream_state, parental_guard, lan_state);
+    // `with_connect_info` es lo que le da a `lan::require_local_or_paired` la IP real
+    // del que llama — sin esto no habría forma de distinguir loopback de LAN.
+    axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await
 }
 
 /// El router completo: catálogo + salud/imágenes + streaming, con CORS aplicado una
@@ -76,9 +100,21 @@ pub async fn serve(
 /// `/api/playback/tier/*` fallaba en silencio por CORS —`<video src>` no lo notó porque
 /// cargar un recurso de vídeo no pasa por CORS, solo `fetch`/`XHR` sí— y el panel de
 /// estadísticas del reproductor se quedó mostrando "nivel desconocido" para siempre.
-fn full_router(image_cache_dir: PathBuf, db_path: PathBuf, stream_state: stream::StreamState, parental_guard: Arc<ParentalGuard>) -> Router {
+///
+/// El middleware del modo LAN (F10) se aplica antes del CORS (queda por dentro): así
+/// una petición de preflight (`OPTIONS`, sin `Authorization`) la resuelve `CorsLayer`
+/// sin pasar nunca por la comprobación de token, que no tiene sentido aplicarle.
+fn full_router(
+    image_cache_dir: PathBuf,
+    db_path: PathBuf,
+    stream_state: stream::StreamState,
+    parental_guard: Arc<ParentalGuard>,
+    lan_state: lan::LanState,
+) -> Router {
     routes::build_router(image_cache_dir, db_path, parental_guard)
         .merge(stream::stream_router(stream_state))
+        .merge(lan::lan_router(lan_state.clone()))
+        .layer(axum::middleware::from_fn_with_state(lan_state, lan::require_local_or_paired))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
 }
 
@@ -98,7 +134,12 @@ mod tests {
             ffprobe_path: None,
             mpv_path: None,
         };
-        let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state, ParentalGuard::new());
+        let lan_state = lan::LanState {
+            db_path: std::env::temp_dir(),
+            enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pairing: crate::util::pairing::PairingState::new(),
+        };
+        let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state, ParentalGuard::new(), lan_state);
 
         // Una respuesta a una ruta de F6 (fusionada tras el CORS de F4) debe llevar la
         // cabecera igual que una del catálogo: el bug real fue que no la llevaba.
