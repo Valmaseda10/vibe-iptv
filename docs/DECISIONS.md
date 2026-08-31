@@ -539,14 +539,14 @@ no pueda colarse en silencio. Lección para las fases futuras que añadan rutas:
 se aplica una vez, al final, sobre el router completo, nunca sobre una mitad antes de
 fusionar.
 
+**Confirmado por el usuario tras el arreglo de CORS: la barra de progreso y la búsqueda
+en VOD ya funcionan.**
+
 **Deuda técnica pendiente.**
 - Toda la de fases anteriores.
-- **Verificado por el usuario**: audio y vídeo van bien en directo y en película. La
-  barra/búsqueda de VOD necesitó cuatro vueltas de corrección; la causa raíz (CORS) ya
-  tiene test de regresión, pero la confirmación visual final de la barra **todavía la
-  tiene pendiente el usuario**.
 - Series, zapping y reanudar no se han probado todavía con el proveedor real del
-  usuario.
+  usuario (audio/vídeo en directo y en película sí están confirmados, con la búsqueda ya
+  corregida).
 - HLS: proxy transparente sin reescritura de manifiesto, sin `hls.js` en el cliente (ver
   decisión arriba).
 - **Solo una fuente/calidad por película en el reproductor** (la primera de
