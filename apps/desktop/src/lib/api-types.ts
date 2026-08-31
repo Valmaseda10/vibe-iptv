@@ -24,7 +24,7 @@ export type EpgProgrammeResponse = { title: string, subtitle: string | null, sta
 
 export type EpisodeSummary = { id: number, series_source_id: number, season: number, number: number, title: string | null, overview: string | null, still_path: string | null, duration_s: number | null, };
 
-export type FavoriteInput = { item_kind: string, item_id: number, };
+export type FavoriteInput = { profile_id: number, item_kind: string, item_id: number, };
 
 export type FavoriteItem = { item_kind: string, item_id: number, title: string, poster_path: string | null, };
 
@@ -81,11 +81,7 @@ export type PairingStartResponse = { code: string,
  */
 expires_in_s: number, };
 
-export type ParentalStatus = { has_pin: boolean, unlocked: boolean, };
-
-export type ParentalUnlockInput = { pin: string, };
-
-export type PlaybackProgressInput = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
+export type PlaybackProgressInput = { profile_id: number, item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
 
 export type PlaybackProgressResponse = { position_s: number, duration_s: number | null, finished: boolean, };
 
@@ -100,6 +96,10 @@ tier: number | null, video_codec: string | null, audio_codec: string | null, con
  * directo o si todavía no se ha reproducido nunca este ítem.
  */
 duration_s: number | null, };
+
+export type ProfileInput = { name: string, avatar: string | null, adult_ok: boolean, };
+
+export type ProfileSummary = { id: number, name: string, avatar: string | null, has_pin: boolean, adult_ok: boolean, };
 
 /**
  * Tipo de proveedor, igual que la columna `kind` de `providers` en `docs/DATA-MODEL.md`.
@@ -121,9 +121,9 @@ export type SeriesPage = { items: Array<SeriesSummary>, next_cursor: number | nu
 
 export type SeriesSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, };
 
-export type SetParentalPinInput = { 
+export type SetProfilePinInput = { 
 /**
- * `None` quita el PIN (desactiva el control parental).
+ * `None` quita el PIN de este perfil (vuelve a entrarse sin pedir nada).
  */
 pin: string | null, };
 

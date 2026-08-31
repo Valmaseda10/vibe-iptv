@@ -3,7 +3,6 @@
 //! (F6), nunca se devuelve la URL real de un ítem aquí.
 
 use std::path::PathBuf;
-use std::sync::Arc;
 
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
@@ -14,12 +13,10 @@ use ts_rs::TS;
 
 use crate::db::reads::{self, MovieSort};
 use crate::db::{queries, schema, DbError};
-use crate::util::parental::ParentalGuard;
 
 #[derive(Clone)]
 pub struct CatalogState {
     pub db_path: PathBuf,
-    pub parental_guard: Arc<ParentalGuard>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -338,6 +335,8 @@ pub struct HomeResponse {
 #[derive(Deserialize, TS)]
 #[ts(export, export_to = "api-types.ts")]
 pub struct PlaybackProgressInput {
+    #[ts(type = "number")]
+    pub profile_id: i64,
     pub item_kind: String,
     #[ts(type = "number")]
     pub item_id: i64,
@@ -366,6 +365,8 @@ impl From<reads::FavoriteRow> for FavoriteItem {
 #[derive(Deserialize, TS)]
 #[ts(export, export_to = "api-types.ts")]
 pub struct FavoriteInput {
+    #[ts(type = "number")]
+    pub profile_id: i64,
     pub item_kind: String,
     #[ts(type = "number")]
     pub item_id: i64,
@@ -380,10 +381,15 @@ fn clamp_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
 }
 
-async fn get_home(State(state): State<CatalogState>) -> Result<Json<HomeResponse>, ApiError> {
+#[derive(Deserialize)]
+struct ProfileQuery {
+    profile_id: i64,
+}
+
+async fn get_home(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<HomeResponse>, ApiError> {
     let db_path = state.db_path.clone();
-    let (continue_watching, next_episodes, recent_movies) = with_db(db_path, |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
+    let profile_id = query.profile_id;
+    let (continue_watching, next_episodes, recent_movies) = with_db(db_path, move |conn| {
         let continue_watching = reads::list_continue_watching(conn, profile_id, 20)?;
         let next_episodes = reads::list_next_episodes(conn, profile_id, 20)?;
         let recent_movies = reads::list_recent_movies(conn, 20)?;
@@ -398,14 +404,23 @@ async fn get_home(State(state): State<CatalogState>) -> Result<Json<HomeResponse
     }))
 }
 
-async fn get_live_categories(State(state): State<CatalogState>) -> Result<Json<Vec<CategorySummary>>, ApiError> {
-    let include_adult = state.parental_guard.is_unlocked();
-    let items = with_db(state.db_path, move |conn| reads::list_categories(conn, "live", include_adult)).await?;
+#[derive(Deserialize)]
+struct LiveCategoriesQuery {
+    profile_id: i64,
+}
+
+async fn get_live_categories(State(state): State<CatalogState>, Query(query): Query<LiveCategoriesQuery>) -> Result<Json<Vec<CategorySummary>>, ApiError> {
+    let items = with_db(state.db_path, move |conn| {
+        let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
+        reads::list_categories(conn, "live", include_adult)
+    })
+    .await?;
     Ok(Json(items.into_iter().map(Into::into).collect()))
 }
 
 #[derive(Deserialize)]
 struct ChannelsQuery {
+    profile_id: i64,
     category_id: Option<i64>,
     q: Option<String>,
     after: Option<i64>,
@@ -414,8 +429,8 @@ struct ChannelsQuery {
 
 async fn get_live_channels(State(state): State<CatalogState>, Query(query): Query<ChannelsQuery>) -> Result<Json<ChannelsPage>, ApiError> {
     let limit = clamp_limit(query.limit);
-    let include_adult = state.parental_guard.is_unlocked();
     let items = with_db(state.db_path, move |conn| {
+        let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
         reads::list_channels_page(conn, query.category_id, query.q.as_deref(), query.after, limit, include_adult)
     })
     .await?;
@@ -425,6 +440,7 @@ async fn get_live_channels(State(state): State<CatalogState>, Query(query): Quer
 
 #[derive(Deserialize)]
 struct MoviesQuery {
+    profile_id: i64,
     genre: Option<i64>,
     year: Option<i32>,
     quality: Option<String>,
@@ -445,8 +461,8 @@ fn parse_movie_sort(sort: Option<&str>) -> MovieSort {
 async fn get_movies(State(state): State<CatalogState>, Query(query): Query<MoviesQuery>) -> Result<Json<MoviesPage>, ApiError> {
     let limit = clamp_limit(query.limit);
     let sort = parse_movie_sort(query.sort.as_deref());
-    let include_adult = state.parental_guard.is_unlocked();
     let items = with_db(state.db_path, move |conn| {
+        let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
         reads::list_movies_page(conn, query.genre, query.year, query.quality.as_deref(), sort, query.after, limit, include_adult)
     })
     .await?;
@@ -651,6 +667,7 @@ async fn get_epg_grid(State(state): State<CatalogState>, Query(query): Query<Epg
 
 #[derive(Deserialize)]
 struct PlaybackProgressQuery {
+    profile_id: i64,
     item_kind: String,
     #[serde(rename = "item_id")]
     item_id: i64,
@@ -670,11 +687,8 @@ pub struct PlaybackProgressResponse {
 /// Sin progreso guardado, responde 204 en vez de un objeto vacío: es más claro para el
 /// cliente que comprobar un campo nulo.
 async fn get_playback_progress(State(state): State<CatalogState>, Query(query): Query<PlaybackProgressQuery>) -> Result<Response, ApiError> {
-    let progress = with_db(state.db_path, move |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
-        reads::get_playback_progress(conn, profile_id, &query.item_kind, query.item_id)
-    })
-    .await?;
+    let progress =
+        with_db(state.db_path, move |conn| reads::get_playback_progress(conn, query.profile_id, &query.item_kind, query.item_id)).await?;
 
     Ok(match progress {
         Some(p) => Json(PlaybackProgressResponse { position_s: p.position_s, duration_s: p.duration_s, finished: p.finished }).into_response(),
@@ -687,130 +701,35 @@ async fn post_playback_progress(State(state): State<CatalogState>, Json(input): 
         return Err(ApiError::BadRequest("item_kind debe ser movie, episode o channel".to_string()));
     }
     with_db(state.db_path, move |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
-        reads::upsert_playback_progress(conn, profile_id, &input.item_kind, input.item_id, input.position_s, input.duration_s)
+        reads::upsert_playback_progress(conn, input.profile_id, &input.item_kind, input.item_id, input.position_s, input.duration_s)
     })
     .await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn get_favorites(State(state): State<CatalogState>) -> Result<Json<Vec<FavoriteItem>>, ApiError> {
-    let items = with_db(state.db_path, |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
-        reads::list_favorites(conn, profile_id)
-    })
-    .await?;
+async fn get_favorites(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<Vec<FavoriteItem>>, ApiError> {
+    let items = with_db(state.db_path, move |conn| reads::list_favorites(conn, query.profile_id)).await?;
     Ok(Json(items.into_iter().map(Into::into).collect()))
 }
 
 async fn post_favorite(State(state): State<CatalogState>, Json(input): Json<FavoriteInput>) -> Result<StatusCode, ApiError> {
-    with_db(state.db_path, move |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
-        reads::add_favorite(conn, profile_id, &input.item_kind, input.item_id)
-    })
-    .await?;
+    with_db(state.db_path, move |conn| reads::add_favorite(conn, input.profile_id, &input.item_kind, input.item_id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]
 struct DeleteFavoriteQuery {
+    profile_id: i64,
     item_kind: String,
     item_id: i64,
 }
 
 async fn delete_favorite(State(state): State<CatalogState>, Query(query): Query<DeleteFavoriteQuery>) -> Result<StatusCode, ApiError> {
-    with_db(state.db_path, move |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
-        reads::remove_favorite(conn, profile_id, &query.item_kind, query.item_id)
-    })
-    .await?;
+    with_db(state.db_path, move |conn| reads::remove_favorite(conn, query.profile_id, &query.item_kind, query.item_id)).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
-// ─────────────── Control parental (F8) ───────────────
-
-#[derive(Serialize, TS)]
-#[ts(export, export_to = "api-types.ts")]
-pub struct ParentalStatus {
-    pub has_pin: bool,
-    pub unlocked: bool,
-}
-
-async fn get_parental_status(State(state): State<CatalogState>) -> Result<Json<ParentalStatus>, ApiError> {
-    let has_pin = with_db(state.db_path, |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
-        reads::get_profile_pin_hash(conn, profile_id)
-    })
-    .await?
-    .is_some();
-    Ok(Json(ParentalStatus { has_pin, unlocked: state.parental_guard.is_unlocked() }))
-}
-
-#[derive(Deserialize, TS)]
-#[ts(export, export_to = "api-types.ts")]
-pub struct ParentalUnlockInput {
-    pub pin: String,
-}
-
-/// PIN incorrecto o sin configurar: 401, nunca revela cuál era el motivo (evita que un
-/// script probando PINs distinga "no hay PIN" de "PIN equivocado").
-async fn post_parental_unlock(State(state): State<CatalogState>, Json(input): Json<ParentalUnlockInput>) -> Result<StatusCode, ApiError> {
-    let stored_hash = with_db(state.db_path, |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
-        reads::get_profile_pin_hash(conn, profile_id)
-    })
-    .await?;
-
-    match stored_hash {
-        Some(hash) if crate::util::parental::verify_pin(&input.pin, &hash) => {
-            state.parental_guard.unlock();
-            Ok(StatusCode::NO_CONTENT)
-        }
-        _ => Err(ApiError::BadRequest("PIN incorrecto".to_string())),
-    }
-}
-
-async fn post_parental_lock(State(state): State<CatalogState>) -> StatusCode {
-    state.parental_guard.lock();
-    StatusCode::NO_CONTENT
-}
-
-#[derive(Deserialize, TS)]
-#[ts(export, export_to = "api-types.ts")]
-pub struct SetParentalPinInput {
-    /// `None` quita el PIN (desactiva el control parental).
-    pub pin: Option<String>,
-}
-
-/// Cambiar el PIN exige haberlo desbloqueado antes (o no tener ninguno todavía): así no
-/// basta con tener la app abierta para quitarle el PIN a otra persona sin saberlo.
-async fn post_parental_pin(State(state): State<CatalogState>, Json(input): Json<SetParentalPinInput>) -> Result<StatusCode, ApiError> {
-    let has_pin = with_db(state.db_path.clone(), |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
-        reads::get_profile_pin_hash(conn, profile_id)
-    })
-    .await?
-    .is_some();
-
-    if has_pin && !state.parental_guard.is_unlocked() {
-        return Err(ApiError::BadRequest("hay que desbloquear el PIN actual antes de cambiarlo".to_string()));
-    }
-
-    let pin_hash = input.pin.as_deref().map(crate::util::parental::hash_pin);
-    let clears_pin = pin_hash.is_none();
-    with_db(state.db_path, move |conn| {
-        let profile_id = reads::ensure_default_profile(conn)?;
-        queries::set_profile_pin_hash(conn, profile_id, pin_hash.as_deref())
-    })
-    .await?;
-
-    if clears_pin {
-        state.parental_guard.unlock(); // sin PIN, no hay nada que ocultar.
-    }
-    Ok(StatusCode::NO_CONTENT)
-}
-
-pub fn catalog_router(db_path: PathBuf, parental_guard: Arc<ParentalGuard>) -> Router {
+pub fn catalog_router(db_path: PathBuf) -> Router {
     Router::new()
         .route("/api/home", get(get_home))
         .route("/api/live/categories", get(get_live_categories))
@@ -824,11 +743,7 @@ pub fn catalog_router(db_path: PathBuf, parental_guard: Arc<ParentalGuard>) -> R
         .route("/api/epg/grid", get(get_epg_grid))
         .route("/api/playback/progress", get(get_playback_progress).post(post_playback_progress))
         .route("/api/favorites", get(get_favorites).post(post_favorite).delete(delete_favorite))
-        .route("/api/parental/status", get(get_parental_status))
-        .route("/api/parental/unlock", axum::routing::post(post_parental_unlock))
-        .route("/api/parental/lock", axum::routing::post(post_parental_lock))
-        .route("/api/parental/pin", axum::routing::post(post_parental_pin))
-        .with_state(CatalogState { db_path, parental_guard })
+        .with_state(CatalogState { db_path })
 }
 
 #[cfg(test)]
@@ -843,9 +758,15 @@ mod tests {
     use std::collections::HashMap;
     use tower::ServiceExt;
 
+    /// Perfil que usan todos los tests de este módulo — una base de datos de prueba
+    /// nueva siempre le da el id 1 (primera fila de una tabla `INTEGER PRIMARY KEY`).
+    const TEST_PROFILE_ID: i64 = 1;
+
     fn seeded_db() -> PathBuf {
         let path = std::env::temp_dir().join(format!("vibe-iptv-api-test-{}-{}.sqlite3", std::process::id(), rand_suffix()));
         let conn = open_connection_at(&path).unwrap();
+        let profile_id = crate::db::reads::ensure_default_profile(&conn).unwrap();
+        assert_eq!(profile_id, TEST_PROFILE_ID);
         let provider_id = write_queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
         let raw = RawMovie {
             remote_id: "1".into(),
@@ -875,9 +796,9 @@ mod tests {
     #[tokio::test]
     async fn get_movies_returns_seeded_movie() {
         let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
 
-        let response = router.oneshot(Request::builder().uri("/api/movies").body(Body::empty()).unwrap()).await.unwrap();
+        let response = router.oneshot(Request::builder().uri(format!("/api/movies?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["items"][0]["clean_title"], "Peli de Prueba");
@@ -888,7 +809,7 @@ mod tests {
     #[tokio::test]
     async fn get_movie_detail_404_when_missing() {
         let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
 
         let response = router.oneshot(Request::builder().uri("/api/movies/9999").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -899,7 +820,7 @@ mod tests {
     #[tokio::test]
     async fn get_search_finds_seeded_movie() {
         let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
 
         let response = router.oneshot(Request::builder().uri("/api/search?q=Prueba").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -912,9 +833,9 @@ mod tests {
     #[tokio::test]
     async fn playback_progress_and_home_continue_watching_roundtrip() {
         let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
 
-        let body = serde_json::json!({"item_kind": "movie", "item_id": 1, "position_s": 30, "duration_s": 100});
+        let body = serde_json::json!({"profile_id": TEST_PROFILE_ID, "item_kind": "movie", "item_id": 1, "position_s": 30, "duration_s": 100});
         let response = router
             .clone()
             .oneshot(
@@ -929,7 +850,8 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-        let response = router.oneshot(Request::builder().uri("/api/home").body(Body::empty()).unwrap()).await.unwrap();
+        let response =
+            router.oneshot(Request::builder().uri(format!("/api/home?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap()).await.unwrap();
         let json = body_json(response).await;
         assert_eq!(json["continue_watching"][0]["item_id"], 1);
 
@@ -939,16 +861,21 @@ mod tests {
     #[tokio::test]
     async fn get_playback_progress_returns_204_without_saved_position_and_data_after() {
         let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
 
         let response = router
             .clone()
-            .oneshot(Request::builder().uri("/api/playback/progress?item_kind=movie&item_id=1").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/playback/progress?profile_id={TEST_PROFILE_ID}&item_kind=movie&item_id=1"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-        let body = serde_json::json!({"item_kind": "movie", "item_id": 1, "position_s": 42, "duration_s": 100});
+        let body = serde_json::json!({"profile_id": TEST_PROFILE_ID, "item_kind": "movie", "item_id": 1, "position_s": 42, "duration_s": 100});
         router
             .clone()
             .oneshot(
@@ -963,7 +890,12 @@ mod tests {
             .unwrap();
 
         let response = router
-            .oneshot(Request::builder().uri("/api/playback/progress?item_kind=movie&item_id=1").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/playback/progress?profile_id={TEST_PROFILE_ID}&item_kind=movie&item_id=1"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -976,21 +908,31 @@ mod tests {
     #[tokio::test]
     async fn favorites_post_get_delete_roundtrip() {
         let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
 
-        let body = serde_json::json!({"item_kind": "movie", "item_id": 1});
+        let body = serde_json::json!({"profile_id": TEST_PROFILE_ID, "item_kind": "movie", "item_id": 1});
         router
             .clone()
             .oneshot(Request::builder().method("POST").uri("/api/favorites").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap())
             .await
             .unwrap();
 
-        let response = router.clone().oneshot(Request::builder().uri("/api/favorites").body(Body::empty()).unwrap()).await.unwrap();
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(format!("/api/favorites?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         let json = body_json(response).await;
         assert_eq!(json[0]["item_id"], 1);
 
         let response = router
-            .oneshot(Request::builder().method("DELETE").uri("/api/favorites?item_kind=movie&item_id=1").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/favorites?profile_id={TEST_PROFILE_ID}&item_kind=movie&item_id=1"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
@@ -1021,8 +963,11 @@ mod tests {
             }
         }
 
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
-        let response = router.oneshot(Request::builder().uri("/api/movies?limit=2").body(Body::empty()).unwrap()).await.unwrap();
+        let router = catalog_router(db_path.clone());
+        let response = router
+            .oneshot(Request::builder().uri(format!("/api/movies?profile_id={TEST_PROFILE_ID}&limit=2")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
         let json = body_json(response).await;
         assert_eq!(json["items"].as_array().unwrap().len(), 2);
         assert!(json["next_cursor"].is_number());
@@ -1066,7 +1011,7 @@ mod tests {
             .unwrap();
         }
 
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
         let response = router
             .oneshot(Request::builder().uri(format!("/api/epg/now?channel_ids={channel_id}")).body(Body::empty()).unwrap())
             .await
@@ -1082,7 +1027,7 @@ mod tests {
     #[tokio::test]
     async fn get_epg_now_rejects_non_numeric_channel_ids() {
         let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
         let response =
             router.oneshot(Request::builder().uri("/api/epg/now?channel_ids=abc").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -1102,7 +1047,7 @@ mod tests {
             .unwrap();
         }
 
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
         let response = router
             .oneshot(Request::builder().uri(format!("/api/epg/grid?channel_ids={channel_id}&from=0&to=5000")).body(Body::empty()).unwrap())
             .await
@@ -1118,7 +1063,7 @@ mod tests {
     #[tokio::test]
     async fn get_epg_grid_rejects_backwards_window() {
         let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
+        let router = catalog_router(db_path.clone());
         let response = router
             .oneshot(Request::builder().uri("/api/epg/grid?channel_ids=1&from=100&to=50").body(Body::empty()).unwrap())
             .await
@@ -1127,85 +1072,4 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
     }
 
-    async fn post_json(router: &Router, uri: &str, body: serde_json::Value) -> Response {
-        router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri(uri)
-                    .header("content-type", "application/json")
-                    .body(Body::from(body.to_string()))
-                    .unwrap(),
-            )
-            .await
-            .unwrap()
-    }
-
-    #[tokio::test]
-    async fn parental_status_starts_without_pin_and_unlocked_by_default() {
-        let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
-        let response = router.oneshot(Request::builder().uri("/api/parental/status").body(Body::empty()).unwrap()).await.unwrap();
-        let json = body_json(response).await;
-        assert_eq!(json["has_pin"], false);
-        // Sin PIN configurado no hay nada que desbloquear: "unlocked" es irrelevante,
-        // pero el valor por defecto del guard es "bloqueado" hasta que se demuestre lo
-        // contrario.
-        assert_eq!(json["unlocked"], false);
-
-        let _ = std::fs::remove_file(&db_path);
-    }
-
-    #[tokio::test]
-    async fn parental_pin_set_unlock_and_wrong_pin_flow() {
-        let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
-
-        // Establecer un PIN nuevo no exige desbloqueo previo (no había ninguno).
-        let response = post_json(&router, "/api/parental/pin", serde_json::json!({"pin": "1234"})).await;
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-        let status = body_json(router.clone().oneshot(Request::builder().uri("/api/parental/status").body(Body::empty()).unwrap()).await.unwrap()).await;
-        assert_eq!(status["has_pin"], true);
-        assert_eq!(status["unlocked"], false);
-
-        // PIN incorrecto: sigue bloqueado.
-        let wrong = post_json(&router, "/api/parental/unlock", serde_json::json!({"pin": "0000"})).await;
-        assert_eq!(wrong.status(), StatusCode::BAD_REQUEST);
-
-        // PIN correcto: desbloquea.
-        let right = post_json(&router, "/api/parental/unlock", serde_json::json!({"pin": "1234"})).await;
-        assert_eq!(right.status(), StatusCode::NO_CONTENT);
-        let status = body_json(router.clone().oneshot(Request::builder().uri("/api/parental/status").body(Body::empty()).unwrap()).await.unwrap()).await;
-        assert_eq!(status["unlocked"], true);
-
-        // Volver a bloquear.
-        let lock = router.clone().oneshot(Request::builder().method("POST").uri("/api/parental/lock").body(Body::empty()).unwrap()).await.unwrap();
-        assert_eq!(lock.status(), StatusCode::NO_CONTENT);
-        let status = body_json(router.oneshot(Request::builder().uri("/api/parental/status").body(Body::empty()).unwrap()).await.unwrap()).await;
-        assert_eq!(status["unlocked"], false);
-
-        let _ = std::fs::remove_file(&db_path);
-    }
-
-    #[tokio::test]
-    async fn changing_an_existing_pin_requires_unlocking_it_first() {
-        let db_path = seeded_db();
-        let router = catalog_router(db_path.clone(), ParentalGuard::new());
-        post_json(&router, "/api/parental/pin", serde_json::json!({"pin": "1234"})).await;
-
-        // Sin desbloquear el PIN actual, no se puede cambiar (ni quitar).
-        let response = post_json(&router, "/api/parental/pin", serde_json::json!({"pin": "5678"})).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-
-        post_json(&router, "/api/parental/unlock", serde_json::json!({"pin": "1234"})).await;
-        let response = post_json(&router, "/api/parental/pin", serde_json::json!({"pin": null})).await;
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
-
-        let status = body_json(router.oneshot(Request::builder().uri("/api/parental/status").body(Body::empty()).unwrap()).await.unwrap()).await;
-        assert_eq!(status["has_pin"], false);
-
-        let _ = std::fs::remove_file(&db_path);
-    }
 }

@@ -650,15 +650,67 @@ pub fn get_profile_pin_hash(conn: &Connection, profile_id: i64) -> Result<Option
         .map_err(Into::into)
 }
 
+/// Usado solo por pruebas que necesitan un `profile_id` válido para sembrar datos y no
+/// les importa cuál — desde que los perfiles son un concepto real (F "perfiles
+/// Netflix"), ningún camino de producción llama a esto: crear un perfil en silencio
+/// dejaría de tener sentido con un selector explícito delante.
+#[cfg(test)]
 pub fn ensure_default_profile(conn: &Connection) -> Result<i64> {
     if let Some(id) = conn.query_row("SELECT id FROM profiles ORDER BY id LIMIT 1", [], |row| row.get(0)).optional()? {
         return Ok(id);
     }
     conn.execute(
-        "INSERT INTO profiles (name, adult_ok, created_at) VALUES ('Perfil', 0, ?1)",
+        "INSERT INTO profiles (name, adult_ok, created_at, updated_at) VALUES ('Perfil', 0, ?1, ?1)",
         params![now_epoch()],
     )?;
     Ok(conn.last_insert_rowid())
+}
+
+/// Vista de un perfil para la interfaz: nunca lleva `pin_hash` (aunque no es una
+/// credencial de proveedor, sigue sin ser algo que la API deba devolver tal cual).
+pub struct ProfileRow {
+    pub id: i64,
+    pub name: String,
+    pub avatar: Option<String>,
+    pub has_pin: bool,
+    pub adult_ok: bool,
+    pub created_at: i64,
+}
+
+fn row_to_profile(row: &Row) -> rusqlite::Result<ProfileRow> {
+    let pin_hash: Option<String> = row.get("pin_hash")?;
+    Ok(ProfileRow {
+        id: row.get("id")?,
+        name: row.get("name")?,
+        avatar: row.get("avatar")?,
+        has_pin: pin_hash.is_some(),
+        adult_ok: row.get::<_, i64>("adult_ok")? != 0,
+        created_at: row.get("created_at")?,
+    })
+}
+
+pub fn list_profiles(conn: &Connection) -> Result<Vec<ProfileRow>> {
+    let mut stmt = conn.prepare("SELECT * FROM profiles ORDER BY created_at ASC")?;
+    let rows = stmt.query_map([], row_to_profile)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn get_profile(conn: &Connection, id: i64) -> Result<Option<ProfileRow>> {
+    conn.query_row("SELECT * FROM profiles WHERE id = ?1", params![id], row_to_profile).optional().map_err(Into::into)
+}
+
+pub fn count_profiles(conn: &Connection) -> Result<i64> {
+    conn.query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0)).map_err(Into::into)
+}
+
+/// Si el perfil tiene `adult_ok = 0` (infantil), nunca ve categorías adultas — sin PIN
+/// de por medio, no hay nada que desbloquear (ver F "perfiles Netflix" en
+/// docs/DECISIONS.md, sustituye al `ParentalGuard` global de F8).
+pub fn profile_allows_adult(conn: &Connection, profile_id: i64) -> Result<bool> {
+    conn.query_row("SELECT adult_ok FROM profiles WHERE id = ?1", params![profile_id], |row| row.get::<_, i64>(0))
+        .optional()
+        .map(|opt| opt.unwrap_or(0) != 0)
+        .map_err(Into::into)
 }
 
 pub struct PlaybackItem {

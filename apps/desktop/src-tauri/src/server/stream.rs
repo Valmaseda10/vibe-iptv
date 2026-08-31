@@ -187,6 +187,9 @@ where
 
 #[derive(Deserialize)]
 struct StreamQuery {
+    /// Perfil que pide la reproducción — de quién es el "continuar viendo"/registro de
+    /// nivel que deja esta sesión (F "perfiles Netflix").
+    profile_id: i64,
     source: Option<i64>,
     start: Option<f64>,
 }
@@ -198,7 +201,7 @@ async fn get_stream(
     headers: HeaderMap,
 ) -> Response {
     let range = headers.get(header::RANGE).cloned();
-    match handle_stream(state, kind.clone(), id, query.source, query.start, range).await {
+    match handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, range).await {
         Ok(response) => response,
         Err(err) => {
             tracing::warn!(kind = %kind, id, error = %err, "fallo al servir /stream");
@@ -208,7 +211,7 @@ async fn get_stream(
 }
 
 async fn post_launch_mpv(State(state): State<StreamState>, AxumPath((kind, id)): AxumPath<(String, i64)>, Query(query): Query<StreamQuery>) -> Response {
-    match handle_mpv_launch(state, kind.clone(), id, query.source).await {
+    match handle_mpv_launch(state, kind.clone(), id, query.profile_id, query.source).await {
         Ok(response) => response,
         Err(err) => {
             tracing::warn!(kind = %kind, id, error = %err, "fallo al lanzar mpv");
@@ -219,6 +222,7 @@ async fn post_launch_mpv(State(state): State<StreamState>, AxumPath((kind, id)):
 
 #[derive(Deserialize)]
 struct CatchupQuery {
+    profile_id: i64,
     /// Inicio del bloque pedido, en epoch (segundos UTC) — no la hora civil que espera
     /// el proveedor: eso lo traduce `XtreamSource::timeshift_date`.
     start: i64,
@@ -234,7 +238,7 @@ async fn get_catchup(
     headers: HeaderMap,
 ) -> Response {
     let range = headers.get(header::RANGE).cloned();
-    match handle_catchup(state, channel_id, query.start, query.duration_min.unwrap_or(60), range).await {
+    match handle_catchup(state, channel_id, query.profile_id, query.start, query.duration_min.unwrap_or(60), range).await {
         Ok(response) => response,
         Err(err) => {
             tracing::warn!(channel_id, error = %err, "fallo al servir /stream/catchup");
@@ -273,12 +277,11 @@ async fn resolve_stream_target(
 
 /// Registra qué nivel sirvió el ítem (diagnóstico, ver `docs/ARCHITECTURE.md`). No es
 /// fatal si falla: no debe tumbar la reproducción, que ya está en marcha.
-async fn record_tier(db_path: &PathBuf, item_kind: &str, item_id: i64, tier: u8) {
+async fn record_tier(db_path: &PathBuf, profile_id: i64, item_kind: &str, item_id: i64, tier: u8) {
     let db_path = db_path.clone();
     let item_kind = item_kind.to_string();
     let outcome = tokio::task::spawn_blocking(move || -> crate::db::Result<()> {
         let conn = schema::open_readonly_at(&db_path)?;
-        let profile_id = reads::ensure_default_profile(&conn)?;
         queries::record_play_tier(&conn, profile_id, &item_kind, item_id, tier as i64)
     })
     .await;
@@ -293,6 +296,7 @@ async fn handle_stream(
     state: StreamState,
     kind_str: String,
     id: i64,
+    profile_id: i64,
     source_id: Option<i64>,
     start_seconds: Option<f64>,
     range_header: Option<HeaderValue>,
@@ -326,7 +330,7 @@ async fn handle_stream(
     // las URIs internas del manifiesto (ver docs/DECISIONS.md): no se ha podido probar
     // contra un proveedor que sirva HLS de verdad, ninguno de los dos del usuario lo hace.
     if primary_url.path().to_ascii_lowercase().ends_with(".m3u8") {
-        record_tier(&state.db_path, &kind_str, id, 1).await;
+        record_tier(&state.db_path, profile_id, &kind_str, id, 1).await;
         return proxy_passthrough(primary_url, range_header, permit, Arc::clone(&state.stream_guard)).await;
     }
 
@@ -337,7 +341,7 @@ async fn handle_stream(
 
     let (resolved_url, tier, audio_codec) =
         resolve_tier_and_url(&source, &item, primary_url, &ffprobe_path, &state.db_path).await?;
-    record_tier(&state.db_path, &kind_str, id, tier).await;
+    record_tier(&state.db_path, profile_id, &kind_str, id, tier).await;
 
     match tier {
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
@@ -359,7 +363,7 @@ async fn handle_stream(
 ///
 /// **Sin verificar de verdad** (ver `media::mpv`): no hay mpv instalado en la máquina
 /// donde se ha escrito esto.
-async fn handle_mpv_launch(state: StreamState, kind_str: String, id: i64, source_id: Option<i64>) -> Result<Response, StreamError> {
+async fn handle_mpv_launch(state: StreamState, kind_str: String, id: i64, profile_id: i64, source_id: Option<i64>) -> Result<Response, StreamError> {
     let media_kind = parse_kind(&kind_str)?;
     let (provider_id, remote_id, container_extension) = resolve_stream_target(&state.db_path, media_kind, id, source_id).await?;
 
@@ -385,7 +389,7 @@ async fn handle_mpv_launch(state: StreamState, kind_str: String, id: i64, source
         StreamError::MpvLaunchFailed(err.to_string())
     })?;
     state.stream_guard.attach_process(&permit, child).await;
-    record_tier(&state.db_path, &kind_str, id, 3).await;
+    record_tier(&state.db_path, profile_id, &kind_str, id, 3).await;
 
     let guard = Arc::clone(&state.stream_guard);
     tokio::spawn(async move { guard.run_until_exit_or_replaced(permit).await });
@@ -399,6 +403,7 @@ async fn handle_mpv_launch(state: StreamState, kind_str: String, id: i64, source
 async fn handle_catchup(
     state: StreamState,
     channel_id: i64,
+    profile_id: i64,
     start_epoch: i64,
     duration_min: u32,
     range_header: Option<HeaderValue>,
@@ -439,7 +444,7 @@ async fn handle_catchup(
 
     let (resolved_url, tier, audio_codec) =
         resolve_catchup_tier_and_url(&source, &item, primary_url, &ffprobe_path, &state.db_path).await?;
-    record_tier(&state.db_path, "channel", channel_id, tier).await;
+    record_tier(&state.db_path, profile_id, "channel", channel_id, tier).await;
 
     match tier {
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
@@ -752,7 +757,7 @@ mod tests {
         let state = base_state(db_path.clone(), None, None);
 
         let response = stream_router(state)
-            .oneshot(Request::builder().uri("/stream/podcast/1").body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri("/stream/podcast/1?profile_id=1").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -766,7 +771,7 @@ mod tests {
         let state = base_state(db_path.clone(), None, None);
 
         let response = stream_router(state)
-            .oneshot(Request::builder().uri("/stream/channel/9999").body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri("/stream/channel/9999?profile_id=1").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -813,7 +818,7 @@ mod tests {
 
         let state = base_state(db_path.clone(), Some(ffmpeg_path), Some(ffprobe_path));
         let response = stream_router(state)
-            .oneshot(Request::builder().uri(format!("/stream/movie/{movie_id}")).body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri(format!("/stream/movie/{movie_id}?profile_id=1")).body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -874,7 +879,7 @@ mod tests {
 
         let state = base_state(db_path.clone(), Some(ffmpeg_path), Some(ffprobe_path));
         let response = stream_router(state)
-            .oneshot(Request::builder().uri(format!("/stream/channel/{channel_id}")).body(Body::empty()).unwrap())
+            .oneshot(Request::builder().uri(format!("/stream/channel/{channel_id}?profile_id=1")).body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -957,7 +962,7 @@ mod tests {
         for i in 0..20 {
             let response = router
                 .clone()
-                .oneshot(Request::builder().uri(format!("/stream/channel/{channel_id}")).body(Body::empty()).unwrap())
+                .oneshot(Request::builder().uri(format!("/stream/channel/{channel_id}?profile_id=1")).body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK, "cambio de canal {i} falló");
@@ -1002,7 +1007,7 @@ mod tests {
         // base_state() deja mpv_path en None: exactamente el caso de esta máquina, sin
         // mpv instalado. La ruta debe fallar con un mensaje claro, no en pánico.
         let state = base_state(db_path.clone(), None, None);
-        let response = state_router_oneshot(state, &format!("/stream/mpv/movie/{movie_id}")).await;
+        let response = state_router_oneshot(state, &format!("/stream/mpv/movie/{movie_id}?profile_id=1")).await;
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("mpv"));
@@ -1015,7 +1020,7 @@ mod tests {
         let state = base_state(temp_db_path("mpv-404"), None, None);
         let db_path = state.db_path.clone();
         open_connection_at(&db_path).unwrap(); // solo crear el fichero con el esquema, sin ítems.
-        let response = state_router_oneshot(state, "/stream/mpv/movie/9999").await;
+        let response = state_router_oneshot(state, "/stream/mpv/movie/9999?profile_id=1").await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let _ = std::fs::remove_file(&db_path);
     }
@@ -1050,7 +1055,7 @@ mod tests {
         let state = base_state(temp_db_path("catchup-404"), None, None);
         let db_path = state.db_path.clone();
         open_connection_at(&db_path).unwrap();
-        let response = get_oneshot(state, "/stream/catchup/9999?start=0").await;
+        let response = get_oneshot(state, "/stream/catchup/9999?profile_id=1&start=0").await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let _ = std::fs::remove_file(&db_path);
     }
@@ -1063,7 +1068,7 @@ mod tests {
 
         let state = base_state(db_path.clone(), None, None);
         let now = crate::db::now_epoch();
-        let response = get_oneshot(state, &format!("/stream/catchup/{channel_id}?start={now}")).await;
+        let response = get_oneshot(state, &format!("/stream/catchup/{channel_id}?profile_id=1&start={now}")).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(String::from_utf8_lossy(&body).contains("catch-up"));
@@ -1079,7 +1084,7 @@ mod tests {
 
         let state = base_state(db_path.clone(), None, None);
         let too_old = crate::db::now_epoch() - 10 * 86_400;
-        let response = get_oneshot(state, &format!("/stream/catchup/{channel_id}?start={too_old}")).await;
+        let response = get_oneshot(state, &format!("/stream/catchup/{channel_id}?profile_id=1&start={too_old}")).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let _ = std::fs::remove_file(&db_path);
@@ -1093,7 +1098,7 @@ mod tests {
 
         let state = base_state(db_path.clone(), None, None);
         let in_the_future = crate::db::now_epoch() + 3600;
-        let response = get_oneshot(state, &format!("/stream/catchup/{channel_id}?start={in_the_future}")).await;
+        let response = get_oneshot(state, &format!("/stream/catchup/{channel_id}?profile_id=1&start={in_the_future}")).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
         let _ = std::fs::remove_file(&db_path);

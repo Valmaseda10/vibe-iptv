@@ -529,7 +529,46 @@ pub fn set_probe_cache(
 
 /// `None` quita el PIN (desactiva el control parental). Ver `util::parental`.
 pub fn set_profile_pin_hash(conn: &Connection, profile_id: i64, pin_hash: Option<&str>) -> Result<()> {
-    conn.execute("UPDATE profiles SET pin_hash = ?1 WHERE id = ?2", params![pin_hash, profile_id])?;
+    conn.execute(
+        "UPDATE profiles SET pin_hash = ?1, updated_at = ?2 WHERE id = ?3",
+        params![pin_hash, now_epoch(), profile_id],
+    )?;
+    Ok(())
+}
+
+// ─────────────── Perfiles Netflix ───────────────
+
+pub fn insert_profile(conn: &Connection, name: &str, avatar: Option<&str>, adult_ok: bool) -> Result<i64> {
+    let now = now_epoch();
+    conn.execute(
+        "INSERT INTO profiles (name, avatar, adult_ok, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)",
+        params![name, avatar, adult_ok as i64, now],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn update_profile(conn: &Connection, profile_id: i64, name: &str, avatar: Option<&str>, adult_ok: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE profiles SET name = ?1, avatar = ?2, adult_ok = ?3, updated_at = ?4 WHERE id = ?5",
+        params![name, avatar, adult_ok as i64, now_epoch(), profile_id],
+    )?;
+    Ok(())
+}
+
+/// Cascada real (`ON DELETE CASCADE` en `playback_state`/`favorites`, ver
+/// `migrations/001_schema_inicial.sql`): borrar un perfil se lleva su progreso y sus
+/// favoritos con él. El llamador (`server::profiles`) es quien decide si permitirlo —
+/// aquí no se comprueba "es el último perfil", esa regla de producto no pinta nada en
+/// una consulta SQL.
+pub fn delete_profile(conn: &Connection, profile_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM profiles WHERE id = ?1", params![profile_id])?;
+    Ok(())
+}
+
+/// Vincula este perfil local a su fila espejo en Supabase, una vez sincronizado por
+/// primera vez. `remote_id` es el UUID que Supabase generó para él.
+pub fn set_profile_remote_id(conn: &Connection, profile_id: i64, remote_id: &str) -> Result<()> {
+    conn.execute("UPDATE profiles SET remote_id = ?1 WHERE id = ?2", params![remote_id, profile_id])?;
     Ok(())
 }
 

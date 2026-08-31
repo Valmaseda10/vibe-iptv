@@ -1,6 +1,7 @@
 pub mod account;
 pub mod api;
 pub mod lan;
+pub mod profiles;
 pub mod routes;
 pub mod stream;
 
@@ -14,7 +15,6 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::db::schema;
 use crate::util::pairing::PairingState;
-use crate::util::parental::ParentalGuard;
 use crate::util::stream_guard::StreamGuard;
 
 /// Puerto del servidor local, gestionado como estado de Tauri para que el frontend lo
@@ -77,10 +77,7 @@ pub async fn serve(
         tracing::warn!("mpv no está en el PATH: el nivel 3 de reproducción no funcionará hasta que se instale");
     }
 
-    // Se olvida al reiniciar la app a propósito (regla de `util::parental`): el
-    // desbloqueo del PIN nunca se persiste, solo dura la sesión.
-    let parental_guard = ParentalGuard::new();
-    let router = full_router(image_cache_dir, db_path, stream_state, parental_guard, lan_state);
+    let router = full_router(image_cache_dir, db_path, stream_state, lan_state);
     // `with_connect_info` es lo que le da a `lan::require_local_or_paired` la IP real
     // del que llama — sin esto no habría forma de distinguir loopback de LAN.
     axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await
@@ -105,17 +102,12 @@ pub async fn serve(
 /// El middleware del modo LAN (F10) se aplica antes del CORS (queda por dentro): así
 /// una petición de preflight (`OPTIONS`, sin `Authorization`) la resuelve `CorsLayer`
 /// sin pasar nunca por la comprobación de token, que no tiene sentido aplicarle.
-fn full_router(
-    image_cache_dir: PathBuf,
-    db_path: PathBuf,
-    stream_state: stream::StreamState,
-    parental_guard: Arc<ParentalGuard>,
-    lan_state: lan::LanState,
-) -> Router {
-    routes::build_router(image_cache_dir, db_path, parental_guard)
+fn full_router(image_cache_dir: PathBuf, db_path: PathBuf, stream_state: stream::StreamState, lan_state: lan::LanState) -> Router {
+    routes::build_router(image_cache_dir, db_path.clone())
         .merge(stream::stream_router(stream_state))
         .merge(lan::lan_router(lan_state.clone()))
         .merge(account::account_router())
+        .merge(profiles::profiles_router(profiles::ProfilesState { db_path }))
         .layer(axum::middleware::from_fn_with_state(lan_state, lan::require_local_or_paired))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
 }
@@ -141,7 +133,7 @@ mod tests {
             enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             pairing: crate::util::pairing::PairingState::new(),
         };
-        let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state, ParentalGuard::new(), lan_state);
+        let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state, lan_state);
 
         // Una respuesta a una ruta de F6 (fusionada tras el CORS de F4) debe llevar la
         // cabecera igual que una del catálogo: el bug real fue que no la llevaba.
