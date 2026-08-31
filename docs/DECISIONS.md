@@ -631,11 +631,11 @@ existiera, así que hace falta un resincronizado (botón "Sincronizar" de Ajuste
 para que su guía real llegue a `channels`/`epg_programmes` y se pueda ver en Directo y
 en la Guía.
 
+**Confirmado por el usuario tras resincronizar: Directo, Guía y el reproductor
+funcionan perfectamente con su programación real.**
+
 **Deuda técnica pendiente.**
 - Toda la de fases anteriores.
-- **No verificado visualmente con datos reales**: hace falta que el usuario
-  resincronice su proveedor y confirme que Directo y Guía muestran su programación de
-  verdad (títulos, horarios, progreso).
 - Sin caché de refresco periódico de EPG en segundo plano: se actualiza solo al
   resincronizar el proveedor a mano, no cada X horas por su cuenta.
 - Guía sin virtualizar (ver decisión arriba) y limitada a 60 canales por categoría.
