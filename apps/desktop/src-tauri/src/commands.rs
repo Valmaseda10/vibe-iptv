@@ -215,6 +215,54 @@ pub async fn sync_provider(app: AppHandle, stream_guard: State<'_, Arc<StreamGua
     Ok(())
 }
 
+/// Doce horas desde la última sincronización con éxito (RF2 del PRD): pasado ese
+/// tiempo, el catálogo y sobre todo el EPG envejecen en silencio si el usuario no
+/// pulsa "Sincronizar" a mano en Ajustes.
+const AUTO_SYNC_THRESHOLD_SECONDS: i64 = 12 * 3600;
+
+/// Llamado una vez al arrancar la app (`main.rs`, `.setup()`): sincroniza en segundo
+/// plano cualquier proveedor habilitado que no se haya sincronizado nunca, o hace más
+/// de 12 horas. No bloquea el arranque de la ventana — se dispara y se olvida, igual
+/// que un `sync_provider` manual, con el mismo `StreamGuard` de por medio (R1: se
+/// pausa sola si hay reproducción activa).
+pub async fn auto_sync_stale_providers(app: AppHandle, stream_guard: Arc<StreamGuard>) {
+    let providers = {
+        let conn = match schema::open_connection(&app) {
+            Ok(conn) => conn,
+            Err(err) => {
+                tracing::error!(error = %err, "no se pudo abrir la base de datos para la sincronización automática de arranque");
+                return;
+            }
+        };
+        match queries::list_providers(&conn) {
+            Ok(rows) => rows,
+            Err(err) => {
+                tracing::error!(error = %err, "no se pudo listar proveedores para la sincronización automática de arranque");
+                return;
+            }
+        }
+    };
+
+    let now = crate::db::now_epoch();
+    for provider in providers {
+        if !provider.enabled {
+            continue;
+        }
+        let is_stale = provider.last_sync_at.is_none_or(|synced_at| now - synced_at > AUTO_SYNC_THRESHOLD_SECONDS);
+        if !is_stale {
+            continue;
+        }
+        let provider_id = provider.id;
+        match build_source_for_provider(provider).await {
+            Ok(source) => {
+                tracing::info!(provider_id, "sincronización automática de arranque (más de 12h sin sincronizar)");
+                spawn_sync(app.clone(), provider_id, source, Arc::clone(&stream_guard));
+            }
+            Err(err) => tracing::warn!(provider_id, error = %err, "no se pudo reconstruir la fuente para la sincronización automática de arranque"),
+        }
+    }
+}
+
 /// Borra un proveedor y todo su catálogo asociado (canales, categorías, y las fuentes
 /// de sus películas/series — `queries::delete_provider`, ver su comentario para el
 /// porqué de la cascada). No hay confirmación aquí: la pide el frontend antes de

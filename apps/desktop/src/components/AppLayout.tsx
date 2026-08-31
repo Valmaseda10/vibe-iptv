@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
 import { ProfileSwitcher } from "../features/profiles/ProfileSwitcher";
+import { SyncStatusBanner } from "./SyncStatusBanner";
 import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon } from "./icons";
 
 const NAV_ITEMS = [
@@ -73,6 +74,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </nav>
 
       <main className="min-w-0 flex-1 overflow-y-auto">{children}</main>
+      <SyncStatusBanner />
     </div>
   );
 }

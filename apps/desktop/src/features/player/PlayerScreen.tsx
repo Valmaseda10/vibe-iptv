@@ -22,6 +22,15 @@ const NEXT_EPISODE_TRIGGER_SECONDS = 15;
 const NEXT_EPISODE_COUNTDOWN_SECONDS = 10;
 const RESUME_MIN_SECONDS = 5;
 const SEEK_STEP_SECONDS = 10;
+/** Un directo IPTV se corta con normalidad (el proveedor tiene un mal minuto, un salto
+ * de red del propio PC...); reintentar solo, unas pocas veces, es la diferencia entre
+ * "la app está rota" y "el proveedor tuvo un mal minuto". El VOD no reintenta solo: un
+ * fallo ahí suele ser real (código no soportado, fichero roto), no un corte pasajero. */
+const MAX_RECONNECT_ATTEMPTS = 3;
+const RECONNECT_DELAY_MS = 2_000;
+/** Códigos que no se arreglan reintentando: se enseña el error real de inmediato en vez
+ * de gastar los reintentos en algo que va a fallar igual las tres veces. */
+const DEFINITIVE_ERROR_STATUSES = new Set([400, 403, 404, 501]);
 
 /** Cascada de reproducción de F6: un `<video>` nativo apuntando a `/stream/:kind/:id`.
  *
@@ -65,6 +74,10 @@ export function PlayerScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [needsMpv, setNeedsMpv] = useState(false);
   const [mpvLaunching, setMpvLaunching] = useState(false);
+  const [buffering, setBuffering] = useState(false);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [retryNonce, setRetryNonce] = useState(0);
+  const reconnectTimerRef = useRef<number | undefined>(undefined);
 
   const movieQuery = useQuery({
     queryKey: ["player-movie", itemId],
@@ -183,26 +196,57 @@ export function PlayerScreen() {
       : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}`;
   const streamUrl = base && profileId !== null ? `${base}${streamPath}` : undefined;
 
+  // Cambiar de stream de verdad (zapping, o abrir otro título) es un intento nuevo:
+  // sin esto, tres cortes seguidos en canales distintos agotarían los reintentos del
+  // primero y dejarían el segundo sin ninguno.
+  useEffect(() => {
+    setReconnectAttempt(0);
+    setErrorMessage(null);
+    setNeedsMpv(false);
+  }, [streamPath]);
+
+  useEffect(() => {
+    return () => {
+      if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
+    };
+  }, []);
+
   // `<video onError>` no da el porqué (el navegador nunca ve el cuerpo de una respuesta
   // que no pudo interpretar como vídeo). En vez de un mensaje genérico siempre igual, se
   // hace una comprobación puntual de diagnóstico contra la misma URL: la sesión ya
   // falló, así que esto no abre una conexión de más que compita con nada — mensajes
   // que digan qué hacer, no solo que algo falló (F9).
+  //
+  // En directo, antes de rendirse: un corte de proveedor es lo normal en IPTV, así que
+  // se reintenta solo unas pocas veces (ver `MAX_RECONNECT_ATTEMPTS`) forzando un
+  // remontaje del `<video>` con la misma URL, salvo que el diagnóstico ya diga que el
+  // fallo es de los que no se arreglan reintentando (`DEFINITIVE_ERROR_STATUSES`).
   const handleVideoError = useCallback(async () => {
     if (!streamUrl) return;
+    let status: number | null = null;
+    let text = "";
     try {
       const response = await fetch(streamUrl);
-      const text = await response.text();
-      // "Abrir con mpv" lanza siempre el directo del canal (`/stream/mpv/:kind/:id`):
-      // todavía no sabe pedir un bloque de catch-up, así que no se ofrece aquí para no
-      // prometer algo que reproduciría el momento equivocado.
-      setNeedsMpv(response.status === 501 && !isCatchup);
-      setErrorMessage(text || "No se pudo reproducir este contenido.");
+      status = response.status;
+      text = await response.text();
     } catch {
-      setNeedsMpv(false);
-      setErrorMessage("No se pudo reproducir este contenido. Comprueba tu conexión a internet.");
+      // Fallo de red al ni siquiera poder preguntar: tampoco es un "no" definitivo del
+      // servidor, así que en directo también merece un reintento.
     }
-  }, [streamUrl, isCatchup]);
+
+    const definitive = status != null && DEFINITIVE_ERROR_STATUSES.has(status);
+    if (kind === "channel" && !definitive && reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
+      setReconnectAttempt((n) => n + 1);
+      reconnectTimerRef.current = window.setTimeout(() => setRetryNonce((n) => n + 1), RECONNECT_DELAY_MS);
+      return;
+    }
+
+    // "Abrir con mpv" lanza siempre el directo del canal (`/stream/mpv/:kind/:id`):
+    // todavía no sabe pedir un bloque de catch-up, así que no se ofrece aquí para no
+    // prometer algo que reproduciría el momento equivocado.
+    setNeedsMpv(status === 501 && !isCatchup);
+    setErrorMessage(text || "No se pudo reproducir este contenido.");
+  }, [streamUrl, isCatchup, kind, reconnectAttempt]);
 
   const launchMpv = useCallback(async () => {
     if (!base || profileId === null) return;
@@ -399,7 +443,7 @@ export function PlayerScreen() {
     >
       {canRenderVideo ? (
         <video
-          key={streamPath}
+          key={`${streamPath}::${retryNonce}`}
           ref={videoRef}
           src={streamUrl}
           autoPlay
@@ -425,14 +469,35 @@ export function PlayerScreen() {
           onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
           onPlaying={() => {
             if (firstFrameMsRef.current == null) firstFrameMsRef.current = Math.round(performance.now() - mountedAtRef.current);
+            setBuffering(false);
+            // Ya está reproduciendo de verdad tras el corte: los intentos se olvidan,
+            // para no dejar un canal que en general va bien sin reintentos la próxima
+            // vez que le toque un mal minuto.
+            setReconnectAttempt(0);
           }}
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
+          onWaiting={() => setBuffering(true)}
+          onStalled={() => setBuffering(true)}
+          onCanPlay={() => setBuffering(false)}
           onVolumeChange={(e) => setMuted(e.currentTarget.muted)}
           onError={handleVideoError}
         />
       ) : (
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-700 border-t-red-600" aria-label="Cargando" />
+      )}
+
+      {!errorMessage && reconnectAttempt > 0 && (
+        <div className="absolute left-1/2 top-6 flex -translate-x-1/2 items-center gap-2 rounded-lg bg-black/80 px-4 py-2 text-sm text-neutral-200">
+          <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-neutral-600 border-t-red-600" />
+          Reconectando… (intento {reconnectAttempt}/{MAX_RECONNECT_ATTEMPTS})
+        </div>
+      )}
+
+      {!errorMessage && reconnectAttempt === 0 && buffering && (
+        <div className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="h-10 w-10 animate-spin rounded-full border-4 border-white/20 border-t-white/80" aria-label="Cargando" />
+        </div>
       )}
 
       {resumeBanner != null && (

@@ -13,8 +13,8 @@ mod util;
 use std::net::TcpListener as StdTcpListener;
 
 use commands::{
-    add_provider, delete_provider, export_diagnostics_log, has_tmdb_api_key, list_providers, match_tmdb, set_tmdb_api_key,
-    sync_provider, validate_m3u, validate_xtream,
+    add_provider, auto_sync_stale_providers, delete_provider, export_diagnostics_log, has_tmdb_api_key, list_providers, match_tmdb,
+    set_tmdb_api_key, sync_provider, validate_m3u, validate_xtream,
 };
 use server::{get_server_port, serve, ServerPort};
 use tauri::Manager;
@@ -63,10 +63,18 @@ fn main() {
                 .try_clone()
                 .expect("no se pudo clonar el socket local");
             let stream_guard = stream_guard.clone();
+            let stream_guard_for_server = stream_guard.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = serve(listener, image_cache_dir, db_path, stream_guard).await {
+                if let Err(err) = serve(listener, image_cache_dir, db_path, stream_guard_for_server).await {
                     tracing::error!(error = %err, "el servidor local se detuvo inesperadamente");
                 }
+            });
+
+            // RF2: sincroniza en segundo plano cualquier proveedor con más de 12h sin
+            // sincronizar, sin bloquear ni retrasar la apertura de la ventana.
+            let app_handle_for_autosync = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                auto_sync_stale_providers(app_handle_for_autosync, stream_guard).await;
             });
             Ok(())
         })
