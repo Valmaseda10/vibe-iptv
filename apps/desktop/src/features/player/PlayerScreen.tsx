@@ -23,13 +23,18 @@ const SEEK_STEP_SECONDS = 10;
 
 /** Cascada de reproducción de F6: un `<video>` nativo apuntando a `/stream/:kind/:id`.
  *
- * El nivel 1 (MP4 progresivo con Range) es de verdad byte-seekable: el navegador lo
- * sabe porque `video.duration` sale finito, y ahí `video.currentTime =` funciona solo.
- * El nivel 2 (remux en vivo, sin longitud conocida) no lo es: `video.duration` sale
- * `Infinity`, y buscar significa pedir un stream nuevo con `?start=<segundos>`, que
- * `media::ffmpeg` traduce en un `-ss` de entrada. El componente decide cuál de los dos
- * mundos está usando mirando `video.duration` tras `loadedmetadata`, sin necesitar saber
- * el nivel de antemano — ver `docs/DECISIONS.md` para el porqué de este diseño. */
+ * El nivel 1 (MP4 progresivo con Range) es de verdad byte-seekable. El nivel 2 (remux
+ * en vivo, sin longitud conocida) no lo es: buscar significa pedir un stream nuevo con
+ * `?start=<segundos>`, que `media::ffmpeg` traduce en un `-ss` de entrada.
+ *
+ * **Por qué no se usa `video.duration` para distinguir los dos casos** (como en una
+ * versión anterior de este fichero): un fMP4 fragmentado servido por `<video src>` sin
+ * MSE puede dar una duración finita pero *falsa* mientras llegan los primeros
+ * fragmentos (una caída real, encontrada probando contra el proveedor real del
+ * usuario — la barra de búsqueda mostraba "0:01" con la película en el segundo 7). El
+ * nivel se pide al núcleo (`GET /api/playback/tier`, ya cacheado por la sonda que hizo
+ * el propio `/stream/*` al arrancar) y es la única fuente de verdad de si se puede
+ * buscar de forma nativa. */
 export function PlayerScreen() {
   const { kind, id } = useParams({ from: "/player/$kind/$id" }) as { kind: Kind; id: string };
   const search = useSearch({ from: "/player/$kind/$id" });
@@ -39,7 +44,6 @@ export function PlayerScreen() {
 
   const containerRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const nativeSeekableRef = useRef(false);
   const hideTimerRef = useRef<number | undefined>(undefined);
   const mountedAtRef = useRef(performance.now());
   const firstFrameMsRef = useRef<number | null>(null);
@@ -50,7 +54,6 @@ export function PlayerScreen() {
   const [controlsVisible, setControlsVisible] = useState(true);
   const [statsVisible, setStatsVisible] = useState(false);
   const [videoCurrentTime, setVideoCurrentTime] = useState(0);
-  const [videoDuration, setVideoDuration] = useState<number | null>(null);
   const [appliedStart, setAppliedStart] = useState(0);
   const [resumeReady, setResumeReady] = useState(kind === "channel"); // el directo no espera a nada.
   const [resumeBanner, setResumeBanner] = useState<number | null>(null);
@@ -130,8 +133,13 @@ export function PlayerScreen() {
     return () => clearTimeout(timeout);
   }, [resumeBanner]);
 
-  const displayDuration = videoDuration != null && Number.isFinite(videoDuration) ? videoDuration : metadataDurationSeconds;
-  const displayCurrentTime = nativeSeekableRef.current ? videoCurrentTime : appliedStart + videoCurrentTime;
+  // El nivel decide si se puede buscar de forma nativa; `video.duration` no es fiable
+  // para esto (ver comentario de cabecera). `metadataDurationSeconds` (ffprobe) es la
+  // única fuente de duración que se usa: la del propio `<video>` puede ser una cifra de
+  // un fragmento suelto mientras el fMP4 remuxeado sigue llegando.
+  const nativeSeekable = tierQuery.data?.tier === 1;
+  const displayDuration = metadataDurationSeconds;
+  const displayCurrentTime = nativeSeekable ? videoCurrentTime : appliedStart + videoCurrentTime;
 
   const streamPath =
     kind === "channel" ? `/stream/channel/${itemId}` : `/stream/${kind}/${itemId}${appliedStart > 0 ? `?start=${appliedStart}` : ""}`;
@@ -223,13 +231,13 @@ export function PlayerScreen() {
   const seekTo = useCallback(
     (targetSeconds: number) => {
       const clamped = Math.max(0, displayDuration ? Math.min(targetSeconds, displayDuration - 1) : targetSeconds);
-      if (nativeSeekableRef.current && videoRef.current) {
+      if (nativeSeekable && videoRef.current) {
         videoRef.current.currentTime = clamped;
       } else {
         setAppliedStart(Math.floor(clamped));
       }
     },
-    [displayDuration],
+    [displayDuration, nativeSeekable],
   );
 
   const togglePlay = useCallback(() => {
@@ -321,17 +329,19 @@ export function PlayerScreen() {
           className="h-full w-full"
           onLoadedMetadata={(e) => {
             const video = e.currentTarget;
-            nativeSeekableRef.current = Number.isFinite(video.duration);
-            setVideoDuration(video.duration);
-            // Nivel 1 confirmado (duración finita) pero el arranque pidió `?start=` por
-            // si acaso era nivel 2: aquí se corrige con una búsqueda nativa de verdad.
-            if (nativeSeekableRef.current && appliedStart > 0 && video.currentTime < appliedStart - 1) {
+            // El arranque siempre manda `?start=` por si el nivel resultara ser 2 (ver
+            // comentario de cabecera); si el navegador demuestra que este recurso sí
+            // admite Range de verdad (`seekable` no vacío — más fiable que mirar
+            // `duration`, que puede ser una cifra provisional en fMP4 fragmentado), se
+            // corrige con una búsqueda nativa real en vez de confiar en el `?start=`
+            // que el proxy de nivel 1 ignora.
+            if (video.seekable.length > 0 && appliedStart > 0 && video.currentTime < appliedStart - 1) {
               video.currentTime = appliedStart;
             }
             // `tierQuery` puede haberse pedido antes de que este mismo stream terminara
             // de sondear el códec (van en paralelo al montar): al llegar hasta aquí, la
-            // sonda ya ha terminado seguro, así que ahora sí va a acertar con la
-            // duración real si la primera vez llegó tarde.
+            // sonda ya ha terminado seguro, así que ahora sí va a acertar con el nivel y
+            // la duración reales si la primera vez llegaron tarde.
             if (kind !== "channel") tierQuery.refetch();
           }}
           onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}

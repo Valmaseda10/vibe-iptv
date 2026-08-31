@@ -484,12 +484,30 @@ usuario se limpió a mano una vez (`DELETE FROM probe_cache`) para que el siguie
 sondee de nuevo con el código corregido — necesario porque la caché no expira y ya
 tenía una entrada sin duración de antes del fix.
 
+**Segunda vuelta del mismo bug: la primera corrección no bastaba.** Tras el arreglo de
+arriba, el usuario probó de nuevo y la barra seguía mal — "0:07 / 0:01" con la película
+ya por el segundo 7. La causa real no era la ausencia de duración, sino de dónde se
+leía: el código priorizaba `video.duration` (la del propio elemento `<video>`) sobre la
+de `ffprobe`, y para un fMP4 fragmentado servido por `<video src>` sin MSE, Chromium
+puede reportar una duración finita pero **provisional y equivocada** mientras llegan
+los primeros fragmentos — no es un dato fiable para distinguir nivel 1 de nivel 2, ni
+para mostrar la duración total. Corregido: `nativeSeekable` ahora se decide por el
+nivel real (`tierQuery.data.tier === 1`, ya cacheado por la sonda), no por
+`Number.isFinite(video.duration)`; `displayDuration` usa siempre `ffprobe` (vía
+`tierQuery`) o los metadatos editoriales, nunca `video.duration`; y la corrección de
+posición al reanudar en nivel 1 usa `video.seekable.length > 0` (lo que el navegador
+demuestra de verdad sobre soporte de Range) en vez de la duración. Aprendido: para un
+`<video>` alimentado con un stream generado por el propio proxy, cualquier propiedad que
+el navegador infiera progresivamente (`duration` incluida) es sospechosa hasta que se
+demuestre estable — mejor apoyarse en lo que el núcleo ya sabe con certeza.
+
 **Deuda técnica pendiente.**
 - Toda la de fases anteriores.
-- **Verificado por el usuario**: audio y vídeo van bien en directo y en película, con el
-  bug de arriba ya corregido. Falta que confirme que ahora sí se puede buscar dentro de
-  la película, y que pruebe series/zapping/reanudar, que no se han probado todavía con
-  su proveedor real.
+- **Verificado por el usuario**: audio y vídeo van bien en directo y en película. La
+  búsqueda en VOD remuxeado está corregida dos veces (ver arriba) pero **todavía sin una
+  tercera confirmación del usuario** tras este último cambio.
+- Series, zapping y reanudar no se han probado todavía con el proveedor real del
+  usuario.
 - HLS: proxy transparente sin reescritura de manifiesto, sin `hls.js` en el cliente (ver
   decisión arriba).
 - **Solo una fuente/calidad por película en el reproductor** (la primera de
