@@ -8,10 +8,10 @@ use rusqlite::Connection;
 
 use super::{DbError, Result};
 
-const MIGRATIONS: &[(&str, &str)] = &[(
-    "001_schema_inicial.sql",
-    include_str!("../../migrations/001_schema_inicial.sql"),
-)];
+const MIGRATIONS: &[(&str, &str)] = &[
+    ("001_schema_inicial.sql", include_str!("../../migrations/001_schema_inicial.sql")),
+    ("002_duracion_probe_cache.sql", include_str!("../../migrations/002_duracion_probe_cache.sql")),
+];
 
 /// Ruta del fichero SQLite en el directorio de datos de la aplicación, sin abrirlo.
 pub fn resolve_db_path(app_handle: &tauri::AppHandle) -> Result<std::path::PathBuf> {

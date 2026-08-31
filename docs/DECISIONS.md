@@ -466,10 +466,30 @@ máquina).**
 - `tsc --noEmit` y `vite build` limpios; `npm run tauri dev` arranca sin errores en el
   terminal.
 
+**Bug real encontrado por el usuario, en el primer minuto de probarlo.** Abrió un canal
+y una película de su proveedor real: las dos se veían y se oían bien, pero la película
+no se podía avanzar — la barra de progreso se comportaba "como si estuviera en directo".
+Causa: la única fuente de duración era `runtime_min` de TMDB (dato editorial, a menudo
+ausente), y sin duración la barra ni se pintaba. La duración real del fichero ya la sabía
+`ffprobe` (`format.duration`) pero `ProbeResult` no la recogía. Arreglado en las cuatro
+capas: `probe.rs` la extrae, `probe_cache` gana una columna (`duration_s`, migración
+`002_duracion_probe_cache.sql` — nunca se edita la 001 ya publicada), `GET
+/api/playback/tier` la expone, y `PlayerScreen` la usa como fuente principal de
+duración (con `runtime_min`/`duration_s` del episodio como respaldo si todavía no se ha
+sondeado nunca). Se descarta explícitamente en directo: la "duración" que ve `ffprobe`
+ahí es la del trozo que llegó a analizar, no la del canal, que no tiene fin. Confirmado
+con test end-to-end contra un MP4 real (duración esperada ~2 s) y contra un TS en
+directo (confirma que ahí se guarda `NULL`). La caché de sondeo del proveedor real del
+usuario se limpió a mano una vez (`DELETE FROM probe_cache`) para que el siguiente play
+sondee de nuevo con el código corregido — necesario porque la caché no expira y ya
+tenía una entrada sin duración de antes del fix.
+
 **Deuda técnica pendiente.**
 - Toda la de fases anteriores.
-- **No verificado con audio/vídeo real** (ver aviso arriba): hace falta que el usuario
-  abra un canal y una película de su proveedor real y confirme que se ve y se oye bien.
+- **Verificado por el usuario**: audio y vídeo van bien en directo y en película, con el
+  bug de arriba ya corregido. Falta que confirme que ahora sí se puede buscar dentro de
+  la película, y que pruebe series/zapping/reanudar, que no se han probado todavía con
+  su proveedor real.
 - HLS: proxy transparente sin reescritura de manifiesto, sin `hls.js` en el cliente (ver
   decisión arriba).
 - **Solo una fuente/calidad por película en el reproductor** (la primera de

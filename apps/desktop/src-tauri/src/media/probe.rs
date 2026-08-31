@@ -28,7 +28,7 @@ pub enum ProbeError {
     InvalidOutput,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ProbeResult {
     /// `None` si el stream no tiene pista de vídeo (audio-only) o ffprobe no la reportó.
     pub video_codec: Option<String>,
@@ -36,6 +36,11 @@ pub struct ProbeResult {
     /// Nombre de formato tal cual lo da ffprobe (`format.format_name`), p. ej.
     /// `"mpegts"`, `"mov,mp4,m4a,3gp,3g2,mj2"`, `"hls,applehttp"`, `"matroska,webm"`.
     pub container: String,
+    /// Duración total en segundos (`format.duration`), si ffprobe la da. En directo no
+    /// significa nada (ffprobe solo ve el trozo que llegó a analizar) y el llamador debe
+    /// ignorarla; en VOD es la única fuente fiable de duración para el reproductor
+    /// cuando el nivel 2 remuxea a un stream sin longitud declarada.
+    pub duration_seconds: Option<f64>,
 }
 
 /// Identificador estable de una URL de stream para la caché `probe_cache`, sin poder
@@ -104,6 +109,14 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
     #[derive(Deserialize)]
     struct FfprobeFormat {
         format_name: Option<String>,
+        // ffprobe la manda como cadena ("123.456000"), no como número.
+        #[serde(default, deserialize_with = "duration_from_string")]
+        duration: Option<f64>,
+    }
+
+    fn duration_from_string<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<f64>, D::Error> {
+        let raw: Option<String> = Option::deserialize(deserializer)?;
+        Ok(raw.and_then(|s| s.parse::<f64>().ok()))
     }
 
     let parsed: FfprobeOutput = serde_json::from_slice(bytes).ok()?;
@@ -117,9 +130,10 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
         .iter()
         .find(|s| s.codec_type.as_deref() == Some("audio"))
         .and_then(|s| s.codec_name.clone());
-    let container = parsed.format.and_then(|f| f.format_name)?;
+    let format = parsed.format?;
+    let container = format.format_name?;
 
-    Some(ProbeResult { video_codec, audio_codec, container })
+    Some(ProbeResult { video_codec, audio_codec, container, duration_seconds: format.duration })
 }
 
 /// Decide el nivel de la cascada (1, 2 o 3) a partir de contenedor y códecs, siguiendo

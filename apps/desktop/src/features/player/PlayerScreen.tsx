@@ -73,10 +73,14 @@ export function PlayerScreen() {
       apiGetOrNull<ChannelsPage>(`/api/live/channels?limit=200${search.categoryId ? `&category_id=${search.categoryId}` : ""}`),
     enabled: kind === "channel",
   });
-  const statsQuery = useQuery({
+  // Se pide siempre (no solo con el panel de estadísticas abierto) en VOD: es la fuente
+  // más fiable de la duración real del fichero (ffprobe), mejor que `runtime_min` de
+  // TMDB, que es un dato editorial y a menudo ni siquiera está. En directo no hace
+  // falta: no hay duración que mostrar.
+  const tierQuery = useQuery({
     queryKey: ["player-tier", kind, itemId],
     queryFn: () => apiGetOrNull<PlaybackTierResponse>(`/api/playback/tier/${kind}/${itemId}`),
-    enabled: statsVisible,
+    enabled: kind !== "channel",
     refetchInterval: statsVisible ? 3000 : false,
   });
 
@@ -94,8 +98,12 @@ export function PlayerScreen() {
         ? `${seriesQuery.data?.clean_title ?? ""}${currentEpisode ? ` · ${currentEpisode.number}. ${currentEpisode.title ?? "Episodio " + currentEpisode.number}` : ""}`
         : currentChannel?.display_name;
 
-  const metadataDurationSeconds =
+  // La duración real del fichero (ffprobe, vía tierQuery) manda sobre la editorial de
+  // TMDB/el proveedor: es la única correcta para un stream remuxeado (nivel 2), donde el
+  // propio <video> nunca la conoce por sí mismo.
+  const editorialDurationSeconds =
     kind === "movie" ? (movieQuery.data?.runtime_min ? movieQuery.data.runtime_min * 60 : null) : kind === "episode" ? (currentEpisode?.duration_s ?? null) : null;
+  const metadataDurationSeconds = tierQuery.data?.duration_s ?? editorialDurationSeconds;
 
   // Cargar el progreso guardado antes de montar el <video> en VOD: decide si hay que
   // arrancar con `?start=` (nivel 2) — para directo no hay nada que resumir.
@@ -320,6 +328,11 @@ export function PlayerScreen() {
             if (nativeSeekableRef.current && appliedStart > 0 && video.currentTime < appliedStart - 1) {
               video.currentTime = appliedStart;
             }
+            // `tierQuery` puede haberse pedido antes de que este mismo stream terminara
+            // de sondear el códec (van en paralelo al montar): al llegar hasta aquí, la
+            // sonda ya ha terminado seguro, así que ahora sí va a acertar con la
+            // duración real si la primera vez llegó tarde.
+            if (kind !== "channel") tierQuery.refetch();
           }}
           onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
           onPlaying={() => {
@@ -358,10 +371,10 @@ export function PlayerScreen() {
       {statsVisible && (
         <div className="absolute right-6 top-6 w-72 rounded-lg bg-black/80 p-4 font-mono text-xs text-neutral-200">
           <p className="mb-2 font-semibold text-neutral-100">Estadísticas (Ctrl+Shift+D)</p>
-          <StatRow label="Nivel" value={statsQuery.data?.tier != null ? String(statsQuery.data.tier) : "desconocido"} />
-          <StatRow label="Vídeo" value={statsQuery.data?.video_codec ?? "—"} />
-          <StatRow label="Audio" value={statsQuery.data?.audio_codec ?? "—"} />
-          <StatRow label="Contenedor" value={statsQuery.data?.container ?? "—"} />
+          <StatRow label="Nivel" value={tierQuery.data?.tier != null ? String(tierQuery.data.tier) : "desconocido"} />
+          <StatRow label="Vídeo" value={tierQuery.data?.video_codec ?? "—"} />
+          <StatRow label="Audio" value={tierQuery.data?.audio_codec ?? "—"} />
+          <StatRow label="Contenedor" value={tierQuery.data?.container ?? "—"} />
           <StatRow label="Resolución" value={videoRef.current ? `${videoRef.current.videoWidth}×${videoRef.current.videoHeight}` : "—"} />
           <StatRow label="1er fotograma" value={firstFrameMsRef.current != null ? `${firstFrameMsRef.current} ms` : "—"} />
           <StatRow label="Buffer" value={`${bufferedSeconds(videoRef.current).toFixed(1)} s`} />

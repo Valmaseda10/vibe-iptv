@@ -58,6 +58,9 @@ pub struct PlaybackTierResponse {
     pub video_codec: Option<String>,
     pub audio_codec: Option<String>,
     pub container: Option<String>,
+    /// Duración real del fichero en segundos (VOD), tal cual la dio ffprobe. `None` en
+    /// directo o si todavía no se ha reproducido nunca este ítem.
+    pub duration_s: Option<f64>,
 }
 
 /// Panel de estadísticas del reproductor (Ctrl+Shift+D, F6): lee `probe_cache`, nunca
@@ -82,8 +85,9 @@ async fn get_playback_tier(State(state): State<StreamState>, AxumPath((kind, id)
             video_codec: row.video_codec,
             audio_codec: row.audio_codec,
             container: row.container,
+            duration_s: row.duration_s,
         },
-        None => PlaybackTierResponse { tier: None, video_codec: None, audio_codec: None, container: None },
+        None => PlaybackTierResponse { tier: None, video_codec: None, audio_codec: None, container: None, duration_s: None },
     }))
 }
 
@@ -297,12 +301,15 @@ async fn resolve_tier_and_url(
     };
 
     let tier = probe::decide_tier(&probe_result.container, probe_result.video_codec.as_deref(), probe_result.audio_codec.as_deref());
+    // La duración que da ffprobe en directo es la del trozo que llegó a analizar, no la
+    // del canal (no tiene fin): solo tiene sentido guardarla en VOD.
+    let duration_s = if item.kind == MediaKind::Live { None } else { probe_result.duration_seconds };
     let store_key = probe::stream_cache_key(resolved_url.as_str());
     let video = probe_result.video_codec.clone();
     let audio = probe_result.audio_codec.clone();
     let container = probe_result.container.clone();
     with_db(db_path.clone(), move |conn| {
-        queries::set_probe_cache(conn, &store_key, video.as_deref(), audio.as_deref(), Some(&container), tier as i64)
+        queries::set_probe_cache(conn, &store_key, video.as_deref(), audio.as_deref(), Some(&container), tier as i64, duration_s)
     })
     .await?;
 
@@ -569,8 +576,12 @@ mod tests {
         assert_eq!(&body[4..8], b"ftyp");
 
         let conn = open_connection_at(&db_path).unwrap();
-        let tier: i64 = conn.query_row("SELECT play_tier FROM probe_cache", [], |r| r.get(0)).unwrap();
+        let (tier, duration): (i64, Option<f64>) =
+            conn.query_row("SELECT play_tier, duration_s FROM probe_cache", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(tier, 1, "un MP4 progresivo H.264/AAC debe resolverse a nivel 1");
+        // La duración real (VOD) se guarda para que el reproductor pueda pintar una
+        // barra de búsqueda aunque TMDB no tenga la duración editorial del título.
+        assert!(duration.is_some_and(|d| d > 1.5 && d < 3.0), "duración inesperada: {duration:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);
@@ -626,8 +637,13 @@ mod tests {
         assert_eq!(&body[4..8], b"ftyp");
 
         let conn = open_connection_at(&db_path).unwrap();
-        let tier: i64 = conn.query_row("SELECT play_tier FROM probe_cache", [], |r| r.get(0)).unwrap();
+        let (tier, duration): (i64, Option<f64>) =
+            conn.query_row("SELECT play_tier, duration_s FROM probe_cache", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!(tier, 2, "MPEG-TS siempre necesita remux, nunca es nivel 1");
+        // La "duración" que ve ffprobe en directo es la del trozo analizado, no la del
+        // canal (no tiene fin): no debe guardarse, o el reproductor pintaría una barra
+        // de búsqueda falsa en un canal en directo.
+        assert_eq!(duration, None, "un canal en directo no debe guardar duración");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);
