@@ -116,6 +116,20 @@ export function SettingsScreen() {
     mutationFn: (providerId: number) => invoke<void>("sync_provider", { providerId }),
   });
 
+  const deleteProviderMutation = useMutation({
+    mutationFn: (providerId: number) => invoke<void>("delete_provider", { providerId }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
+  });
+
+  function handleDeleteProvider(provider: ProviderSummary) {
+    // Sin librería de diálogos todavía (F5 no la trajo): `confirm` nativo es tosco pero
+    // esto es justo el tipo de acción — borra canales, películas y series enteros de
+    // este proveedor — que no debería poder pasar por un clic accidental.
+    if (window.confirm(`¿Eliminar "${provider.name}"? Se borrará todo su catálogo. No se puede deshacer.`)) {
+      deleteProviderMutation.mutate(provider.id);
+    }
+  }
+
   const saveTmdbKeyMutation = useMutation({
     mutationFn: (apiKey: string) => invoke<void>("set_tmdb_api_key", { apiKey }),
     onSuccess: () => {
@@ -337,15 +351,28 @@ export function SettingsScreen() {
                         : " · sin sincronizar"}
                     </p>
                   </div>
-                  <button
-                    type="button"
-                    className="shrink-0 rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600"
-                    onClick={() => syncMutation.mutate(provider.id)}
-                    disabled={syncMutation.isPending}
-                  >
-                    Sincronizar
-                  </button>
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600"
+                      onClick={() => syncMutation.mutate(provider.id)}
+                      disabled={syncMutation.isPending}
+                    >
+                      Sincronizar
+                    </button>
+                    <button
+                      type="button"
+                      className="rounded bg-neutral-800 px-3 py-2 text-red-400 hover:bg-red-950 disabled:opacity-50"
+                      onClick={() => handleDeleteProvider(provider)}
+                      disabled={deleteProviderMutation.isPending}
+                    >
+                      Eliminar
+                    </button>
+                  </div>
                 </div>
+                {deleteProviderMutation.isError && deleteProviderMutation.variables === provider.id && (
+                  <p className="mt-2 text-sm text-red-400">{String(deleteProviderMutation.error)}</p>
+                )}
                 {progress && progress.total > 0 && (
                   <div className="mt-3">
                     <p className="mb-1 text-sm text-neutral-400">

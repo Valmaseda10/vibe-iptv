@@ -12,8 +12,8 @@ mod util;
 use std::net::TcpListener as StdTcpListener;
 
 use commands::{
-    add_provider, export_diagnostics_log, has_tmdb_api_key, list_providers, match_tmdb, set_tmdb_api_key, sync_provider,
-    validate_m3u, validate_xtream,
+    add_provider, delete_provider, export_diagnostics_log, has_tmdb_api_key, list_providers, match_tmdb, set_tmdb_api_key,
+    sync_provider, validate_m3u, validate_xtream,
 };
 use server::{get_server_port, serve, ServerPort};
 use tauri::Manager;
@@ -75,6 +75,7 @@ fn main() {
             validate_xtream,
             validate_m3u,
             add_provider,
+            delete_provider,
             sync_provider,
             set_tmdb_api_key,
             has_tmdb_api_key,

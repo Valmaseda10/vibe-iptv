@@ -215,6 +215,31 @@ pub async fn sync_provider(app: AppHandle, stream_guard: State<'_, Arc<StreamGua
     Ok(())
 }
 
+/// Borra un proveedor y todo su catálogo asociado (canales, categorías, y las fuentes
+/// de sus películas/series — `queries::delete_provider`, ver su comentario para el
+/// porqué de la cascada). No hay confirmación aquí: la pide el frontend antes de
+/// llamar, porque no hay vuelta atrás sin resincronizar desde cero.
+#[tauri::command]
+pub fn delete_provider(app: AppHandle, provider_id: i64) -> CmdResult<()> {
+    let conn = schema::open_connection(&app).map_err(|err| err.to_string())?;
+    let provider = queries::get_provider(&conn, provider_id).map_err(|err| err.to_string())?;
+
+    queries::delete_provider(&conn, provider_id).map_err(|err| err.to_string())?;
+    queries::delete_orphaned_movies_and_series(&conn).map_err(|err| err.to_string())?;
+    queries::rebuild_search_index(&conn).map_err(|err| err.to_string())?;
+
+    // Si falla el borrado de la credencial, no deshace el borrado del proveedor: ya no
+    // hay nada que la use, y el usuario puede seguir intentándolo desde Ajustes en el
+    // peor caso quedaría un secreto huérfano en el keychain, no un dato inconsistente.
+    if let Some(credential_ref) = provider.and_then(|p| p.credential_ref) {
+        if let Err(err) = keychain::delete_secret(&credential_ref) {
+            tracing::warn!(error = %err, "no se pudo borrar la credencial del proveedor eliminado");
+        }
+    }
+
+    Ok(())
+}
+
 /// Reconstruye el `Source` de un proveedor ya guardado, leyendo su credencial del
 /// keychain. Reutilizado por `sync_provider` y por la ficha de serie de F4 (bajo
 /// demanda, cuando toca refrescar `series_detail`).

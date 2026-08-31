@@ -168,7 +168,6 @@ pub fn decide_tier(container: &str, video_codec: Option<&str>, audio_codec: Opti
 
 enum AudioClass {
     DirectCompatible,
-    NeedsTranscode,
     Unknown,
 }
 

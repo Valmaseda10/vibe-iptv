@@ -128,6 +128,20 @@ pub fn list_providers(conn: &Connection) -> Result<Vec<ProviderRow>> {
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+/// Borra el proveedor y todo lo que solo existía por él: `categories`, `channels`,
+/// `movie_sources`, `series_sources` caen solas por `ON DELETE CASCADE`
+/// (`migrations/001_schema_inicial.sql`). Películas y series que se queden sin ninguna
+/// fuente después de esto NO se borran aquí — no tienen `provider_id` propio (pueden
+/// venir de varios proveedores a la vez), así que el llamador debe seguir con
+/// `delete_orphaned_movies_and_series` y `rebuild_search_index` para dejar el catálogo
+/// consistente. La credencial en el keychain tampoco se borra aquí (regla R5: este
+/// módulo no toca el keychain) — es cosa de quien llame, con el `credential_ref` que dé
+/// `get_provider` antes de invocar esto.
+pub fn delete_provider(conn: &Connection, provider_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM providers WHERE id = ?1", params![provider_id])?;
+    Ok(())
+}
+
 /// Campos ya calculados por `catalog::normalize` para una entrada. `queries.rs` no
 /// depende de `catalog`: recibe estos valores ya hechos, nunca los calcula (lógica de
 /// negocio en `catalog::sync`, SQL aquí).
@@ -776,6 +790,52 @@ mod tests {
         upsert_series(&conn, provider_id, &series, &fields).unwrap();
 
         assert_eq!(count_series_sources(&conn, provider_id).unwrap(), 1);
+    }
+
+    #[test]
+    fn delete_provider_cascades_categories_and_channels_but_leaves_movies_for_orphan_cleanup() {
+        let conn = memory_conn();
+        let provider_id = insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let cats = vec![RawCategory { remote_id: "1".into(), kind: MediaKind::Live, name: "ESPAÑA".into() }];
+        let category_map = upsert_categories(&conn, provider_id, MediaKind::Live, &cats).unwrap();
+        let channel = RawChannel {
+            remote_id: "101".into(),
+            category_remote_id: Some("1".into()),
+            raw_name: "Canal Uno".into(),
+            logo_url: None,
+            epg_channel_id: None,
+            has_catchup: false,
+            catchup_days: 0,
+            sort_order: None,
+        };
+        let channel_fields = TitleFields { clean_title: "Canal Uno", year: None, match_key: "n/a", quality: None, language: None };
+        upsert_channel(&conn, provider_id, &category_map, &channel, &channel_fields).unwrap();
+
+        let movie = RawMovie {
+            remote_id: "5001".into(),
+            category_remote_id: None,
+            raw_title: "Mi Película".into(),
+            container_extension: Some("mp4".into()),
+            logo_url: None,
+            added_at: None,
+            rating: None,
+            tmdb_id: None,
+        };
+        let movie_fields = TitleFields { clean_title: "Mi Película", year: Some(2020), match_key: "mi-pelicula-2020", quality: None, language: None };
+        upsert_movie(&conn, provider_id, &HashMap::new(), &movie, &movie_fields).unwrap();
+
+        delete_provider(&conn, provider_id).unwrap();
+
+        assert_eq!(count_categories(&conn, provider_id).unwrap(), 0, "las categorías deben caer por ON DELETE CASCADE");
+        assert_eq!(count_channels(&conn, provider_id).unwrap(), 0, "los canales deben caer por ON DELETE CASCADE");
+        assert_eq!(count_movie_sources(&conn, provider_id).unwrap(), 0, "movie_sources debe caer por ON DELETE CASCADE");
+        // `movies` en sí no tiene provider_id (puede venir de varios proveedores a la
+        // vez): se queda huérfana hasta que el llamador ejecute la limpieza aparte.
+        assert_eq!(count_all_movies(&conn).unwrap(), 1, "movies no debe borrarse por sí sola, solo delete_provider");
+        delete_orphaned_movies_and_series(&conn).unwrap();
+        assert_eq!(count_all_movies(&conn).unwrap(), 0, "tras la limpieza de huérfanos sí debe desaparecer");
+
+        assert!(get_provider(&conn, provider_id).unwrap().is_none());
     }
 
     #[test]
