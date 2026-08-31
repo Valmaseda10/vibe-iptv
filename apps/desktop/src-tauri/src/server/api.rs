@@ -11,8 +11,10 @@ use axum::{routing::get, Json, Router};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use crate::catalog::tmdb::{TmdbClient, TMDB_API_KEY_CREDENTIAL_REF};
 use crate::db::reads::{self, MovieSort};
 use crate::db::{queries, schema, DbError};
+use crate::util::keychain;
 
 #[derive(Clone)]
 pub struct CatalogState {
@@ -158,6 +160,9 @@ pub struct MovieDetailResponse {
     #[ts(type = "number[]")]
     pub genres: Vec<i64>,
     pub tmdb_state: String,
+    /// Clave de YouTube del tráiler, si hay uno — `None` tanto si no hay como si
+    /// todavía no se ha comprobado (la ficha lo comprueba sola al abrirse).
+    pub trailer_key: Option<String>,
     pub sources: Vec<MovieSourceSummary>,
 }
 
@@ -174,6 +179,7 @@ impl From<reads::MovieDetail> for MovieDetailResponse {
             runtime_min: row.runtime_min,
             genres: row.genres,
             tmdb_state: row.tmdb_state,
+            trailer_key: row.youtube_trailer_key,
             sources: row.sources.into_iter().map(Into::into).collect(),
         }
     }
@@ -243,6 +249,7 @@ pub struct SeriesDetailResponse {
     #[ts(type = "number[]")]
     pub genres: Vec<i64>,
     pub tmdb_state: String,
+    pub trailer_key: Option<String>,
     pub episodes: Vec<EpisodeSummary>,
 }
 
@@ -503,9 +510,45 @@ async fn get_movies(State(state): State<CatalogState>, Query(query): Query<Movie
     Ok(Json(MoviesPage { items: items.into_iter().map(Into::into).collect(), next_cursor }))
 }
 
+/// Ficha de película: si el tráiler no se ha comprobado nunca (`trailer_checked_at` a
+/// NULL) y hay `tmdb_id`, se comprueba antes de responder — una sola vez por película en
+/// toda su vida (regla R4: con hasta 100.000 títulos, nunca durante la sincronización
+/// masiva). Sin clave de TMDB configurada, o si la comprobación falla, se responde igual
+/// con lo que ya hubiera en caché: no es motivo para romper la ficha entera.
 async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumPath<i64>) -> Result<Json<MovieDetailResponse>, ApiError> {
-    let movie = with_db(state.db_path, move |conn| reads::get_movie(conn, id)).await?;
-    movie.map(|m| Json(m.into())).ok_or(ApiError::NotFound)
+    let db_path = state.db_path.clone();
+    let movie = with_db(db_path.clone(), move |conn| reads::get_movie(conn, id)).await?;
+    let mut movie = movie.ok_or(ApiError::NotFound)?;
+
+    if movie.trailer_checked_at.is_none() {
+        if let Some(tmdb_id) = movie.tmdb_id {
+            match fetch_and_store_movie_trailer(db_path, id, tmdb_id).await {
+                Ok(key) => movie.youtube_trailer_key = key,
+                Err(err) => tracing::warn!(movie_id = id, error = %err, "no se pudo comprobar el tráiler"),
+            }
+        }
+    }
+
+    Ok(Json(movie.into()))
+}
+
+/// Lee la clave de TMDB del keychain (si no hay ninguna configurada, falla rápido y sin
+/// red — igual que `commands::spawn_tmdb_matching`), pide el tráiler, y lo guarda.
+async fn fetch_and_store_movie_trailer(db_path: PathBuf, movie_id: i64, tmdb_id: i64) -> Result<Option<String>, String> {
+    let api_key = keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).map_err(|err| err.to_string())?;
+    let trailer_key = TmdbClient::new(api_key).movie_trailer_key(tmdb_id).await.map_err(|err| err.to_string())?;
+    let stored = trailer_key.clone();
+    with_db(db_path, move |conn| queries::set_movie_trailer(conn, movie_id, stored.as_deref())).await.map_err(|err| err.to_string())?;
+    Ok(trailer_key)
+}
+
+/// Igual que `fetch_and_store_movie_trailer`, pero para series (`/tv/{id}/videos`).
+async fn fetch_and_store_series_trailer(db_path: PathBuf, series_id: i64, tmdb_id: i64) -> Result<Option<String>, String> {
+    let api_key = keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).map_err(|err| err.to_string())?;
+    let trailer_key = TmdbClient::new(api_key).tv_trailer_key(tmdb_id).await.map_err(|err| err.to_string())?;
+    let stored = trailer_key.clone();
+    with_db(db_path, move |conn| queries::set_series_trailer(conn, series_id, stored.as_deref())).await.map_err(|err| err.to_string())?;
+    Ok(trailer_key)
 }
 
 #[derive(Deserialize)]
@@ -545,8 +588,18 @@ async fn get_series_detail(State(state): State<CatalogState>, AxumPath(id): Axum
         }
     }
 
-    let series = with_db(db_path, move |conn| reads::get_series(conn, id)).await?;
-    let series = series.ok_or(ApiError::NotFound)?;
+    let series = with_db(db_path.clone(), move |conn| reads::get_series(conn, id)).await?;
+    let mut series = series.ok_or(ApiError::NotFound)?;
+
+    if series.trailer_checked_at.is_none() {
+        if let Some(tmdb_id) = series.tmdb_id {
+            match fetch_and_store_series_trailer(db_path, id, tmdb_id).await {
+                Ok(key) => series.youtube_trailer_key = key,
+                Err(err) => tracing::warn!(series_id = id, error = %err, "no se pudo comprobar el tráiler"),
+            }
+        }
+    }
+
     Ok(Json(SeriesDetailResponse {
         id: series.id,
         clean_title: series.clean_title,
@@ -557,6 +610,7 @@ async fn get_series_detail(State(state): State<CatalogState>, AxumPath(id): Axum
         rating: series.rating,
         genres: series.genres,
         tmdb_state: series.tmdb_state,
+        trailer_key: series.youtube_trailer_key,
         episodes: series.episodes.into_iter().map(Into::into).collect(),
     }))
 }
@@ -873,6 +927,42 @@ mod tests {
 
         let response = router.oneshot(Request::builder().uri("/api/movies/9999").body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// La película sembrada no tiene `tmdb_id` (estado `pending`): confirma que la ficha
+    /// responde sin intentar comprobar el tráiler (que fallaría sin clave de TMDB real
+    /// configurada) y que `trailer_key` sale `null` en vez de romper la respuesta.
+    #[tokio::test]
+    async fn get_movie_detail_has_no_trailer_key_when_never_matched_with_tmdb() {
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+
+        let response = router.oneshot(Request::builder().uri("/api/movies/1").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["trailer_key"], serde_json::Value::Null);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Si el tráiler ya se comprobó antes (`trailer_checked_at` con fecha), la ficha lo
+    /// devuelve directamente de caché sin intentar preguntarle a TMDB otra vez.
+    #[tokio::test]
+    async fn get_movie_detail_returns_cached_trailer_key_without_rechecking() {
+        let db_path = seeded_db();
+        {
+            let conn = open_connection_at(&db_path).unwrap();
+            conn.execute("UPDATE movies SET tmdb_state = 'matched', tmdb_id = 603 WHERE id = 1", []).unwrap();
+            write_queries::set_movie_trailer(&conn, 1, Some("ya-en-cache")).unwrap();
+        }
+        let router = catalog_router(db_path.clone());
+
+        let response = router.oneshot(Request::builder().uri("/api/movies/1").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["trailer_key"], "ya-en-cache");
 
         let _ = std::fs::remove_file(&db_path);
     }

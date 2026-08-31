@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGet, useApiBase, imagePath } from "../../lib/api-client";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
+import { TrailerModal } from "../../components/TrailerModal";
 import type { EpisodeSummary, SeriesDetailResponse } from "../../lib/api-types";
 
 export function SeriesDetailScreen() {
@@ -11,6 +12,7 @@ export function SeriesDetailScreen() {
   const navigate = useNavigate();
   const { data: base } = useApiBase();
   const { isFavorite, toggleFavorite } = useFavorites();
+  const [trailerOpen, setTrailerOpen] = useState(false);
   const { data, isPending, isError } = useQuery({
     queryKey: ["series", seriesId],
     // series_detail() puede llamarse bajo demanda en el núcleo (primera visita o caché
@@ -24,11 +26,11 @@ export function SeriesDetailScreen() {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") navigate({ to: "/series" });
+      if (e.key === "Escape" && !trailerOpen) navigate({ to: "/series" });
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [navigate]);
+  }, [navigate, trailerOpen]);
 
   if (isPending) return <DetailSkeleton />;
   if (isError || !data) return <p className="p-10 text-red-400">No se encontró la serie.</p>;
@@ -64,7 +66,20 @@ export function SeriesDetailScreen() {
             <HeartIcon filled={isFavorite("series", data.id)} className={`h-5 w-5 ${isFavorite("series", data.id) ? "text-red-500" : ""}`} />
             {isFavorite("series", data.id) ? "En favoritos" : "Añadir a favoritos"}
           </button>
+          {data.trailer_key && (
+            <button
+              type="button"
+              onClick={() => setTrailerOpen(true)}
+              className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-3 text-sm outline-none hover:bg-neutral-900"
+            >
+              🎬 Tráiler
+            </button>
+          )}
         </div>
+
+        {trailerOpen && data.trailer_key && (
+          <TrailerModal youtubeKey={data.trailer_key} title={data.clean_title} onClose={() => setTrailerOpen(false)} />
+        )}
 
         {seasons.length === 0 ? (
           <p className="pt-6 text-sm text-neutral-500">

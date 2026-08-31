@@ -62,7 +62,12 @@ export type M3uValidation = { channel_count: number, movie_count: number, series
  */
 suggested_xtream: XtreamSuggestion | null, };
 
-export type MovieDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, runtime_min: number | null, genres: number[], tmdb_state: string, sources: Array<MovieSourceSummary>, };
+export type MovieDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, runtime_min: number | null, genres: number[], tmdb_state: string, 
+/**
+ * Clave de YouTube del tráiler, si hay uno — `None` tanto si no hay como si
+ * todavía no se ha comprobado (la ficha lo comprueba sola al abrirse).
+ */
+trailer_key: string | null, sources: Array<MovieSourceSummary>, };
 
 export type MovieSourceSummary = { id: number, provider_id: number, remote_id: string, quality: string | null, language: string | null, container: string | null, };
 
@@ -132,7 +137,7 @@ export type SearchHitResponse = { item_kind: string, item_id: number, title: str
 
 export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, };
 
-export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, episodes: Array<EpisodeSummary>, };
+export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, trailer_key: string | null, episodes: Array<EpisodeSummary>, };
 
 export type SeriesPage = { items: Array<SeriesSummary>, next_cursor: number | null, };
 

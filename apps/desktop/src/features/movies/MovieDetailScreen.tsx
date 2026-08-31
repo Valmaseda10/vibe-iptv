@@ -1,9 +1,10 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, useApiBase, imagePath } from "../../lib/api-client";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
+import { TrailerModal } from "../../components/TrailerModal";
 import type { MovieDetailResponse } from "../../lib/api-types";
 
 export function MovieDetailScreen() {
@@ -11,6 +12,7 @@ export function MovieDetailScreen() {
   const navigate = useNavigate();
   const { data: base } = useApiBase();
   const { isFavorite, toggleFavorite } = useFavorites();
+  const [trailerOpen, setTrailerOpen] = useState(false);
   const { data, isPending, isError } = useQuery({
     queryKey: ["movie", movieId],
     queryFn: () => apiGet<MovieDetailResponse>(`/api/movies/${movieId}`),
@@ -18,11 +20,13 @@ export function MovieDetailScreen() {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape") navigate({ to: "/movies" });
+      // Con el tráiler abierto, Escape es cosa suya (cerrarlo) — si además volviera a
+      // "Películas", el modal y la navegación se pisarían en la misma pulsación.
+      if (e.key === "Escape" && !trailerOpen) navigate({ to: "/movies" });
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [navigate]);
+  }, [navigate, trailerOpen]);
 
   if (isPending) return <DetailSkeleton />;
   if (isError || !data) return <p className="p-10 text-red-400">No se encontró la película.</p>;
@@ -68,7 +72,20 @@ export function MovieDetailScreen() {
             <HeartIcon filled={isFavorite("movie", data.id)} className={`h-5 w-5 ${isFavorite("movie", data.id) ? "text-red-500" : ""}`} />
             {isFavorite("movie", data.id) ? "En favoritos" : "Añadir a favoritos"}
           </button>
+          {data.trailer_key && (
+            <button
+              type="button"
+              onClick={() => setTrailerOpen(true)}
+              className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-3 text-sm outline-none hover:bg-neutral-900"
+            >
+              🎬 Tráiler
+            </button>
+          )}
         </div>
+
+        {trailerOpen && data.trailer_key && (
+          <TrailerModal youtubeKey={data.trailer_key} title={data.clean_title} onClose={() => setTrailerOpen(false)} />
+        )}
 
         {data.sources.length > 0 && (
           <p className="pt-6 text-sm text-neutral-500">

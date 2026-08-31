@@ -15,6 +15,12 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::db::{self, queries};
 use crate::sources::MediaKind;
 
+/// Clave de keychain bajo la que vive la clave de API de TMDB (regla R5: nunca en
+/// SQLite). Vive aquí (no en `commands.rs`, donde se definió al principio) porque tanto
+/// los comandos de Tauri como los handlers HTTP de `server::api` (F "premium": tráiler
+/// bajo demanda al abrir una ficha) necesitan poder leerla.
+pub const TMDB_API_KEY_CREDENTIAL_REF: &str = "tmdb-api-key";
+
 const DEFAULT_BASE_URL: &str = "https://api.themoviedb.org/3";
 const MAX_CONCURRENT: usize = 5;
 const MAX_RETRIES: u32 = 4;
@@ -179,6 +185,42 @@ impl TmdbClient {
             runtime_min: None,
         })
     }
+
+    /// Clave de YouTube del mejor tráiler disponible, o `None` si no hay ninguno — nunca
+    /// un error solo por no encontrar tráiler, eso es un resultado válido, no un fallo.
+    /// Se pide bajo demanda al abrir la ficha (`server::api`), nunca durante el
+    /// emparejamiento masivo: con catálogos de hasta 100.000 títulos (regla R4) no tiene
+    /// sentido gastar una llamada de más por título que puede que nadie abra nunca.
+    pub async fn movie_trailer_key(&self, tmdb_id: i64) -> Result<Option<String>> {
+        self.trailer_key(&format!("/movie/{tmdb_id}/videos")).await
+    }
+
+    pub async fn tv_trailer_key(&self, tmdb_id: i64) -> Result<Option<String>> {
+        self.trailer_key(&format!("/tv/{tmdb_id}/videos")).await
+    }
+
+    async fn trailer_key(&self, path: &str) -> Result<Option<String>> {
+        let response: VideosResponse = self.get_json(path, &[("language", "es-ES")]).await?;
+        if let Some(key) = pick_trailer(&response.results) {
+            return Ok(Some(key));
+        }
+        // Muchos tráilers solo están subidos en inglés; TMDB no hace fallback de idioma
+        // por sí solo en este endpoint como sí hace `search/*`.
+        let response: VideosResponse = self.get_json(path, &[("language", "en-US")]).await?;
+        Ok(pick_trailer(&response.results))
+    }
+}
+
+/// Prefiere un tráiler "oficial" en YouTube; si no hay ninguno marcado como oficial,
+/// acepta el primer tráiler en YouTube que haya. Nunca un "Teaser"/"Clip"/"Featurette"
+/// si hay un "Trailer" de verdad disponible.
+fn pick_trailer(results: &[VideoWire]) -> Option<String> {
+    let youtube_trailers: Vec<&VideoWire> = results.iter().filter(|v| v.site == "YouTube" && v.kind == "Trailer").collect();
+    youtube_trailers
+        .iter()
+        .find(|v| v.official)
+        .or_else(|| youtube_trailers.first())
+        .map(|v| v.key.clone())
 }
 
 /// "Acepta el primer resultado si la similitud del título supera 0,85 y el año coincide
@@ -513,6 +555,22 @@ struct MovieDetailsResponse {
 }
 
 #[derive(Debug, Deserialize)]
+struct VideosResponse {
+    #[serde(default)]
+    results: Vec<VideoWire>,
+}
+
+#[derive(Debug, Deserialize)]
+struct VideoWire {
+    key: String,
+    site: String,
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    official: bool,
+}
+
+#[derive(Debug, Deserialize)]
 struct TvDetailsResponse {
     id: i64,
     #[serde(default)]
@@ -666,6 +724,67 @@ mod tests {
         assert_eq!(details.tmdb_id, 603692);
         assert_eq!(details.genre_ids, vec![28]);
         assert_eq!(details.runtime_min, Some(169));
+    }
+
+    #[test]
+    fn pick_trailer_prefers_official_over_first() {
+        let results = vec![
+            VideoWire { key: "no-oficial".into(), site: "YouTube".into(), kind: "Trailer".into(), official: false },
+            VideoWire { key: "oficial".into(), site: "YouTube".into(), kind: "Trailer".into(), official: true },
+        ];
+        assert_eq!(pick_trailer(&results), Some("oficial".to_string()));
+    }
+
+    #[test]
+    fn pick_trailer_ignores_teasers_and_non_youtube_sites() {
+        let results = vec![
+            VideoWire { key: "teaser".into(), site: "YouTube".into(), kind: "Teaser".into(), official: true },
+            VideoWire { key: "vimeo".into(), site: "Vimeo".into(), kind: "Trailer".into(), official: true },
+        ];
+        assert_eq!(pick_trailer(&results), None);
+    }
+
+    #[test]
+    fn pick_trailer_falls_back_to_first_trailer_when_none_official() {
+        let results = vec![VideoWire { key: "unico".into(), site: "YouTube".into(), kind: "Trailer".into(), official: false }];
+        assert_eq!(pick_trailer(&results), Some("unico".to_string()));
+    }
+
+    #[test]
+    fn pick_trailer_none_when_no_results() {
+        assert_eq!(pick_trailer(&[]), None);
+    }
+
+    #[tokio::test]
+    async fn movie_trailer_key_returns_the_official_one() {
+        let state = MockState::default();
+        queue(&state, 200, r#"{"results":[{"key":"abc123","site":"YouTube","type":"Trailer","official":true}]}"#);
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        assert_eq!(client.movie_trailer_key(603).await.unwrap(), Some("abc123".to_string()));
+    }
+
+    #[tokio::test]
+    async fn movie_trailer_key_falls_back_to_english_when_spanish_has_none() {
+        let state = MockState::default();
+        queue(&state, 200, r#"{"results":[]}"#); // es-ES
+        queue(&state, 200, r#"{"results":[{"key":"en-key","site":"YouTube","type":"Trailer","official":true}]}"#); // en-US
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        assert_eq!(client.movie_trailer_key(603).await.unwrap(), Some("en-key".to_string()));
+    }
+
+    #[tokio::test]
+    async fn movie_trailer_key_is_none_when_nothing_found_in_either_language() {
+        let state = MockState::default();
+        queue(&state, 200, r#"{"results":[]}"#);
+        queue(&state, 200, r#"{"results":[]}"#);
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        assert_eq!(client.movie_trailer_key(603).await.unwrap(), None);
     }
 
     #[tokio::test]

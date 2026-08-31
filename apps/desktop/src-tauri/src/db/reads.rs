@@ -192,13 +192,19 @@ pub struct MovieDetail {
     pub runtime_min: Option<i32>,
     pub genres: Vec<i64>,
     pub tmdb_state: String,
+    /// `None` si `tmdb_state != "matched"`: sin `tmdb_id` no hay nada que preguntarle a
+    /// TMDB sobre el tráiler.
+    pub tmdb_id: Option<i64>,
+    pub youtube_trailer_key: Option<String>,
+    pub trailer_checked_at: Option<i64>,
     pub sources: Vec<MovieSourceItem>,
 }
 
 pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
     let base = conn
         .query_row(
-            "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres, tmdb_state
+            "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres, tmdb_state,
+                    tmdb_id, youtube_trailer_key, trailer_checked_at
              FROM movies WHERE id = ?1",
             params![id],
             |row| {
@@ -214,12 +220,30 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
                     row.get::<_, Option<i32>>(7)?,
                     genres_json,
                     row.get::<_, String>(9)?,
+                    row.get::<_, Option<i64>>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<i64>>(12)?,
                 ))
             },
         )
         .optional()?;
 
-    let Some((id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres_json, tmdb_state)) = base else {
+    let Some((
+        id,
+        clean_title,
+        year,
+        overview,
+        poster_path,
+        backdrop_path,
+        rating,
+        runtime_min,
+        genres_json,
+        tmdb_state,
+        tmdb_id,
+        youtube_trailer_key,
+        trailer_checked_at,
+    )) = base
+    else {
         return Ok(None);
     };
 
@@ -241,7 +265,22 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    Ok(Some(MovieDetail { id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres, tmdb_state, sources }))
+    Ok(Some(MovieDetail {
+        id,
+        clean_title,
+        year,
+        overview,
+        poster_path,
+        backdrop_path,
+        rating,
+        runtime_min,
+        genres,
+        tmdb_state,
+        tmdb_id,
+        youtube_trailer_key,
+        trailer_checked_at,
+        sources,
+    }))
 }
 
 pub struct SeriesListItem {
@@ -324,6 +363,9 @@ pub struct SeriesDetail {
     pub rating: Option<f64>,
     pub genres: Vec<i64>,
     pub tmdb_state: String,
+    pub tmdb_id: Option<i64>,
+    pub youtube_trailer_key: Option<String>,
+    pub trailer_checked_at: Option<i64>,
     pub sources: Vec<SeriesSourceItem>,
     pub episodes: Vec<EpisodeItem>,
 }
@@ -331,7 +373,9 @@ pub struct SeriesDetail {
 pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
     let base = conn
         .query_row(
-            "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, genres, tmdb_state FROM series WHERE id = ?1",
+            "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, genres, tmdb_state,
+                    tmdb_id, youtube_trailer_key, trailer_checked_at
+             FROM series WHERE id = ?1",
             params![id],
             |row| {
                 Ok((
@@ -344,12 +388,17 @@ pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
                     row.get::<_, Option<f64>>(6)?,
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, String>(8)?,
+                    row.get::<_, Option<i64>>(9)?,
+                    row.get::<_, Option<String>>(10)?,
+                    row.get::<_, Option<i64>>(11)?,
                 ))
             },
         )
         .optional()?;
 
-    let Some((id, clean_title, year, overview, poster_path, backdrop_path, rating, genres_json, tmdb_state)) = base else {
+    let Some((id, clean_title, year, overview, poster_path, backdrop_path, rating, genres_json, tmdb_state, tmdb_id, youtube_trailer_key, trailer_checked_at)) =
+        base
+    else {
         return Ok(None);
     };
     let genres: Vec<i64> = genres_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
@@ -382,7 +431,22 @@ pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
 
-    Ok(Some(SeriesDetail { id, clean_title, year, overview, poster_path, backdrop_path, rating, genres, tmdb_state, sources, episodes }))
+    Ok(Some(SeriesDetail {
+        id,
+        clean_title,
+        year,
+        overview,
+        poster_path,
+        backdrop_path,
+        rating,
+        genres,
+        tmdb_state,
+        tmdb_id,
+        youtube_trailer_key,
+        trailer_checked_at,
+        sources,
+        episodes,
+    }))
 }
 
 /// `series_source_id` es de la primera fuente que tenga esta serie; se usa cuando hace

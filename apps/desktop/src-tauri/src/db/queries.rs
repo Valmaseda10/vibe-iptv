@@ -455,6 +455,25 @@ pub fn update_series_tmdb_result(conn: &Connection, series_id: i64, outcome: &Tm
     Ok(())
 }
 
+/// Guarda el resultado de comprobar el tráiler (F "premium"): `trailer_key` a `None` es
+/// un resultado válido ("se comprobó y no hay tráiler"), no un fallo — `trailer_checked_at`
+/// es lo que distingue eso de "todavía no se ha comprobado" (ver migración 006).
+pub fn set_movie_trailer(conn: &Connection, movie_id: i64, trailer_key: Option<&str>) -> Result<()> {
+    conn.execute(
+        "UPDATE movies SET youtube_trailer_key = ?1, trailer_checked_at = ?2 WHERE id = ?3",
+        params![trailer_key, now_epoch(), movie_id],
+    )?;
+    Ok(())
+}
+
+pub fn set_series_trailer(conn: &Connection, series_id: i64, trailer_key: Option<&str>) -> Result<()> {
+    conn.execute(
+        "UPDATE series SET youtube_trailer_key = ?1, trailer_checked_at = ?2 WHERE id = ?3",
+        params![trailer_key, now_epoch(), series_id],
+    )?;
+    Ok(())
+}
+
 /// Caché de aciertos y de fallos de búsqueda en TMDB (regla: "los fallos también se
 /// cachean", ver `docs/DATA-MODEL.md`).
 pub fn get_tmdb_cache(conn: &Connection, key: &str) -> Result<Option<String>> {

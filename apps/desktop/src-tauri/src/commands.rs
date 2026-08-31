@@ -10,7 +10,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
 use crate::catalog::epg;
-use crate::catalog::tmdb::{self, TmdbClient};
+use crate::catalog::tmdb::{self, TmdbClient, TMDB_API_KEY_CREDENTIAL_REF};
 use crate::catalog::sync;
 use crate::db::queries::{self, ProviderKind};
 use crate::db::schema;
@@ -22,9 +22,6 @@ use crate::util::keychain;
 use crate::util::stream_guard::StreamGuard;
 
 type CmdResult<T> = std::result::Result<T, String>;
-
-/// Clave de keychain bajo la que vive la clave de API de TMDB (regla R5: nunca en SQLite).
-const TMDB_API_KEY_CREDENTIAL_REF: &str = "tmdb-api-key";
 
 /// Vista de un proveedor para la interfaz: nunca lleva `credential_ref` (regla R5).
 #[derive(Debug, Clone, Serialize, TS)]
