@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGetOrNull, apiPost, useApiBase } from "../../lib/api-client";
 import type {
   ChannelsPage,
+  EpgNowNextResponse,
   EpisodeSummary,
   MovieDetailResponse,
   PlaybackProgressResponse,
@@ -57,6 +58,7 @@ export function PlayerScreen() {
   const [appliedStart, setAppliedStart] = useState(0);
   const [resumeReady, setResumeReady] = useState(kind === "channel"); // el directo no espera a nada.
   const [resumeBanner, setResumeBanner] = useState<number | null>(null);
+  const [channelOverlayVisible, setChannelOverlayVisible] = useState(true);
   const [nextCountdown, setNextCountdown] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
@@ -69,6 +71,11 @@ export function PlayerScreen() {
     queryKey: ["player-series", search.seriesId],
     queryFn: () => apiGetOrNull<SeriesDetailResponse>(`/api/series/${search.seriesId}`),
     enabled: kind === "episode" && Boolean(search.seriesId),
+  });
+  const channelEpgQuery = useQuery({
+    queryKey: ["player-epg-now", itemId],
+    queryFn: () => apiGetOrNull<EpgNowNextResponse[]>(`/api/epg/now?channel_ids=${itemId}`),
+    enabled: kind === "channel",
   });
   const channelsQuery = useQuery({
     queryKey: ["player-channels", search.categoryId],
@@ -141,6 +148,15 @@ export function PlayerScreen() {
     const timeout = setTimeout(() => setResumeBanner(null), 4000);
     return () => clearTimeout(timeout);
   }, [resumeBanner]);
+
+  // Superposición de "qué están dando" al cambiar de canal (F7): se enseña al entrar y
+  // en cada zapping, y se retira sola a los pocos segundos.
+  useEffect(() => {
+    if (kind !== "channel") return;
+    setChannelOverlayVisible(true);
+    const timeout = setTimeout(() => setChannelOverlayVisible(false), 5000);
+    return () => clearTimeout(timeout);
+  }, [kind, itemId]);
 
   // El nivel decide si se puede buscar de forma nativa; `video.duration` no es fiable
   // para esto (ver comentario de cabecera). `metadataDurationSeconds` (ffprobe) es la
@@ -369,6 +385,22 @@ export function PlayerScreen() {
       {resumeBanner != null && (
         <div className="absolute left-6 top-6 rounded-lg bg-black/70 px-4 py-2 text-sm text-neutral-200">
           Reanudando desde {formatTime(resumeBanner)}
+        </div>
+      )}
+
+      {kind === "channel" && channelOverlayVisible && (
+        <div className="absolute left-6 top-6 max-w-sm rounded-lg bg-black/80 px-4 py-3">
+          <p className="font-medium text-white">{currentChannel?.display_name}</p>
+          {channelEpgQuery.data?.[0]?.current ? (
+            <>
+              <p className="mt-0.5 truncate text-sm text-neutral-300">{channelEpgQuery.data[0].current.title}</p>
+              {channelEpgQuery.data[0].next && (
+                <p className="mt-0.5 truncate text-xs text-neutral-500">A continuación: {channelEpgQuery.data[0].next.title}</p>
+              )}
+            </>
+          ) : (
+            <p className="mt-0.5 text-sm text-neutral-500">Sin guía disponible</p>
+          )}
         </div>
       )}
 

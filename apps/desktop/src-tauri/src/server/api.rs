@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::{routing::get, routing::post, Json, Router};
+use axum::{routing::get, Json, Router};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -493,6 +493,99 @@ async fn get_search(State(state): State<CatalogState>, Query(query): Query<Searc
     Ok(Json(SearchResults { channels, movies, series }))
 }
 
+// ─────────────── Guía EPG (F7) ───────────────
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct EpgProgrammeResponse {
+    pub title: String,
+    pub subtitle: Option<String>,
+    #[ts(type = "number")]
+    pub start_ts: i64,
+    #[ts(type = "number")]
+    pub stop_ts: i64,
+}
+
+impl From<reads::ProgrammeSummary> for EpgProgrammeResponse {
+    fn from(row: reads::ProgrammeSummary) -> Self {
+        Self { title: row.title, subtitle: row.subtitle, start_ts: row.start_ts, stop_ts: row.stop_ts }
+    }
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct EpgNowNextResponse {
+    #[ts(type = "number")]
+    pub channel_id: i64,
+    pub current: Option<EpgProgrammeResponse>,
+    pub next: Option<EpgProgrammeResponse>,
+}
+
+#[derive(Deserialize)]
+struct EpgNowQuery {
+    channel_ids: String,
+}
+
+fn parse_channel_ids(raw: &str) -> Result<Vec<i64>, ApiError> {
+    raw.split(',')
+        .filter(|s| !s.is_empty())
+        .map(|s| s.trim().parse::<i64>().map_err(|_| ApiError::BadRequest("channel_ids debe ser una lista de números separados por comas".to_string())))
+        .collect()
+}
+
+/// Programa actual y siguiente de cada canal pedido. `channel_ids=1,2,3` (ids internos,
+/// nunca el id de XMLTV — ver `db::reads`, sección de guía).
+async fn get_epg_now(State(state): State<CatalogState>, Query(query): Query<EpgNowQuery>) -> Result<Json<Vec<EpgNowNextResponse>>, ApiError> {
+    let channel_ids = parse_channel_ids(&query.channel_ids)?;
+    let now = crate::db::now_epoch();
+    let results = with_db(state.db_path, move |conn| reads::epg_now_and_next(conn, &channel_ids, now)).await?;
+    Ok(Json(
+        results
+            .into_iter()
+            .map(|r| EpgNowNextResponse { channel_id: r.channel_id, current: r.current.map(Into::into), next: r.next.map(Into::into) })
+            .collect(),
+    ))
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct EpgGridProgramme {
+    #[ts(type = "number")]
+    pub channel_id: i64,
+    pub title: String,
+    pub subtitle: Option<String>,
+    #[ts(type = "number")]
+    pub start_ts: i64,
+    #[ts(type = "number")]
+    pub stop_ts: i64,
+    pub category: Option<String>,
+}
+
+impl From<reads::GridProgramme> for EpgGridProgramme {
+    fn from(row: reads::GridProgramme) -> Self {
+        Self { channel_id: row.channel_id, title: row.title, subtitle: row.subtitle, start_ts: row.start_ts, stop_ts: row.stop_ts, category: row.category }
+    }
+}
+
+#[derive(Deserialize)]
+struct EpgGridQuery {
+    channel_ids: String,
+    from: i64,
+    to: i64,
+}
+
+/// Vista de guía en rejilla: todos los programas de los canales pedidos que se solapan
+/// con `[from, to)` (epoch, segundos).
+async fn get_epg_grid(State(state): State<CatalogState>, Query(query): Query<EpgGridQuery>) -> Result<Json<Vec<EpgGridProgramme>>, ApiError> {
+    if query.to <= query.from {
+        return Err(ApiError::BadRequest("to debe ser mayor que from".to_string()));
+    }
+    let channel_ids = parse_channel_ids(&query.channel_ids)?;
+    let (from, to) = (query.from, query.to);
+    let results = with_db(state.db_path, move |conn| reads::epg_grid(conn, &channel_ids, from, to)).await?;
+    Ok(Json(results.into_iter().map(Into::into).collect()))
+}
+
 #[derive(Deserialize)]
 struct PlaybackProgressQuery {
     item_kind: String,
@@ -581,6 +674,8 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/series", get(get_series_list))
         .route("/api/series/:id", get(get_series_detail))
         .route("/api/search", get(get_search))
+        .route("/api/epg/now", get(get_epg_now))
+        .route("/api/epg/grid", get(get_epg_grid))
         .route("/api/playback/progress", get(get_playback_progress).post(post_playback_progress))
         .route("/api/favorites", get(get_favorites).post(post_favorite).delete(delete_favorite))
         .with_state(CatalogState { db_path })
@@ -782,6 +877,103 @@ mod tests {
         assert_eq!(json["items"].as_array().unwrap().len(), 2);
         assert!(json["next_cursor"].is_number());
 
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    fn seed_channel_with_epg(db_path: &std::path::Path, epg_channel_id: &str) -> i64 {
+        use crate::sources::model::RawChannel;
+        let conn = open_connection_at(db_path).unwrap();
+        let provider_id = write_queries::insert_provider(&conn, ProviderKind::Xtream, "P2", "http://y", None, 1, None).unwrap();
+        let channel = RawChannel {
+            remote_id: "101".into(),
+            category_remote_id: None,
+            raw_name: "Canal".into(),
+            logo_url: None,
+            epg_channel_id: Some(epg_channel_id.into()),
+            has_catchup: false,
+            catchup_days: 0,
+            sort_order: None,
+        };
+        let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
+        write_queries::upsert_channel(&conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+        conn.query_row("SELECT id FROM channels WHERE remote_id = '101'", [], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_epg_now_returns_current_and_next_programme() {
+        let db_path = seeded_db();
+        let channel_id = seed_channel_with_epg(&db_path, "canaluno.es");
+        {
+            // El handler usa la hora real (crate::db::now_epoch()), así que el
+            // programa "actual" tiene que estar centrado en el instante real del test,
+            // no en un epoch pequeño arbitrario.
+            let now = crate::db::now_epoch();
+            let conn = open_connection_at(&db_path).unwrap();
+            conn.execute(
+                "INSERT INTO epg_programmes (channel_id, start_ts, stop_ts, title) VALUES ('canaluno.es', ?1, ?2, 'Ahora')",
+                rusqlite::params![now - 500, now + 500],
+            )
+            .unwrap();
+        }
+
+        let router = catalog_router(db_path.clone());
+        let response = router
+            .oneshot(Request::builder().uri(format!("/api/epg/now?channel_ids={channel_id}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json[0]["current"]["title"], "Ahora");
+        assert!(json[0]["next"].is_null());
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn get_epg_now_rejects_non_numeric_channel_ids() {
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+        let response =
+            router.oneshot(Request::builder().uri("/api/epg/now?channel_ids=abc").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn get_epg_grid_returns_programmes_in_window() {
+        let db_path = seeded_db();
+        let channel_id = seed_channel_with_epg(&db_path, "canaluno.es");
+        {
+            let conn = open_connection_at(&db_path).unwrap();
+            conn.execute(
+                "INSERT INTO epg_programmes (channel_id, start_ts, stop_ts, title) VALUES ('canaluno.es', 1000, 2000, 'Programa')",
+                [],
+            )
+            .unwrap();
+        }
+
+        let router = catalog_router(db_path.clone());
+        let response = router
+            .oneshot(Request::builder().uri(format!("/api/epg/grid?channel_ids={channel_id}&from=0&to=5000")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json[0]["title"], "Programa");
+        assert_eq!(json[0]["channel_id"], channel_id);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn get_epg_grid_rejects_backwards_window() {
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+        let response = router
+            .oneshot(Request::builder().uri("/api/epg/grid?channel_ids=1&from=100&to=50").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let _ = std::fs::remove_file(&db_path);
     }
 }

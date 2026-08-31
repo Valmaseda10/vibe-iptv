@@ -569,6 +569,80 @@ en VOD ya funcionan.**
 
 ---
 
+## 2026-08-31 — F7 EPG y directo
+
+**Construida de manera autónoma**, siguiendo la instrucción de continuar sin
+supervisión mientras el usuario no estuviera delante. A diferencia de F6, no ha hecho
+falta ninguna corrección posterior: se verificó contra el proveedor real del usuario
+(sin guardar ninguna credencial) antes de darla por cerrada.
+
+**Qué se ha construido.**
+- **`catalog/epg.rs`**: `download_xmltv()` descarga por trozos a disco (nunca en
+  memoria); `parse_xmltv()` parsea con `quick-xml` evento a evento, descartando fuera
+  del propio bucle (antes de construir nada) los programas anteriores a ayer o
+  posteriores a siete días. Descomprime gzip sniffeando los bytes mágicos (`1f 8b`) en
+  vez de fiarse de `Content-Encoding` o de la extensión del fichero: muchos paneles
+  sirven el `.gz` sin declarar la cabecera. Fechas XMLTV (`YYYYMMDDHHMMSS ±ZZZZ`)
+  parseadas a mano con el algoritmo de Howard Hinnant (aritmética de enteros,
+  dominio público) para no añadir una dependencia de fechas solo para un formato fijo.
+  `run_epg_sync()` orquesta descarga + parseo + reemplazo completo de la guía (como
+  `search_index`: más simple que reconciliar, y XMLTV no da un id de programa estable
+  con el que hacer upsert) + informe de cuántos canales quedan sin EPG.
+- Enganchado como paso 8 tras cada sincronización de catálogo (`commands::spawn_sync`),
+  en segundo plano, igual que TMDB. Si la fuente no ofrece XMLTV (M3U sin
+  `x-tvg-url`), no hace nada — no es un error.
+- **`GET /api/epg/now?channel_ids=1,2,3`**: programa actual y siguiente por canal (id
+  interno, nunca el id de XMLTV, que la API nunca expone). **`GET
+  /api/epg/grid?channel_ids=&from=&to=`**: todos los programas que se solapan con la
+  ventana pedida, para la vista en rejilla.
+- **Frontend**: `LiveScreen` muestra el programa actual con una barra de progreso fina
+  bajo cada canal (refrescado cada minuto). Pantalla nueva **Guía** (`/guide`, entrada
+  de navegación propia): rejilla canal×tiempo de 4 horas, flechas izquierda/derecha
+  desplazan la ventana temporal, arriba/abajo mueven el foco entre canales, Enter abre
+  el directo de la fila (no el programa concreto: catch-up es F9). `PlayerScreen`
+  enseña una superposición con "qué están dando" (actual y siguiente) al entrar a un
+  canal o hacer zapping, que se retira sola a los 5 s.
+
+**Decisiones tomadas.**
+- **Sin `chrono` ni ninguna librería de fechas nueva.** XMLTV usa un único formato fijo;
+  parsearlo a mano con aritmética de enteros (mismo principio que ya se usaba en
+  `redact()`/`normalize()`: preferir código propio pequeño y bien testeado a una
+  dependencia para un problema acotado) evita añadir peso solo para esto.
+- **`quick-xml` sí es una dependencia nueva justificada**: parsear XML a mano
+  evento a evento sin un parser de verdad habría sido reinventar un tokenizador SAX
+  entero, con muchas más formas de equivocarse que aritmética de fechas.
+- **La guía se reemplaza entera, no se reconcilia fila a fila** (ver arriba): coherente
+  con cómo ya se trata `search_index` en `catalog::sync`.
+- **`GET /api/epg/now` hace una consulta por canal, no una sola con `IN`.** Para la
+  lista de "ahora" (decenas de filas visibles, no miles) es más simple y suficientemente
+  rápido; `GET /api/epg/grid` sí usa un único `IN` porque ahí el número de programas por
+  ventana puede ser mucho mayor.
+- **La rejilla de guía pagina a 60 canales por categoría**, sin virtualizar ni el eje de
+  canales ni el de tiempo: razonable para una categoría típica, documentado como límite
+  conocido más que como virtud.
+
+**Verificación real hecha (proveedor del usuario, sin guardar ninguna credencial: test
+temporal con variables de entorno, ejecutado una vez y borrado antes de este commit,
+confirmado con un `grep` del repo).** Su XMLTV real: 5,7 MB descargados en 3,8 s,
+11.369 programas parseados en 562 ms. Muy por debajo del criterio de aceptación (30 MB
+en menos de 30 s) y coherente por escala. La guía en la UI todavía no se ha visto con
+datos reales del usuario: la sincronización de su proveedor se hizo antes de que F7
+existiera, así que hace falta un resincronizado (botón "Sincronizar" de Ajustes, F2)
+para que su guía real llegue a `channels`/`epg_programmes` y se pueda ver en Directo y
+en la Guía.
+
+**Deuda técnica pendiente.**
+- Toda la de fases anteriores.
+- **No verificado visualmente con datos reales**: hace falta que el usuario
+  resincronice su proveedor y confirme que Directo y Guía muestran su programación de
+  verdad (títulos, horarios, progreso).
+- Sin caché de refresco periódico de EPG en segundo plano: se actualiza solo al
+  resincronizar el proveedor a mano, no cada X horas por su cuenta.
+- Guía sin virtualizar (ver decisión arriba) y limitada a 60 canales por categoría.
+- Catch-up/timeshift desde una celda de la guía: F9.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

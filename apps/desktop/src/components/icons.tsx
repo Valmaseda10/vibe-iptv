@@ -68,6 +68,15 @@ export function ChevronIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function GuideIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x="3" y="4" width="18" height="16" rx="2" />
+      <path d="M3 9h18M8 4v5M8 13h4M8 17h8M14 13h6" />
+    </Icon>
+  );
+}
+
 export function PlayIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Icon fill="currentColor" stroke="none" {...props}>

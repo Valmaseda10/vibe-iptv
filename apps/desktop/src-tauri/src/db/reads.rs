@@ -8,7 +8,7 @@
 //! keyset pagination exacto por cada combinación de orden/filtro no compensaba el tiempo
 //! en esta fase, sin una interfaz real todavía que lo ejercite (llega en F5).
 
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, ToSql};
 
 use crate::util::redact;
 
@@ -486,6 +486,108 @@ pub fn resolve_episode_stream(conn: &Connection, episode_id: i64) -> Result<Opti
     .map_err(Into::into)
 }
 
+// ─────────────── Guía EPG (F7) ───────────────
+//
+// `epg_programmes.channel_id` es el id de XMLTV (`channels.epg_channel_id`), no el id
+// interno con el que trabaja el resto de la API: estas funciones reciben y devuelven
+// siempre el id interno, y hacen la traducción por dentro — el resto de la app nunca
+// necesita saber que existe un id de XMLTV.
+
+pub struct ProgrammeSummary {
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub start_ts: i64,
+    pub stop_ts: i64,
+}
+
+pub struct NowNextProgramme {
+    pub channel_id: i64,
+    pub current: Option<ProgrammeSummary>,
+    pub next: Option<ProgrammeSummary>,
+}
+
+fn programme_row(row: &Row) -> rusqlite::Result<ProgrammeSummary> {
+    Ok(ProgrammeSummary { title: row.get(0)?, subtitle: row.get(1)?, start_ts: row.get(2)?, stop_ts: row.get(3)? })
+}
+
+/// Programa actual y siguiente de cada canal en `channel_ids` (ids internos). Un canal
+/// sin `epg_channel_id`, o sin guía importada todavía, sale con `current`/`next` a
+/// `None` — nunca se descarta de la lista, para que el llamador sepa que se pidió.
+pub fn epg_now_and_next(conn: &Connection, channel_ids: &[i64], now: i64) -> Result<Vec<NowNextProgramme>> {
+    let mut results = Vec::with_capacity(channel_ids.len());
+    for &channel_id in channel_ids {
+        let epg_channel_id: Option<String> = conn
+            .query_row("SELECT epg_channel_id FROM channels WHERE id = ?1", params![channel_id], |row| row.get(0))
+            .optional()?
+            .flatten();
+
+        let Some(epg_channel_id) = epg_channel_id else {
+            results.push(NowNextProgramme { channel_id, current: None, next: None });
+            continue;
+        };
+
+        let current = conn
+            .query_row(
+                "SELECT title, subtitle, start_ts, stop_ts FROM epg_programmes
+                 WHERE channel_id = ?1 AND start_ts <= ?2 AND stop_ts > ?2 ORDER BY start_ts LIMIT 1",
+                params![epg_channel_id, now],
+                programme_row,
+            )
+            .optional()?;
+        let next = conn
+            .query_row(
+                "SELECT title, subtitle, start_ts, stop_ts FROM epg_programmes
+                 WHERE channel_id = ?1 AND start_ts > ?2 ORDER BY start_ts LIMIT 1",
+                params![epg_channel_id, now],
+                programme_row,
+            )
+            .optional()?;
+
+        results.push(NowNextProgramme { channel_id, current, next });
+    }
+    Ok(results)
+}
+
+pub struct GridProgramme {
+    pub channel_id: i64,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub start_ts: i64,
+    pub stop_ts: i64,
+    pub category: Option<String>,
+}
+
+/// Todos los programas de `channel_ids` que se solapan con `[from_ts, to_ts)` — la vista
+/// de guía en rejilla. Ordenado por canal y luego por hora de inicio.
+pub fn epg_grid(conn: &Connection, channel_ids: &[i64], from_ts: i64, to_ts: i64) -> Result<Vec<GridProgramme>> {
+    if channel_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = channel_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT c.id, p.title, p.subtitle, p.start_ts, p.stop_ts, p.category
+         FROM epg_programmes p JOIN channels c ON c.epg_channel_id = p.channel_id
+         WHERE c.id IN ({placeholders}) AND p.start_ts < ? AND p.stop_ts > ?
+         ORDER BY c.id, p.start_ts"
+    );
+    let mut args: Vec<Box<dyn ToSql>> = channel_ids.iter().map(|id| Box::new(*id) as Box<dyn ToSql>).collect();
+    args.push(Box::new(to_ts));
+    args.push(Box::new(from_ts));
+
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter().map(|b| b.as_ref())), |row| {
+        Ok(GridProgramme {
+            channel_id: row.get(0)?,
+            title: row.get(1)?,
+            subtitle: row.get(2)?,
+            start_ts: row.get(3)?,
+            stop_ts: row.get(4)?,
+            category: row.get(5)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 // ─────────────── Continuar viendo, recientes, favoritos ───────────────
 
 pub fn ensure_default_profile(conn: &Connection) -> Result<i64> {
@@ -905,5 +1007,80 @@ mod tests {
         let logo = channels[0].logo_url.as_deref().unwrap();
         assert!(!logo.contains("juan"));
         assert!(!logo.contains("hunter2"));
+    }
+
+    fn seed_channel_with_epg_id(conn: &Connection, provider_id: i64, remote_id: &str, epg_channel_id: Option<&str>) -> i64 {
+        use crate::sources::model::RawChannel;
+        let channel = RawChannel {
+            remote_id: remote_id.into(),
+            category_remote_id: None,
+            raw_name: "Canal".into(),
+            logo_url: None,
+            epg_channel_id: epg_channel_id.map(String::from),
+            has_catchup: false,
+            catchup_days: 0,
+            sort_order: None,
+        };
+        let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
+        queries::upsert_channel(conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+        conn.query_row("SELECT id FROM channels WHERE provider_id = ?1 AND remote_id = ?2", params![provider_id, remote_id], |r| r.get(0)).unwrap()
+    }
+
+    fn insert_test_programme(conn: &Connection, channel_id: &str, start_ts: i64, stop_ts: i64, title: &str) {
+        conn.execute(
+            "INSERT INTO epg_programmes (channel_id, start_ts, stop_ts, title) VALUES (?1, ?2, ?3, ?4)",
+            params![channel_id, start_ts, stop_ts, title],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn epg_now_and_next_finds_current_and_upcoming_programme() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let channel_id = seed_channel_with_epg_id(&conn, provider_id, "1", Some("canaluno.es"));
+
+        insert_test_programme(&conn, "canaluno.es", 1000, 2000, "Ahora");
+        insert_test_programme(&conn, "canaluno.es", 2000, 3000, "Después");
+
+        let results = epg_now_and_next(&conn, &[channel_id], 1500).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].current.as_ref().unwrap().title, "Ahora");
+        assert_eq!(results[0].next.as_ref().unwrap().title, "Después");
+    }
+
+    #[test]
+    fn epg_now_and_next_returns_none_without_epg_channel_id_or_guide() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let without_id = seed_channel_with_epg_id(&conn, provider_id, "1", None);
+        let without_guide = seed_channel_with_epg_id(&conn, provider_id, "2", Some("singuia.es"));
+
+        let results = epg_now_and_next(&conn, &[without_id, without_guide], 1500).unwrap();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.current.is_none() && r.next.is_none()));
+    }
+
+    #[test]
+    fn epg_grid_returns_only_overlapping_programmes_for_requested_channels() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let channel_a = seed_channel_with_epg_id(&conn, provider_id, "1", Some("a.es"));
+        let _channel_b = seed_channel_with_epg_id(&conn, provider_id, "2", Some("b.es"));
+
+        insert_test_programme(&conn, "a.es", 1000, 2000, "Dentro de la ventana");
+        insert_test_programme(&conn, "a.es", 5000, 6000, "Fuera de la ventana");
+        insert_test_programme(&conn, "b.es", 1000, 2000, "De otro canal, no pedido");
+
+        let grid = epg_grid(&conn, &[channel_a], 500, 2500).unwrap();
+        assert_eq!(grid.len(), 1);
+        assert_eq!(grid[0].title, "Dentro de la ventana");
+        assert_eq!(grid[0].channel_id, channel_a);
+    }
+
+    #[test]
+    fn epg_grid_returns_empty_for_no_channels() {
+        let conn = memory_conn();
+        assert!(epg_grid(&conn, &[], 0, 1000).unwrap().is_empty());
     }
 }

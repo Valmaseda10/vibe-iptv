@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
 use ts_rs::TS;
 
+use crate::catalog::epg;
 use crate::catalog::tmdb::{self, TmdbClient};
 use crate::catalog::sync;
 use crate::db::queries::{self, ProviderKind};
@@ -292,6 +293,7 @@ async fn fetch_m3u_source(url: &str) -> CmdResult<M3uSource> {
 
 fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + Sync>, stream_guard: Arc<StreamGuard>) {
     let app_for_progress = app.clone();
+    let source_for_epg = Arc::clone(&source);
     tauri::async_runtime::spawn(async move {
         let conn = match schema::open_connection(&app) {
             Ok(conn) => conn,
@@ -309,11 +311,36 @@ fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + 
         match result {
             Ok((_, summary)) => {
                 tracing::info!(provider_id, channels = summary.channels, movies = summary.movies, series = summary.series, "sincronización completada");
-                // Paso 6 de docs/ARCHITECTURE.md: en segundo plano, sin bloquear el
-                // catálogo ya sincronizado. Si no hay clave de TMDB todavía, no hace nada.
-                spawn_tmdb_matching(app);
+                // Pasos 6 y 8 de docs/ARCHITECTURE.md: en segundo plano, sin bloquear el
+                // catálogo ya sincronizado. Si no hay clave de TMDB todavía, la primera
+                // no hace nada; si la fuente no ofrece XMLTV, tampoco la segunda.
+                spawn_tmdb_matching(app.clone());
+                spawn_epg_sync(app, source_for_epg);
             }
             Err(err) => tracing::error!(provider_id, error = %err, "sincronización fallida"),
+        }
+    });
+}
+
+/// Paso 8 de `docs/ARCHITECTURE.md`: descarga e importa la guía XMLTV tras cada
+/// sincronización de catálogo. `None` si la fuente no ofrece EPG (M3U sin
+/// `x-tvg-url`): no es un error, solo no hay nada que importar.
+fn spawn_epg_sync(app: AppHandle, source: Arc<dyn Source + Send + Sync>) {
+    tauri::async_runtime::spawn(async move {
+        let conn = match schema::open_connection(&app) {
+            Ok(conn) => conn,
+            Err(err) => {
+                tracing::error!(error = %err, "no se pudo abrir la base de datos para la guía EPG");
+                return;
+            }
+        };
+        let user_agent = crate::sources::xtream::DEFAULT_USER_AGENT.to_string();
+        match epg::run_epg_sync(conn, source, user_agent, std::env::temp_dir()).await {
+            Ok((_, Some(summary))) => {
+                tracing::info!(imported = summary.imported, canales_sin_epg = summary.channels_without_epg, "guía EPG importada");
+            }
+            Ok((_, None)) => tracing::info!("la fuente no ofrece guía XMLTV"),
+            Err(err) => tracing::error!(error = %err, "importación de la guía EPG fallida"),
         }
     });
 }

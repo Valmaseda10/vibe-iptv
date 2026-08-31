@@ -3,9 +3,10 @@ import { useNavigate } from "@tanstack/react-router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { apiGet } from "../../lib/api-client";
-import type { CategorySummary, ChannelsPage } from "../../lib/api-types";
+import type { CategorySummary, ChannelsPage, EpgNowNextResponse } from "../../lib/api-types";
 
 const ROW_HEIGHT = 60;
+const EPG_REFRESH_MS = 60_000;
 
 export function LiveScreen() {
   const navigate = useNavigate();
@@ -26,6 +27,18 @@ export function LiveScreen() {
 
   const items = (channelsQuery.data?.pages ?? []).flatMap((page) => page.items);
   const hasMore = channelsQuery.hasNextPage ?? false;
+
+  // "Qué están dando" por canal (F7): se pide para los ya cargados, no para todo el
+  // catálogo. Se refresca cada minuto para que el programa "actual" no se quede
+  // desfasado mientras la pantalla está abierta.
+  const channelIds = items.map((c) => c.id);
+  const epgQuery = useQuery({
+    queryKey: ["live-epg-now", channelIds.join(",")],
+    queryFn: () => apiGet<EpgNowNextResponse[]>(`/api/epg/now?channel_ids=${channelIds.join(",")}`),
+    enabled: channelIds.length > 0,
+    refetchInterval: EPG_REFRESH_MS,
+  });
+  const epgByChannel = new Map((epgQuery.data ?? []).map((e) => [e.channel_id, e]));
 
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
@@ -120,7 +133,10 @@ export function LiveScreen() {
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500">
                         {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
                       </div>
-                      <span className="truncate text-sm">{channel.display_name}</span>
+                      <div className="min-w-0 flex-1">
+                        <span className="block truncate text-sm">{channel.display_name}</span>
+                        <NowPlaying epg={epgByChannel.get(channel.id)} />
+                      </div>
                       {channel.has_catchup && <span className="ml-auto shrink-0 rounded bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400">catch-up</span>}
                     </button>
                   ) : (
@@ -131,6 +147,27 @@ export function LiveScreen() {
             })}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+/** Programa actual con una barra de progreso fina, o nada si todavía no hay guía para
+ * ese canal (proveedor sin XMLTV, o sincronización de EPG aún no ha corrido). */
+function NowPlaying({ epg }: { epg: EpgNowNextResponse | undefined }) {
+  const current = epg?.current;
+  if (!current) return null;
+
+  const nowSeconds = Date.now() / 1000;
+  const total = current.stop_ts - current.start_ts;
+  const elapsed = nowSeconds - current.start_ts;
+  const progress = total > 0 ? Math.min(1, Math.max(0, elapsed / total)) : 0;
+
+  return (
+    <div className="mt-1 flex items-center gap-2">
+      <span className="truncate text-xs text-neutral-500">{current.title}</span>
+      <div className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-neutral-800">
+        <div className="h-full bg-red-600" style={{ width: `${progress * 100}%` }} />
       </div>
     </div>
   );

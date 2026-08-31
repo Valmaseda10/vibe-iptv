@@ -499,6 +499,55 @@ pub fn set_probe_cache(
     Ok(())
 }
 
+// ─────────────── EPG (F7) ───────────────
+//
+// Tipo local, no `catalog::epg::Programme`: `queries.rs` no depende de `catalog` (regla
+// de capas del proyecto — lógica de negocio en `catalog`, SQL aquí), igual que
+// `TitleFields` ya hace para el sincronizador de catálogo.
+
+pub struct EpgProgrammeRow<'a> {
+    pub channel_id: &'a str,
+    pub start_ts: i64,
+    pub stop_ts: i64,
+    pub title: &'a str,
+    pub subtitle: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub category: Option<&'a str>,
+    pub icon_url: Option<&'a str>,
+}
+
+/// La guía se reemplaza entera en cada sincronización (como `search_index`, ver
+/// `rebuild_search_index`): más simple y barato que reconciliar fila a fila, y XMLTV no
+/// da un identificador estable de programa con el que hacer upsert de todas formas.
+pub fn delete_all_epg_programmes(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM epg_programmes", [])?;
+    Ok(())
+}
+
+pub fn insert_epg_programmes_batch(conn: &Connection, batch: &[EpgProgrammeRow]) -> Result<()> {
+    let mut stmt = conn.prepare(
+        "INSERT INTO epg_programmes (channel_id, start_ts, stop_ts, title, subtitle, description, category, icon_url)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+    )?;
+    for p in batch {
+        stmt.execute(params![p.channel_id, p.start_ts, p.stop_ts, p.title, p.subtitle, p.description, p.category, p.icon_url])?;
+    }
+    Ok(())
+}
+
+/// Cuántos canales con `epg_channel_id` no tienen ni un solo programa en la guía
+/// importada — el informe que pide `docs/PROMPTS.md` ("cuántos canales quedan sin EPG").
+pub fn count_channels_without_epg(conn: &Connection) -> Result<i64> {
+    conn.query_row(
+        "SELECT COUNT(*) FROM channels
+         WHERE epg_channel_id IS NOT NULL
+           AND epg_channel_id NOT IN (SELECT DISTINCT channel_id FROM epg_programmes)",
+        [],
+        |row| row.get(0),
+    )
+    .map_err(Into::into)
+}
+
 /// Registra qué nivel de la cascada sirvió un ítem, para el diagnóstico que menciona
 /// `docs/ARCHITECTURE.md` ("si el nivel 3 aparece a menudo, hay que revisar la
 /// detección de códecs"). No toca `position_s` si la fila ya existía: el punto de
@@ -715,6 +764,45 @@ mod tests {
 
         assert!(list_pending_movies(&conn).unwrap().is_empty());
         assert_eq!(count_matched_movies(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn epg_batch_insert_and_channel_coverage_report() {
+        let conn = memory_conn();
+        let provider_id = insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let channel_with_epg = RawChannel {
+            remote_id: "1".into(),
+            category_remote_id: None,
+            raw_name: "Canal Uno".into(),
+            logo_url: None,
+            epg_channel_id: Some("canaluno.es".into()),
+            has_catchup: false,
+            catchup_days: 0,
+            sort_order: None,
+        };
+        let channel_without_epg = RawChannel { remote_id: "2".into(), epg_channel_id: Some("singuia.es".into()), ..channel_with_epg.clone() };
+        let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
+        upsert_channel(&conn, provider_id, &HashMap::new(), &channel_with_epg, &fields).unwrap();
+        upsert_channel(&conn, provider_id, &HashMap::new(), &channel_without_epg, &fields).unwrap();
+
+        assert_eq!(count_channels_without_epg(&conn).unwrap(), 2); // todavía no hay guía importada.
+
+        let batch = vec![EpgProgrammeRow {
+            channel_id: "canaluno.es",
+            start_ts: 1_700_000_000,
+            stop_ts: 1_700_003_600,
+            title: "Telediario",
+            subtitle: None,
+            description: None,
+            category: None,
+            icon_url: None,
+        }];
+        insert_epg_programmes_batch(&conn, &batch).unwrap();
+
+        assert_eq!(count_channels_without_epg(&conn).unwrap(), 1, "canaluno.es ya tiene guía, singuia.es sigue sin ella");
+
+        delete_all_epg_programmes(&conn).unwrap();
+        assert_eq!(count_channels_without_epg(&conn).unwrap(), 2);
     }
 
     #[test]
