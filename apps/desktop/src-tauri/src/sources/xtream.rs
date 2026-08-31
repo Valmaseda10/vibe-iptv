@@ -391,6 +391,8 @@ struct SeriesWire {
     plot: Option<String>,
     #[serde(default, rename = "releaseDate")]
     release_date: Option<String>,
+    #[serde(default, deserialize_with = "lenient_id_opt")]
+    category_id: Option<String>,
 }
 
 impl SeriesWire {
@@ -398,6 +400,7 @@ impl SeriesWire {
         Some(RawSeries {
             remote_id: self.series_id?,
             raw_title: self.name.unwrap_or_default(),
+            category_remote_id: self.category_id,
             cover_url: self.cover,
             plot: self.plot,
             release_date: self.release_date,

@@ -102,7 +102,7 @@ pub async fn run(
     let (next_conn, movie_map) =
         run_blocking(conn, move |conn| queries::upsert_categories(conn, provider_id, MediaKind::Movie, &movie_categories)).await?;
     conn = next_conn;
-    let (next_conn, _series_map) =
+    let (next_conn, series_map) =
         run_blocking(conn, move |conn| queries::upsert_categories(conn, provider_id, MediaKind::Series, &series_categories)).await?;
     conn = next_conn;
     on_progress(SyncProgress { provider_id, stage: "categorias".into(), current: 1, total: 1 });
@@ -163,12 +163,13 @@ pub async fn run(
     for (batch_index, chunk) in series.chunks(BATCH_SIZE).enumerate() {
         wait_while_streaming(&stream_guard, &cancel).await?;
         let chunk = chunk.to_vec();
+        let map = series_map.clone();
         let (next_conn, ()) = run_blocking(conn, move |conn| {
             let tx = conn.unchecked_transaction()?;
             for one_series in &chunk {
                 let (normalized, match_key) = normalize_title(&one_series.raw_title);
                 let fields = title_fields(&normalized, &match_key);
-                queries::upsert_series(&tx, provider_id, one_series, &fields)?;
+                queries::upsert_series(&tx, provider_id, &map, one_series, &fields)?;
             }
             tx.commit()?;
             Ok(())
@@ -325,6 +326,7 @@ mod tests {
                     .map(|i| RawSeries {
                         remote_id: i.to_string(),
                         raw_title: format!("Serie {i}"),
+                        category_remote_id: None,
                         cover_url: None,
                         plot: None,
                         release_date: None,

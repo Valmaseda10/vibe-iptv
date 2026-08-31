@@ -190,6 +190,56 @@ impl SupabaseClient {
         Self::parse_session_response(response).await
     }
 
+    /// Pide a Supabase que mande el correo de recuperación de contraseña. No hay sesión
+    /// que devolver — solo confirma que el envío se aceptó. Supabase responde 200 tanto
+    /// si el email existe como si no (para no filtrar qué correos tienen cuenta), así
+    /// que esto nunca revela si una dirección está registrada.
+    pub async fn recover(&self, email: &str) -> Result<()> {
+        let response = self
+            .client
+            .post(self.auth_url("recover"))
+            .header("apikey", SUPABASE_ANON_KEY)
+            .json(&serde_json::json!({ "email": email }))
+            .send()
+            .await
+            .map_err(|_| SupabaseError::Network)?;
+        Self::check_ok(response).await
+    }
+
+    /// Cambia el enlace/código de recuperación del correo por una sesión de verdad. El
+    /// `token` es el valor del parámetro `token=` del enlace que Supabase mandó por
+    /// correo — la propia app no tiene una página web que lo reciba, así que se le pide
+    /// al usuario que lo pegue directamente. Sin esto no hay forma de completar el
+    /// cambio de contraseña sin configurar una URL de redirección en el panel de
+    /// Supabase (fuera del alcance de lo que se puede hacer desde aquí).
+    pub async fn verify_recovery(&self, email: &str, token: &str) -> Result<Session> {
+        let body = serde_json::json!({ "type": "recovery", "email": email, "token": token });
+        let response = self
+            .client
+            .post(self.auth_url("verify"))
+            .header("apikey", SUPABASE_ANON_KEY)
+            .json(&body)
+            .send()
+            .await
+            .map_err(|_| SupabaseError::Network)?;
+        Self::parse_session_response(response).await
+    }
+
+    /// Fija la contraseña nueva, ya con la sesión de recuperación en la mano (la que
+    /// devuelve `verify_recovery`).
+    pub async fn update_password(&self, access_token: &str, new_password: &str) -> Result<()> {
+        let response = self
+            .client
+            .put(self.auth_url("user"))
+            .header("apikey", SUPABASE_ANON_KEY)
+            .bearer_auth(access_token)
+            .json(&serde_json::json!({ "password": new_password }))
+            .send()
+            .await
+            .map_err(|_| SupabaseError::Network)?;
+        Self::check_ok(response).await
+    }
+
     /// Best-effort: si falla, la sesión local se borra igualmente (el llamador no debe
     /// dejar al usuario "atrapado" logueado solo porque no había red en ese momento).
     pub async fn sign_out(&self, access_token: &str) {

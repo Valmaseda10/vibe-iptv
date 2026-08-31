@@ -112,7 +112,13 @@ export function LiveScreen() {
       </div>
 
       <div ref={parentRef} onKeyDown={onKeyDown} className="min-h-0 flex-1 overflow-y-auto px-6 sm:px-10">
-        {items.length === 0 && !hasMore ? (
+        {channelsQuery.isPending ? (
+          <div className="flex flex-col gap-2 py-4">
+            {Array.from({ length: 10 }).map((_, i) => (
+              <div key={i} className="h-10 animate-pulse rounded bg-neutral-800" />
+            ))}
+          </div>
+        ) : items.length === 0 && !hasMore ? (
           <p className="py-10 text-neutral-500">Sin canales en esta categoría.</p>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>

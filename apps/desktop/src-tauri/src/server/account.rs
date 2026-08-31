@@ -26,6 +26,8 @@ pub fn account_router(state: AccountState) -> Router {
         .route("/api/account/signup", post(post_signup))
         .route("/api/account/login", post(post_login))
         .route("/api/account/logout", post(post_logout))
+        .route("/api/account/forgot-password", post(post_forgot_password))
+        .route("/api/account/reset-password", post(post_reset_password))
         .with_state(state)
 }
 
@@ -88,6 +90,54 @@ async fn post_logout() -> StatusCode {
     StatusCode::NO_CONTENT
 }
 
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct ForgotPasswordInput {
+    pub email: String,
+}
+
+async fn post_forgot_password(Json(input): Json<ForgotPasswordInput>) -> Result<StatusCode, SupabaseError> {
+    SupabaseClient::new().recover(&input.email).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct ResetPasswordInput {
+    pub email: String,
+    /// El enlace completo del correo, o solo el valor de su parámetro `token=` — la app
+    /// no tiene página web propia que lo reciba, así que el usuario lo pega a mano.
+    pub token_or_link: String,
+    pub new_password: String,
+}
+
+/// Extrae el token de un enlace de recuperación pegado entero, o lo deja tal cual si ya
+/// es solo el token — para no obligar al usuario a saber cuál de los dos ha copiado.
+fn extract_recovery_token(token_or_link: &str) -> &str {
+    let trimmed = token_or_link.trim();
+    match trimmed.find("token=") {
+        Some(pos) => {
+            let after = &trimmed[pos + "token=".len()..];
+            after.split('&').next().unwrap_or(after)
+        }
+        None => trimmed,
+    }
+}
+
+/// Completa la recuperación: valida el enlace/código contra Supabase, fija la
+/// contraseña nueva con la sesión que eso devuelve, y deja al usuario logueado — un
+/// cambio de contraseña con éxito no debería obligar a iniciar sesión otra vez aparte.
+async fn post_reset_password(State(state): State<AccountState>, Json(input): Json<ResetPasswordInput>) -> Result<Json<AccountStatusResponse>, SupabaseError> {
+    let token = extract_recovery_token(&input.token_or_link);
+    let client = SupabaseClient::new();
+    let session = client.verify_recovery(&input.email, token).await?;
+    client.update_password(&session.access_token, &input.new_password).await?;
+    let email = session.email.clone();
+    session::save(&session);
+    tokio::spawn(engine::pull_and_merge(state.db_path));
+    Ok(Json(AccountStatusResponse { logged_in: true, email: Some(email) }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,5 +176,21 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
         assert!(session::load().is_none());
+    }
+
+    #[test]
+    fn extract_recovery_token_accepts_a_bare_token() {
+        assert_eq!(extract_recovery_token("abc123"), "abc123");
+    }
+
+    #[test]
+    fn extract_recovery_token_pulls_it_out_of_a_pasted_link() {
+        let link = "https://beqentvogqamkopsnfos.supabase.co/auth/v1/verify?token=abc123&type=recovery&redirect_to=http://localhost:3000";
+        assert_eq!(extract_recovery_token(link), "abc123");
+    }
+
+    #[test]
+    fn extract_recovery_token_trims_surrounding_whitespace() {
+        assert_eq!(extract_recovery_token("  abc123  "), "abc123");
     }
 }

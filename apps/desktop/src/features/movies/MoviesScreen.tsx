@@ -34,6 +34,7 @@ export function MoviesScreen() {
           items={items}
           hasMore={query.hasNextPage ?? false}
           isLoadingMore={query.isFetchingNextPage}
+          isInitialLoading={query.isPending}
           onLoadMore={() => query.fetchNextPage()}
           onOpen={(id) => navigate({ to: "/movies/$movieId", params: { movieId: String(id) } })}
           emptyMessage="Todavía no hay películas sincronizadas. Añade un proveedor en Ajustes."

@@ -259,9 +259,20 @@ pub fn list_series_page(
     year: Option<i32>,
     after: Option<i64>,
     limit: i64,
+    include_adult: bool,
 ) -> Result<Vec<SeriesListItem>> {
     let mut sql = String::from("SELECT id, clean_title, year, poster_path, rating, tmdb_state FROM series WHERE 1=1");
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+    if !include_adult {
+        // Mismo criterio que las películas (F8): se oculta si tiene alguna fuente en
+        // una categoría adulta, mejor ocultar de más que enseñar de menos en un filtro
+        // parental. Las series sincronizadas antes de esta migración tienen
+        // `category_id` a NULL, así que no se ocultan hasta la próxima sincronización.
+        sql.push_str(
+            " AND NOT EXISTS (SELECT 1 FROM series_sources ss2 JOIN categories c ON c.id = ss2.category_id
+                               WHERE ss2.series_id = series.id AND c.is_adult = 1)",
+        );
+    }
     if let Some(g) = genre {
         sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(genres) WHERE value = ?)");
         args.push(Box::new(g));
@@ -1023,6 +1034,45 @@ fn find_next_episode(
     next_season_episodes.into_iter().next().cloned()
 }
 
+pub struct FeaturedMovieRow {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
+    pub rating: Option<f64>,
+}
+
+/// Película destacada para el banner de Inicio: entre las añadidas más recientemente,
+/// la mejor valorada que además tenga fondo y sinopsis de TMDB — sin eso el banner se
+/// vería vacío o sin texto que enseñar, así que mejor no destacarla en absoluto. Se
+/// mira entre las 50 más recientes (no todo el catálogo) para que sea algo con lo que
+/// el usuario probablemente se vaya a encontrar, no una rareza de hace años.
+pub fn get_featured_movie(conn: &Connection) -> Result<Option<FeaturedMovieRow>> {
+    conn.query_row(
+        "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating
+         FROM (SELECT * FROM movies WHERE tmdb_state = 'matched' ORDER BY added_at DESC, id DESC LIMIT 50)
+         WHERE backdrop_path IS NOT NULL AND overview IS NOT NULL
+         ORDER BY rating DESC NULLS LAST
+         LIMIT 1",
+        [],
+        |row| {
+            Ok(FeaturedMovieRow {
+                id: row.get(0)?,
+                clean_title: row.get(1)?,
+                year: row.get(2)?,
+                overview: row.get(3)?,
+                poster_path: row.get(4)?,
+                backdrop_path: row.get(5)?,
+                rating: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 pub fn list_recent_movies(conn: &Connection, limit: i64) -> Result<Vec<MovieListItem>> {
     let mut stmt = conn.prepare(
         "SELECT id, clean_title, year, poster_path, rating, tmdb_state FROM movies ORDER BY added_at DESC, id DESC LIMIT ?1",
@@ -1199,9 +1249,9 @@ mod tests {
 
         let conn = memory_conn();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
-        let series = RawSeries { remote_id: "s1".into(), raw_title: "La Casa de Papel".into(), cover_url: None, plot: None, release_date: None };
+        let series = RawSeries { remote_id: "s1".into(), raw_title: "La Casa de Papel".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
         let fields = TitleFields { clean_title: "La Casa de Papel", year: None, match_key: "la-casa-de-papel-0000", quality: None, language: None };
-        queries::upsert_series(&conn, provider_id, &series, &fields).unwrap();
+        queries::upsert_series(&conn, provider_id, &HashMap::new(), &series, &fields).unwrap();
         let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources WHERE remote_id = 's1'", [], |r| r.get(0)).unwrap();
 
         let episode = RawEpisode { remote_id: "e1".into(), season: 4, number: 5, title: None, container_extension: None, duration_s: None, still_url: None };
@@ -1314,9 +1364,9 @@ mod tests {
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
         seed_movie(&conn, provider_id, "Aventura Espacial", Some(2020), None, None);
 
-        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Aventura Serie".into(), cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Aventura Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
         let fields = TitleFields { clean_title: "Aventura Serie", year: None, match_key: "aventura-serie-0000", quality: None, language: None };
-        queries::upsert_series(&conn, provider_id, &series_raw, &fields).unwrap();
+        queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
 
         queries::rebuild_search_index(&conn).unwrap();
 
@@ -1400,9 +1450,9 @@ mod tests {
         let conn = memory_conn();
         let profile_id = ensure_default_profile(&conn).unwrap();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
-        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Mi Serie".into(), cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Mi Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
         let fields = TitleFields { clean_title: "Mi Serie", year: None, match_key: "mi-serie-0000", quality: None, language: None };
-        queries::upsert_series(&conn, provider_id, &series_raw, &fields).unwrap();
+        queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
         let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources", [], |r| r.get(0)).unwrap();
 
         let episode = crate::sources::model::RawEpisode {
@@ -1427,10 +1477,10 @@ mod tests {
     }
 
     fn seed_series_with_episodes(conn: &Connection, provider_id: i64, title: &str, episodes: &[(i64, i64)]) -> (i64, Vec<i64>) {
-        let series_raw = RawSeries { remote_id: title.into(), raw_title: title.into(), cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: title.into(), raw_title: title.into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
         let match_key = format!("{}-0000", title.to_lowercase().replace(' ', "-"));
         let fields = TitleFields { clean_title: title, year: None, match_key: &match_key, quality: None, language: None };
-        queries::upsert_series(conn, provider_id, &series_raw, &fields).unwrap();
+        queries::upsert_series(conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
         let series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = ?1", params![match_key], |r| r.get(0)).unwrap();
         let series_source_id: i64 =
             conn.query_row("SELECT id FROM series_sources WHERE series_id = ?1", params![series_id], |r| r.get(0)).unwrap();
@@ -1618,6 +1668,60 @@ mod tests {
         assert_eq!(list_channels_page(&conn, None, None, None, 50, true).unwrap().len(), 1);
     }
 
+    /// Mismo criterio que canales/películas, pero para series (migración 005): antes de
+    /// esto `series_sources` no tenía categoría, así que este filtro no podía existir.
+    #[test]
+    fn list_series_page_hides_adult_category_series_unless_unlocked() {
+        use crate::sources::model::{MediaKind, RawCategory, RawSeries};
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let map = queries::upsert_categories(
+            &conn,
+            provider_id,
+            MediaKind::Series,
+            &[RawCategory { remote_id: "1".into(), kind: MediaKind::Series, name: "XXX".into() }],
+        )
+        .unwrap();
+        conn.execute("UPDATE categories SET is_adult = 1 WHERE id = ?1", params![map["1"]]).unwrap();
+
+        let series = RawSeries {
+            remote_id: "1".into(),
+            raw_title: "Serie Adulta".into(),
+            category_remote_id: Some("1".into()),
+            cover_url: None,
+            plot: None,
+            release_date: None,
+        };
+        let fields = TitleFields { clean_title: "Serie Adulta", year: None, match_key: "serie-adulta-0000", quality: None, language: None };
+        queries::upsert_series(&conn, provider_id, &map, &series, &fields).unwrap();
+
+        assert!(list_series_page(&conn, None, None, None, 50, false).unwrap().is_empty());
+        assert_eq!(list_series_page(&conn, None, None, None, 50, true).unwrap().len(), 1);
+    }
+
+    /// Series sincronizadas antes de la migración 005 (o cuyo proveedor no da
+    /// categoría) tienen `category_id` a NULL — deben seguir viéndose, no ocultarse
+    /// "por si acaso": mejor pecar de enseñar de más en un caso ambiguo que romper el
+    /// catálogo entero de quien todavía no ha resincronizado.
+    #[test]
+    fn list_series_page_never_hides_series_with_no_category_at_all() {
+        use crate::sources::model::RawSeries;
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let series = RawSeries {
+            remote_id: "1".into(),
+            raw_title: "Serie Sin Categoría".into(),
+            category_remote_id: None,
+            cover_url: None,
+            plot: None,
+            release_date: None,
+        };
+        let fields = TitleFields { clean_title: "Serie Sin Categoría", year: None, match_key: "serie-sin-categoria-0000", quality: None, language: None };
+        queries::upsert_series(&conn, provider_id, &HashMap::new(), &series, &fields).unwrap();
+
+        assert_eq!(list_series_page(&conn, None, None, None, 50, false).unwrap().len(), 1);
+    }
+
     #[test]
     fn profile_pin_hash_roundtrip() {
         let conn = memory_conn();
@@ -1692,9 +1796,9 @@ mod tests {
     fn resolve_episode_stream_joins_series_sources_for_provider_id() {
         let conn = memory_conn();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
-        let series_raw = RawSeries { remote_id: "9001".into(), raw_title: "Serie".into(), cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "9001".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
         let fields = TitleFields { clean_title: "Serie", year: None, match_key: "serie-0000", quality: None, language: None };
-        queries::upsert_series(&conn, provider_id, &series_raw, &fields).unwrap();
+        queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
         let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources", [], |r| r.get(0)).unwrap();
 
         let episode = crate::sources::model::RawEpisode {

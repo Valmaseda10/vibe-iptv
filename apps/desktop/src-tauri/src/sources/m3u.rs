@@ -132,6 +132,7 @@ impl M3uSource {
                     series_map.entry(key.clone()).or_insert_with(|| RawSeries {
                         remote_id: key.clone(),
                         raw_title: title_prefix,
+                        category_remote_id: category_remote_id.clone(),
                         cover_url: entry.tvg_logo.clone(),
                         plot: None,
                         release_date: None,

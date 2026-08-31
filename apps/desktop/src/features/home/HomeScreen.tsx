@@ -1,8 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { apiGet } from "../../lib/api-client";
+import { apiGet, imagePath, useApiBase } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
-import type { HomeResponse } from "../../lib/api-types";
+import type { FeaturedItem, HomeResponse } from "../../lib/api-types";
 import { Row } from "../../components/Row";
 import { PosterCard, PosterCardSkeleton } from "../../components/PosterCard";
 
@@ -21,8 +21,15 @@ export function HomeScreen() {
     else if (itemKind === "channel") navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(itemId) } });
   }
 
+  function progressPercent(positionS: number, durationS: number | null): number | undefined {
+    if (!durationS || durationS <= 0) return undefined;
+    return (positionS / durationS) * 100;
+  }
+
   return (
-    <div className="flex flex-col gap-10 py-8">
+    <div className="flex flex-col gap-10 pb-8">
+      {isPending ? <HeroBannerSkeleton /> : data?.featured ? <HeroBanner featured={data.featured} /> : null}
+
       <h1 className="px-6 text-3xl font-semibold sm:px-10">Inicio</h1>
 
       {isError && <p className="px-6 text-red-400 sm:px-10">No se pudo cargar el inicio. ¿Hay algún proveedor sincronizado?</p>}
@@ -37,6 +44,7 @@ export function HomeScreen() {
               title={item.title}
               subtitle={item.subtitle ?? progressLabel(item.position_s, item.duration_s)}
               posterPath={item.poster_path}
+              progressPercent={progressPercent(item.position_s, item.duration_s)}
               onOpen={() => openContinueWatching(item.item_kind, item.item_id)}
             />
           ))}
@@ -75,6 +83,57 @@ export function HomeScreen() {
           {data && data.recent_movies.length === 0 && <p className="text-neutral-500">Todavía no hay películas sincronizadas.</p>}
         </Row>
       )}
+    </div>
+  );
+}
+
+/** Cabecera grande de Inicio, con el fondo de una película destacada — como cualquier
+ * plataforma real, en vez de empezar directo con filas de pósters pequeños. Se recorta
+ * con un degradado hacia el fondo de la app para que las filas de debajo no choquen. */
+function HeroBanner({ featured }: { featured: FeaturedItem }) {
+  const navigate = useNavigate();
+  const { data: base } = useApiBase();
+  const backdrop = imagePath(base, featured.backdrop_path, "w1280");
+
+  return (
+    <div className="relative h-[60vh] min-h-[360px] w-full overflow-hidden">
+      {backdrop && <img src={backdrop} alt="" className="absolute inset-0 h-full w-full object-cover" />}
+      <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent" />
+      <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/80 via-transparent to-transparent" />
+
+      <div className="absolute bottom-0 left-0 flex max-w-xl flex-col gap-4 px-6 pb-10 sm:px-10">
+        <h2 className="text-4xl font-bold drop-shadow-lg sm:text-5xl">{featured.clean_title}</h2>
+        {featured.overview && <p className="line-clamp-3 text-sm text-neutral-200 drop-shadow sm:text-base">{featured.overview}</p>}
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => navigate({ to: "/player/$kind/$id", params: { kind: "movie", id: String(featured.id) } })}
+            className="flex items-center gap-2 rounded bg-white px-6 py-2.5 font-semibold text-black outline-none transition hover:bg-neutral-200 focus-visible:ring-2 focus-visible:ring-red-600"
+          >
+            ▶ Reproducir
+          </button>
+          <button
+            type="button"
+            onClick={() => navigate({ to: "/movies/$movieId", params: { movieId: String(featured.id) } })}
+            className="flex items-center gap-2 rounded bg-neutral-700/80 px-6 py-2.5 font-semibold text-white outline-none transition hover:bg-neutral-600/80 focus-visible:ring-2 focus-visible:ring-red-600"
+          >
+            Más información
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function HeroBannerSkeleton() {
+  return (
+    <div className="relative flex h-[60vh] min-h-[360px] w-full animate-pulse items-end overflow-hidden bg-neutral-900">
+      <div className="flex w-full max-w-xl flex-col gap-4 px-6 pb-10 sm:px-10">
+        <div className="h-10 w-2/3 rounded bg-neutral-800" />
+        <div className="h-4 w-full rounded bg-neutral-800" />
+        <div className="h-4 w-5/6 rounded bg-neutral-800" />
+        <div className="h-10 w-48 rounded bg-neutral-800" />
+      </div>
     </div>
   );
 }

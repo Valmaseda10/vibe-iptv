@@ -326,7 +326,38 @@ impl From<reads::NextEpisodeRow> for NextEpisodeItem {
 
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "api-types.ts")]
+pub struct FeaturedItem {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub overview: Option<String>,
+    pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
+    pub rating: Option<f64>,
+}
+
+impl From<reads::FeaturedMovieRow> for FeaturedItem {
+    fn from(row: reads::FeaturedMovieRow) -> Self {
+        Self {
+            id: row.id,
+            clean_title: row.clean_title,
+            year: row.year,
+            overview: row.overview,
+            poster_path: row.poster_path,
+            backdrop_path: row.backdrop_path,
+            rating: row.rating,
+        }
+    }
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
 pub struct HomeResponse {
+    /// `None` cuando el catálogo todavía no tiene ninguna candidata decente (recién
+    /// sincronizado, o nada con fondo+sinopsis de TMDB todavía) — el banner
+    /// simplemente no se pinta en ese caso, en vez de enseñar uno vacío.
+    pub featured: Option<FeaturedItem>,
     pub continue_watching: Vec<ContinueWatchingItem>,
     pub next_episodes: Vec<NextEpisodeItem>,
     pub recent_movies: Vec<MovieSummary>,
@@ -389,15 +420,17 @@ struct ProfileQuery {
 async fn get_home(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<HomeResponse>, ApiError> {
     let db_path = state.db_path.clone();
     let profile_id = query.profile_id;
-    let (continue_watching, next_episodes, recent_movies) = with_db(db_path, move |conn| {
+    let (featured, continue_watching, next_episodes, recent_movies) = with_db(db_path, move |conn| {
+        let featured = reads::get_featured_movie(conn)?;
         let continue_watching = reads::list_continue_watching(conn, profile_id, 20)?;
         let next_episodes = reads::list_next_episodes(conn, profile_id, 20)?;
         let recent_movies = reads::list_recent_movies(conn, 20)?;
-        Ok((continue_watching, next_episodes, recent_movies))
+        Ok((featured, continue_watching, next_episodes, recent_movies))
     })
     .await?;
 
     Ok(Json(HomeResponse {
+        featured: featured.map(Into::into),
         continue_watching: continue_watching.into_iter().map(Into::into).collect(),
         next_episodes: next_episodes.into_iter().map(Into::into).collect(),
         recent_movies: recent_movies.into_iter().map(Into::into).collect(),
@@ -477,6 +510,7 @@ async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumP
 
 #[derive(Deserialize)]
 struct SeriesQuery {
+    profile_id: i64,
     genre: Option<i64>,
     year: Option<i32>,
     after: Option<i64>,
@@ -485,7 +519,11 @@ struct SeriesQuery {
 
 async fn get_series_list(State(state): State<CatalogState>, Query(query): Query<SeriesQuery>) -> Result<Json<SeriesPage>, ApiError> {
     let limit = clamp_limit(query.limit);
-    let items = with_db(state.db_path, move |conn| reads::list_series_page(conn, query.genre, query.year, query.after, limit)).await?;
+    let items = with_db(state.db_path, move |conn| {
+        let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
+        reads::list_series_page(conn, query.genre, query.year, query.after, limit, include_adult)
+    })
+    .await?;
     let next_cursor = if items.len() as i64 == limit { items.last().map(|s| s.id) } else { None };
     Ok(Json(SeriesPage { items: items.into_iter().map(Into::into).collect(), next_cursor }))
 }

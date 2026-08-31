@@ -59,6 +59,7 @@ pub struct RawMovie {
 pub struct RawSeries {
     pub remote_id: String,
     pub raw_title: String,
+    pub category_remote_id: Option<String>,
     pub cover_url: Option<String>,
     pub plot: Option<String>,
     pub release_date: Option<String>,

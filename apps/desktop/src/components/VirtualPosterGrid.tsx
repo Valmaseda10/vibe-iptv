@@ -19,6 +19,11 @@ type VirtualPosterGridProps = {
   emptyMessage: string;
   /** Presente activa el conmutador de favorito en cada tarjeta (F8); "movie" o "series". */
   favoriteKind?: string;
+  /** La primerísima carga (todavía sin ninguna página en caché) es indistinguible de
+   * "no hay nada" si solo se mira `items.length === 0` — sin esto se veía el mensaje de
+   * vacío durante una fracción de segundo en cada entrada a la pantalla, antes de que
+   * llegara la respuesta real. */
+  isInitialLoading?: boolean;
 };
 
 const CARD_WIDTH = 192; // 176px tarjeta (44 * 4) + 16px de separación
@@ -31,7 +36,7 @@ const ROW_HEIGHT = 300;
  * Flechas para moverse entre tarjetas: como la rejilla está virtualizada, la tarjeta
  * destino puede no existir todavía en el DOM al pulsar la flecha, así que primero se
  * desplaza la fila con `scrollToIndex` y el foco se aplica en el siguiente pintado. */
-export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, onOpen, emptyMessage, favoriteKind }: VirtualPosterGridProps) {
+export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, onOpen, emptyMessage, favoriteKind, isInitialLoading }: VirtualPosterGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(4);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
@@ -102,6 +107,16 @@ export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, o
     e.preventDefault();
     setFocusedIndex(next);
     virtualizer.scrollToIndex(Math.floor(next / columns), { align: "auto" });
+  }
+
+  if (isInitialLoading && items.length === 0) {
+    return (
+      <div className="flex flex-wrap gap-4 px-6 py-4 sm:px-10">
+        {Array.from({ length: columns * 2 }).map((_, i) => (
+          <PosterCardSkeleton key={i} />
+        ))}
+      </div>
+    );
   }
 
   if (items.length === 0 && !hasMore) {

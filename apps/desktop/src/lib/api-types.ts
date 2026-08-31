@@ -28,12 +28,22 @@ export type FavoriteInput = { profile_id: number, item_kind: string, item_id: nu
 
 export type FavoriteItem = { item_kind: string, item_id: number, title: string, poster_path: string | null, };
 
+export type FeaturedItem = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, };
+
+export type ForgotPasswordInput = { email: string, };
+
 /**
  * Estado del núcleo devuelto por `GET /api/health`.
  */
 export type HealthStatus = { status: string, version: string, };
 
-export type HomeResponse = { continue_watching: Array<ContinueWatchingItem>, next_episodes: Array<NextEpisodeItem>, recent_movies: Array<MovieSummary>, };
+export type HomeResponse = { 
+/**
+ * `None` cuando el catálogo todavía no tiene ninguna candidata decente (recién
+ * sincronizado, o nada con fondo+sinopsis de TMDB todavía) — el banner
+ * simplemente no se pinta en ese caso, en vez de enseñar uno vacío.
+ */
+featured: FeaturedItem | null, continue_watching: Array<ContinueWatchingItem>, next_episodes: Array<NextEpisodeItem>, recent_movies: Array<MovieSummary>, };
 
 export type LanStatusResponse = { enabled: boolean, devices: Array<PairedDeviceItem>, 
 /**
@@ -110,6 +120,13 @@ export type ProviderKind = "xtream" | "m3u";
  * Vista de un proveedor para la interfaz: nunca lleva `credential_ref` (regla R5).
  */
 export type ProviderSummary = { id: number, name: string, kind: ProviderKind, base_url_display: string, username: string | null, max_connections: number, expires_at: number | null, enabled: boolean, last_sync_at: number | null, };
+
+export type ResetPasswordInput = { email: string, 
+/**
+ * El enlace completo del correo, o solo el valor de su parámetro `token=` — la app
+ * no tiene página web propia que lo reciba, así que el usuario lo pega a mano.
+ */
+token_or_link: string, new_password: string, };
 
 export type SearchHitResponse = { item_kind: string, item_id: number, title: string, };
 

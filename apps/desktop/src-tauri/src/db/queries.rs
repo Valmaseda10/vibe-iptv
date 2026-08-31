@@ -289,7 +289,7 @@ pub fn upsert_movie(
 
 /// `series_sources` no tiene columna de categoría ni de calidad/idioma (ver
 /// `docs/DATA-MODEL.md`): esas variantes son por episodio/fuente, no por serie.
-pub fn upsert_series(conn: &Connection, provider_id: i64, series: &RawSeries, fields: &TitleFields) -> Result<()> {
+pub fn upsert_series(conn: &Connection, provider_id: i64, category_map: &HashMap<String, i64>, series: &RawSeries, fields: &TitleFields) -> Result<()> {
     conn.execute(
         "INSERT INTO series (clean_title, year, match_key, added_at)
          VALUES (?1, ?2, ?3, ?4)
@@ -299,13 +299,15 @@ pub fn upsert_series(conn: &Connection, provider_id: i64, series: &RawSeries, fi
     let series_id: i64 =
         conn.query_row("SELECT id FROM series WHERE match_key = ?1", params![fields.match_key], |row| row.get(0))?;
 
+    let category_id = series.category_remote_id.as_ref().and_then(|id| category_map.get(id).copied());
     conn.execute(
-        "INSERT INTO series_sources (series_id, provider_id, remote_id, raw_title)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO series_sources (series_id, provider_id, remote_id, category_id, raw_title)
+         VALUES (?1, ?2, ?3, ?4, ?5)
          ON CONFLICT(provider_id, remote_id) DO UPDATE SET
             series_id = excluded.series_id,
+            category_id = excluded.category_id,
             raw_title = excluded.raw_title",
-        params![series_id, provider_id, series.remote_id, series.raw_title],
+        params![series_id, provider_id, series.remote_id, category_id, series.raw_title],
     )?;
     Ok(())
 }
@@ -813,22 +815,51 @@ mod tests {
     }
 
     #[test]
-    fn upsert_series_has_no_category_column_and_is_idempotent() {
+    fn upsert_series_is_idempotent() {
         let conn = memory_conn();
         let provider_id = insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
 
         let series = RawSeries {
             remote_id: "9001".into(),
             raw_title: "Serie de Ejemplo".into(),
+            category_remote_id: None,
             cover_url: None,
             plot: None,
             release_date: None,
         };
         let fields = TitleFields { clean_title: "Serie de Ejemplo", year: None, match_key: "serie-de-ejemplo-0000", quality: None, language: None };
-        upsert_series(&conn, provider_id, &series, &fields).unwrap();
-        upsert_series(&conn, provider_id, &series, &fields).unwrap();
+        let empty_map = HashMap::new();
+        upsert_series(&conn, provider_id, &empty_map, &series, &fields).unwrap();
+        upsert_series(&conn, provider_id, &empty_map, &series, &fields).unwrap();
 
         assert_eq!(count_series_sources(&conn, provider_id).unwrap(), 1);
+    }
+
+    /// Antes de la migración 005, `series_sources` no tenía `category_id` en absoluto —
+    /// sin esto, el control parental por perfil no podía distinguir una serie de una
+    /// categoría de adultos de cualquier otra (F8/F"perfiles Netflix").
+    #[test]
+    fn upsert_series_resolves_category_remote_id_through_the_map() {
+        use crate::sources::model::{MediaKind, RawCategory};
+        let conn = memory_conn();
+        let provider_id = insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let category_map =
+            upsert_categories(&conn, provider_id, MediaKind::Series, &[RawCategory { remote_id: "7".into(), kind: MediaKind::Series, name: "ANIME".into() }]).unwrap();
+
+        let series = RawSeries {
+            remote_id: "9002".into(),
+            raw_title: "Otra Serie".into(),
+            category_remote_id: Some("7".into()),
+            cover_url: None,
+            plot: None,
+            release_date: None,
+        };
+        let fields = TitleFields { clean_title: "Otra Serie", year: None, match_key: "otra-serie-0000", quality: None, language: None };
+        upsert_series(&conn, provider_id, &category_map, &series, &fields).unwrap();
+
+        let category_id: Option<i64> =
+            conn.query_row("SELECT category_id FROM series_sources WHERE remote_id = '9002'", [], |row| row.get(0)).unwrap();
+        assert_eq!(category_id, Some(category_map["7"]));
     }
 
     #[test]
