@@ -395,6 +395,28 @@ pub struct HomeResponse {
     pub continue_watching: Vec<ContinueWatchingItem>,
     pub next_episodes: Vec<NextEpisodeItem>,
     pub recent_movies: Vec<MovieSummary>,
+    /// "Recomendado para ti" (F "premium") — vacío mientras no haya nada favorito/visto
+    /// que sirva de semilla, o sin clave de TMDB configurada. Nunca bloquea la
+    /// respuesta: ver `catalog::recommendations`.
+    pub recommended: Vec<RecommendedMovieSummary>,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct RecommendedMovieSummary {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+    pub rating: Option<f64>,
+    pub because_of: String,
+}
+
+impl From<crate::catalog::recommendations::RecommendedMovie> for RecommendedMovieSummary {
+    fn from(m: crate::catalog::recommendations::RecommendedMovie) -> Self {
+        Self { id: m.id, clean_title: m.clean_title, year: m.year, poster_path: m.poster_path, rating: m.rating, because_of: m.because_of }
+    }
 }
 
 #[derive(Deserialize, TS)]
@@ -454,7 +476,7 @@ struct ProfileQuery {
 async fn get_home(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<HomeResponse>, ApiError> {
     let db_path = state.db_path.clone();
     let profile_id = query.profile_id;
-    let (featured, continue_watching, next_episodes, recent_movies) = with_db(db_path, move |conn| {
+    let (featured, continue_watching, next_episodes, recent_movies) = with_db(db_path.clone(), move |conn| {
         let featured = reads::get_featured_movie(conn)?;
         let continue_watching = reads::list_continue_watching(conn, profile_id, 20)?;
         let next_episodes = reads::list_next_episodes(conn, profile_id, 20)?;
@@ -463,11 +485,16 @@ async fn get_home(State(state): State<CatalogState>, Query(query): Query<Profile
     })
     .await?;
 
+    // Nunca bloquea la respuesta (puede implicar varias llamadas a TMDB la primera vez):
+    // ver el comentario de cabecera de `catalog::recommendations`.
+    let recommended = crate::catalog::recommendations::get_cached_or_refresh(db_path, profile_id).await;
+
     Ok(Json(HomeResponse {
         featured: featured.map(Into::into),
         continue_watching: continue_watching.into_iter().map(Into::into).collect(),
         next_episodes: next_episodes.into_iter().map(Into::into).collect(),
         recent_movies: recent_movies.into_iter().map(Into::into).collect(),
+        recommended: recommended.into_iter().map(Into::into).collect(),
     }))
 }
 
@@ -1197,6 +1224,21 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["movies"][0]["title"], "Peli de Prueba");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn get_home_recommended_is_empty_without_any_favorite_or_watched_movie() {
+        // Sin ninguna semilla (favorito, o visto pasado el 70%), no hay nada que
+        // preguntarle a TMDB — la fila sale vacía, no un error ni un `null`.
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+
+        let response = router.oneshot(Request::builder().uri(format!("/api/home?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["recommended"], serde_json::json!([]));
 
         let _ = std::fs::remove_file(&db_path);
     }

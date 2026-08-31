@@ -67,6 +67,20 @@ export function HomeScreen() {
         </Row>
       ) : null}
 
+      {!isPending && data && data.recommended.length > 0 && (
+        <Row title="Recomendado para ti">
+          {data.recommended.map((movie) => (
+            <PosterCard
+              key={`rec-${movie.id}`}
+              title={movie.clean_title}
+              posterPath={movie.poster_path}
+              subtitle={`Porque te gustó ${movie.because_of}`}
+              onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
+            />
+          ))}
+        </Row>
+      )}
+
       {isPending ? (
         <SkeletonRow title="Recientes" />
       ) : (

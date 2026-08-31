@@ -35,6 +35,81 @@ pub struct GenreNameRow {
 /// esto, lo único que hay son los ids numéricos que `movies.genres`/`series.genres`
 /// guardan tal cual vienen de TMDB. Vacío hasta la primera sincronización con clave de
 /// TMDB (`commands::spawn_tmdb_matching`), no es un error.
+pub struct SeedMovieRow {
+    pub id: i64,
+    pub clean_title: String,
+    pub tmdb_id: i64,
+}
+
+/// Películas "semilla" para "Recomendado para ti" (F "premium"): favoritas, o vistas
+/// pasado el 70% sin abandonar — las más recientes primero. Solo las que ya tienen
+/// `tmdb_id` (sin eso no hay nada que preguntarle a TMDB). Si una está en ambos sitios
+/// a la vez, cuenta una sola vez, con la fecha más reciente de las dos.
+pub fn list_recommendation_seed_movies(conn: &Connection, profile_id: i64, limit: i64) -> Result<Vec<SeedMovieRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT m.id, m.clean_title, m.tmdb_id FROM (
+            SELECT item_id AS movie_id, added_at AS seed_time FROM favorites WHERE profile_id = ?1 AND item_kind = 'movie'
+            UNION ALL
+            SELECT item_id AS movie_id, played_at AS seed_time FROM playback_state
+                WHERE profile_id = ?1 AND item_kind = 'movie' AND duration_s IS NOT NULL AND duration_s > 0
+                    AND (CAST(position_s AS REAL) / duration_s) > 0.7
+         ) seeds
+         JOIN movies m ON m.id = seeds.movie_id
+         WHERE m.tmdb_id IS NOT NULL
+         GROUP BY m.id
+         ORDER BY MAX(seeds.seed_time) DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![profile_id, limit], |row| {
+        Ok(SeedMovieRow { id: row.get(0)?, clean_title: row.get(1)?, tmdb_id: row.get(2)? })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub struct RecommendedMovieRow {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+    pub rating: Option<f64>,
+    /// Título de la película semilla que motivó esta sugerencia ("Porque te gustó X").
+    pub because_of: String,
+}
+
+/// Cruza los ids de TMDB que sugirió `TmdbClient::movie_recommendations` con el
+/// catálogo local — la regla de oro del informe de I+D: recomendar algo que el
+/// proveedor no tiene sería el error clásico. `candidates` ya viene en orden de
+/// prioridad (semillas más recientes primero); se descartan las semillas mismas (ya
+/// vistas/favoritas, no tiene sentido "recomendarlas") y los duplicados.
+pub fn resolve_recommendations(
+    conn: &Connection,
+    candidates: &[(i64, String)],
+    exclude_movie_ids: &[i64],
+    limit: i64,
+) -> Result<Vec<RecommendedMovieRow>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut results = Vec::new();
+    for (tmdb_id, because_of) in candidates {
+        if results.len() as i64 >= limit {
+            break;
+        }
+        let row: Option<(i64, String, Option<i32>, Option<String>, Option<f64>)> = conn
+            .query_row(
+                "SELECT id, clean_title, year, poster_path, rating FROM movies WHERE tmdb_id = ?1",
+                params![tmdb_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        if let Some((id, clean_title, year, poster_path, rating)) = row {
+            if exclude_movie_ids.contains(&id) || !seen.insert(id) {
+                continue;
+            }
+            results.push(RecommendedMovieRow { id, clean_title, year, poster_path, rating, because_of: because_of.clone() });
+        }
+    }
+    Ok(results)
+}
+
 pub fn list_genre_names(conn: &Connection, kind: &str) -> Result<Vec<GenreNameRow>> {
     let mut stmt = conn.prepare("SELECT tmdb_genre_id, name FROM genre_names WHERE kind = ?1 ORDER BY name")?;
     let rows = stmt.query_map(params![kind], |row| Ok(GenreNameRow { id: row.get(0)?, name: row.get(1)? }))?;
@@ -1449,6 +1524,58 @@ mod tests {
             conn.execute("UPDATE movies SET genres = ?1 WHERE id = ?2", params![g, id]).unwrap();
         }
         id
+    }
+
+    #[test]
+    fn list_recommendation_seed_movies_includes_favorites_and_mostly_watched_but_not_barely_started() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+
+        let favorited = seed_movie(&conn, provider_id, "Favorita", Some(2020), None, None);
+        conn.execute("UPDATE movies SET tmdb_id = 1 WHERE id = ?1", params![favorited]).unwrap();
+        add_favorite(&conn, profile_id, "movie", favorited).unwrap();
+
+        let mostly_watched = seed_movie(&conn, provider_id, "Casi Terminada", Some(2020), None, None);
+        conn.execute("UPDATE movies SET tmdb_id = 2 WHERE id = ?1", params![mostly_watched]).unwrap();
+        upsert_playback_progress(&conn, profile_id, "movie", mostly_watched, 5400, Some(6000)).unwrap(); // 90%
+
+        let barely_started = seed_movie(&conn, provider_id, "Recién Empezada", Some(2020), None, None);
+        conn.execute("UPDATE movies SET tmdb_id = 3 WHERE id = ?1", params![barely_started]).unwrap();
+        upsert_playback_progress(&conn, profile_id, "movie", barely_started, 60, Some(6000)).unwrap(); // 1%
+
+        let no_tmdb_id = seed_movie(&conn, provider_id, "Sin TMDB", Some(2020), None, None);
+        add_favorite(&conn, profile_id, "movie", no_tmdb_id).unwrap();
+
+        let seeds = list_recommendation_seed_movies(&conn, profile_id, 10).unwrap();
+        let titles: Vec<&str> = seeds.iter().map(|s| s.clean_title.as_str()).collect();
+        assert!(titles.contains(&"Favorita"));
+        assert!(titles.contains(&"Casi Terminada"));
+        assert!(!titles.contains(&"Recién Empezada")); // menos del 70%, no cuenta como "le gustó".
+        assert!(!titles.contains(&"Sin TMDB")); // sin tmdb_id no hay nada que preguntarle a TMDB.
+    }
+
+    #[test]
+    fn resolve_recommendations_excludes_seeds_and_deduplicates() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+
+        let already_seen = seed_movie(&conn, provider_id, "Ya Vista", Some(2020), None, None);
+        conn.execute("UPDATE movies SET tmdb_id = 100 WHERE id = ?1", params![already_seen]).unwrap();
+        let recommended = seed_movie(&conn, provider_id, "Nueva Sugerencia", Some(2021), None, None);
+        conn.execute("UPDATE movies SET tmdb_id = 200 WHERE id = ?1", params![recommended]).unwrap();
+
+        let candidates = vec![
+            (100, "Semilla".to_string()),  // ya vista: se excluye aunque TMDB la sugiera.
+            (200, "Semilla".to_string()),  // sí está en el catálogo local.
+            (200, "Semilla".to_string()),  // duplicada: solo debe contar una vez.
+            (999, "Semilla".to_string()),  // no está en el catálogo local: se descarta sola.
+        ];
+
+        let results = resolve_recommendations(&conn, &candidates, &[already_seen], 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].clean_title, "Nueva Sugerencia");
+        assert_eq!(results[0].because_of, "Semilla");
     }
 
     #[test]

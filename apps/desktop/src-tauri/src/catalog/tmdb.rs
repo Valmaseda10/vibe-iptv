@@ -214,6 +214,16 @@ impl TmdbClient {
         })
     }
 
+    /// Ids de TMDB recomendados a partir de una película — para "Recomendado para ti"
+    /// (F "premium"): la lista se cruza después con el catálogo local (regla de oro
+    /// del informe de I+D — recomendar algo que el proveedor no tiene es el error
+    /// clásico), así que aquí solo hacen falta los ids, no toda la ficha de cada uno.
+    pub async fn movie_recommendations(&self, tmdb_id: i64) -> Result<Vec<i64>> {
+        let response: RecommendationsResponse =
+            self.get_json(&format!("/movie/{tmdb_id}/recommendations"), &[("language", "es-ES")]).await?;
+        Ok(response.results.into_iter().map(|r| r.id).collect())
+    }
+
     /// Los ~19 géneros de película y ~16 de serie de TMDB, casi estáticos — se piden una
     /// vez por sincronización con clave de TMDB (`commands::spawn_tmdb_matching`), nunca
     /// por título: es la misma llamada sirva para 10 películas o para 100.000.
@@ -695,6 +705,17 @@ struct ContentRatingCountry {
     rating: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct RecommendationsResponse {
+    #[serde(default)]
+    results: Vec<RecommendationHit>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RecommendationHit {
+    id: i64,
+}
+
 #[derive(Debug, Deserialize)]
 struct GenreListResponse {
     #[serde(default)]
@@ -958,6 +979,16 @@ mod tests {
 
         let genres = client.movie_genres("es-ES").await.unwrap();
         assert_eq!(genres, vec![(28, "Acción".to_string()), (18, "Drama".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn movie_recommendations_returns_just_the_ids() {
+        let state = MockState::default();
+        queue(&state, 200, r#"{"results":[{"id":603},{"id":604},{"id":605}]}"#);
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        assert_eq!(client.movie_recommendations(1).await.unwrap(), vec![603, 604, 605]);
     }
 
     #[tokio::test]

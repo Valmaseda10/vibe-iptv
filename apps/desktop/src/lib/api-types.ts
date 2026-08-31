@@ -45,7 +45,13 @@ export type HomeResponse = {
  * sincronizado, o nada con fondo+sinopsis de TMDB todavía) — el banner
  * simplemente no se pinta en ese caso, en vez de enseñar uno vacío.
  */
-featured: FeaturedItem | null, continue_watching: Array<ContinueWatchingItem>, next_episodes: Array<NextEpisodeItem>, recent_movies: Array<MovieSummary>, };
+featured: FeaturedItem | null, continue_watching: Array<ContinueWatchingItem>, next_episodes: Array<NextEpisodeItem>, recent_movies: Array<MovieSummary>, 
+/**
+ * "Recomendado para ti" (F "premium") — vacío mientras no haya nada favorito/visto
+ * que sirva de semilla, o sin clave de TMDB configurada. Nunca bloquea la
+ * respuesta: ver `catalog::recommendations`.
+ */
+recommended: Array<RecommendedMovieSummary>, };
 
 export type LanStatusResponse = { enabled: boolean, devices: Array<PairedDeviceItem>, 
 /**
@@ -143,6 +149,8 @@ export type ProviderKind = "xtream" | "m3u";
  * Vista de un proveedor para la interfaz: nunca lleva `credential_ref` (regla R5).
  */
 export type ProviderSummary = { id: number, name: string, kind: ProviderKind, base_url_display: string, username: string | null, max_connections: number, expires_at: number | null, enabled: boolean, last_sync_at: number | null, };
+
+export type RecommendedMovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, because_of: string, };
 
 export type ResetPasswordInput = { email: string, 
 /**
