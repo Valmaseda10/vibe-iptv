@@ -703,6 +703,16 @@ pub fn count_profiles(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0)).map_err(Into::into)
 }
 
+/// El UUID de Supabase de este perfil, si ya se sincronizó alguna vez. Hace falta
+/// leerlo antes de borrar la fila local (`server::profiles::delete_profile_route`):
+/// una vez borrada, ya no habría de dónde sacarlo para borrar también el espejo remoto.
+pub fn get_profile_remote_id(conn: &Connection, profile_id: i64) -> Result<Option<String>> {
+    conn.query_row("SELECT remote_id FROM profiles WHERE id = ?1", params![profile_id], |row| row.get(0))
+        .optional()
+        .map(|opt| opt.flatten())
+        .map_err(Into::into)
+}
+
 /// Si el perfil tiene `adult_ok = 0` (infantil), nunca ve categorías adultas — sin PIN
 /// de por medio, no hay nada que desbloquear (ver F "perfiles Netflix" en
 /// docs/DECISIONS.md, sustituye al `ParentalGuard` global de F8).
@@ -711,6 +721,71 @@ pub fn profile_allows_adult(conn: &Connection, profile_id: i64) -> Result<bool> 
         .optional()
         .map(|opt| opt.unwrap_or(0) != 0)
         .map_err(Into::into)
+}
+
+// ─────────────── Sincronización: item_key estable entre dispositivos ───────────────
+//
+// El `id` local (autoincremental de SQLite) depende del orden en que se sincronizó
+// ESTE PC — no significa nada en otro dispositivo con otro catálogo. `item_key` usa
+// `match_key` (F3, estable con independencia del proveedor) para que un favorito o un
+// progreso tengan sentido al bajarlos en otro PC. Los canales de directo no tienen
+// equivalente razonable (cada proveedor los numera distinto) y se quedan fuera: solo
+// locales, nunca se suben ni se bajan (ver `sync::engine`).
+
+/// `item_key` estable para una película o serie ya sincronizada en este PC, o `None` si
+/// el id no existe (pudo borrarse).
+pub fn item_key_for(conn: &Connection, item_kind: &str, item_id: i64) -> Result<Option<String>> {
+    match item_kind {
+        "movie" => conn.query_row("SELECT match_key FROM movies WHERE id = ?1", params![item_id], |r| r.get(0)).optional(),
+        "series" => conn.query_row("SELECT match_key FROM series WHERE id = ?1", params![item_id], |r| r.get(0)).optional(),
+        "episode" => conn
+            .query_row(
+                "SELECT s.match_key || ':' || e.season || ':' || e.number
+                 FROM episodes e
+                 JOIN series_sources ss ON ss.id = e.series_source_id
+                 JOIN series s ON s.id = ss.series_id
+                 WHERE e.id = ?1",
+                params![item_id],
+                |r| r.get(0),
+            )
+            .optional(),
+        _ => Ok(None), // "channel": sin item_key portable a propósito, ver comentario de la sección.
+    }
+    .map_err(Into::into)
+}
+
+/// El camino inverso: de un `item_key` bajado de Supabase al `id` local, si ese
+/// contenido existe en el catálogo de este PC (puede que no — proveedores distintos).
+pub fn item_id_for_key(conn: &Connection, item_kind: &str, item_key: &str) -> Result<Option<i64>> {
+    match item_kind {
+        "movie" => conn.query_row("SELECT id FROM movies WHERE match_key = ?1", params![item_key], |r| r.get(0)).optional(),
+        "series" => conn.query_row("SELECT id FROM series WHERE match_key = ?1", params![item_key], |r| r.get(0)).optional(),
+        "episode" => {
+            let Some((series_key, season, number)) = split_episode_key(item_key) else { return Ok(None) };
+            conn.query_row(
+                "SELECT e.id FROM episodes e
+                 JOIN series_sources ss ON ss.id = e.series_source_id
+                 JOIN series s ON s.id = ss.series_id
+                 WHERE s.match_key = ?1 AND e.season = ?2 AND e.number = ?3",
+                params![series_key, season, number],
+                |r| r.get(0),
+            )
+            .optional()
+        }
+        _ => Ok(None),
+    }
+    .map_err(Into::into)
+}
+
+/// `"titulo-normalizado-2020:4:5"` -> `("titulo-normalizado-2020", 4, 5)`. El
+/// `match_key` de la serie puede llevar guiones pero nunca `:` (regla de
+/// `catalog::normalize`), así que partir por los dos últimos `:` es seguro.
+fn split_episode_key(item_key: &str) -> Option<(&str, i64, i64)> {
+    let mut parts = item_key.rsplitn(3, ':');
+    let number: i64 = parts.next()?.parse().ok()?;
+    let season: i64 = parts.next()?.parse().ok()?;
+    let series_key = parts.next()?;
+    Some((series_key, season, number))
 }
 
 pub struct PlaybackItem {
@@ -1088,6 +1163,61 @@ mod tests {
             conn.execute("UPDATE movies SET genres = ?1 WHERE id = ?2", params![g, id]).unwrap();
         }
         id
+    }
+
+    #[test]
+    fn item_key_for_movie_roundtrips_through_match_key() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let movie_id = seed_movie(&conn, provider_id, "Mi Película", Some(2020), None, None);
+
+        // `seed_movie` (helper de test) no normaliza acentos como catalog::normalize sí
+        // hace de verdad — solo importa que item_key_for devuelva el match_key tal cual
+        // se guardó, y que el camino inverso encuentre la misma fila.
+        let key = item_key_for(&conn, "movie", movie_id).unwrap().unwrap();
+        assert_eq!(key, "mi-película-2020");
+        assert_eq!(item_id_for_key(&conn, "movie", &key).unwrap(), Some(movie_id));
+    }
+
+    #[test]
+    fn item_key_for_unknown_id_is_none_not_an_error() {
+        let conn = memory_conn();
+        assert_eq!(item_key_for(&conn, "movie", 9999).unwrap(), None);
+        assert_eq!(item_id_for_key(&conn, "movie", "no-existe-2020").unwrap(), None);
+    }
+
+    #[test]
+    fn item_key_for_channel_is_always_none() {
+        // Sin item_key portable a propósito: cada proveedor numera/nombra distinto.
+        let conn = memory_conn();
+        assert_eq!(item_key_for(&conn, "channel", 1).unwrap(), None);
+    }
+
+    #[test]
+    fn item_key_for_episode_roundtrips_including_series_with_hyphens() {
+        use crate::sources::model::RawEpisode;
+
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let series = RawSeries { remote_id: "s1".into(), raw_title: "La Casa de Papel".into(), cover_url: None, plot: None, release_date: None };
+        let fields = TitleFields { clean_title: "La Casa de Papel", year: None, match_key: "la-casa-de-papel-0000", quality: None, language: None };
+        queries::upsert_series(&conn, provider_id, &series, &fields).unwrap();
+        let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources WHERE remote_id = 's1'", [], |r| r.get(0)).unwrap();
+
+        let episode = RawEpisode { remote_id: "e1".into(), season: 4, number: 5, title: None, container_extension: None, duration_s: None, still_url: None };
+        upsert_episodes(&conn, series_source_id, &[episode]).unwrap();
+        let episode_id: i64 = conn.query_row("SELECT id FROM episodes WHERE remote_id = 'e1'", [], |r| r.get(0)).unwrap();
+
+        let key = item_key_for(&conn, "episode", episode_id).unwrap().unwrap();
+        assert_eq!(key, "la-casa-de-papel-0000:4:5");
+        assert_eq!(item_id_for_key(&conn, "episode", &key).unwrap(), Some(episode_id));
+    }
+
+    #[test]
+    fn split_episode_key_handles_hyphenated_series_match_keys() {
+        assert_eq!(split_episode_key("la-casa-de-papel-2020:4:5"), Some(("la-casa-de-papel-2020", 4, 5)));
+        assert_eq!(split_episode_key("no-tiene-suficientes-partes"), None);
+        assert_eq!(split_episode_key(""), None);
     }
 
     #[test]

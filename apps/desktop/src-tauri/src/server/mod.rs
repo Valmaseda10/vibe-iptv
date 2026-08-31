@@ -106,7 +106,7 @@ fn full_router(image_cache_dir: PathBuf, db_path: PathBuf, stream_state: stream:
     routes::build_router(image_cache_dir, db_path.clone())
         .merge(stream::stream_router(stream_state))
         .merge(lan::lan_router(lan_state.clone()))
-        .merge(account::account_router())
+        .merge(account::account_router(account::AccountState { db_path: db_path.clone() }))
         .merge(profiles::profiles_router(profiles::ProfilesState { db_path }))
         .layer(axum::middleware::from_fn_with_state(lan_state, lan::require_local_or_paired))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))

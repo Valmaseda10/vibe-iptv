@@ -700,10 +700,19 @@ async fn post_playback_progress(State(state): State<CatalogState>, Json(input): 
     if !matches!(input.item_kind.as_str(), "movie" | "episode" | "channel") {
         return Err(ApiError::BadRequest("item_kind debe ser movie, episode o channel".to_string()));
     }
-    with_db(state.db_path, move |conn| {
+    let item_kind = input.item_kind.clone();
+    with_db(state.db_path.clone(), move |conn| {
         reads::upsert_playback_progress(conn, input.profile_id, &input.item_kind, input.item_id, input.position_s, input.duration_s)
     })
     .await?;
+    tokio::spawn(crate::sync::engine::push_playback_progress(
+        state.db_path,
+        input.profile_id,
+        item_kind,
+        input.item_id,
+        input.position_s,
+        input.duration_s,
+    ));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -713,7 +722,9 @@ async fn get_favorites(State(state): State<CatalogState>, Query(query): Query<Pr
 }
 
 async fn post_favorite(State(state): State<CatalogState>, Json(input): Json<FavoriteInput>) -> Result<StatusCode, ApiError> {
-    with_db(state.db_path, move |conn| reads::add_favorite(conn, input.profile_id, &input.item_kind, input.item_id)).await?;
+    let item_kind = input.item_kind.clone();
+    with_db(state.db_path.clone(), move |conn| reads::add_favorite(conn, input.profile_id, &input.item_kind, input.item_id)).await?;
+    tokio::spawn(crate::sync::engine::push_favorite_add(state.db_path, input.profile_id, item_kind, input.item_id));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -725,7 +736,18 @@ struct DeleteFavoriteQuery {
 }
 
 async fn delete_favorite(State(state): State<CatalogState>, Query(query): Query<DeleteFavoriteQuery>) -> Result<StatusCode, ApiError> {
-    with_db(state.db_path, move |conn| reads::remove_favorite(conn, query.profile_id, &query.item_kind, query.item_id)).await?;
+    // El item_key hace falta ANTES de borrar la fila local (server::api::delete_favorite
+    // ya no podría resolverlo después) — ver sync::engine::push_favorite_remove_by_key.
+    let item_key = with_db(state.db_path.clone(), {
+        let item_kind = query.item_kind.clone();
+        move |conn| reads::item_key_for(conn, &item_kind, query.item_id)
+    })
+    .await?;
+    let item_kind = query.item_kind.clone();
+    with_db(state.db_path.clone(), move |conn| reads::remove_favorite(conn, query.profile_id, &query.item_kind, query.item_id)).await?;
+    if let Some(item_key) = item_key {
+        tokio::spawn(crate::sync::engine::push_favorite_remove_by_key(state.db_path, query.profile_id, item_kind, item_key));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

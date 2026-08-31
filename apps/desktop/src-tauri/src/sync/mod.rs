@@ -3,5 +3,6 @@
 //! los límites exactos). El catálogo, las credenciales de proveedor y el streaming en
 //! sí **nunca** pasan por aquí: siguen siendo cosa exclusiva de este PC.
 
+pub mod engine;
 pub mod session;
 pub mod supabase;

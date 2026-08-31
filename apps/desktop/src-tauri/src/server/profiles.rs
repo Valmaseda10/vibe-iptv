@@ -15,6 +15,7 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::db::{queries, reads, schema, DbError};
+use crate::sync::engine;
 use crate::util::parental::{hash_pin, verify_pin};
 
 #[derive(Clone)]
@@ -106,7 +107,8 @@ async fn post_create_profile(State(state): State<ProfilesState>, Json(input): Js
         queries::insert_profile(conn, &input.name, input.avatar.as_deref(), input.adult_ok)
     })
     .await?;
-    let profile = with_db(state.db_path, move |conn| reads::get_profile(conn, profile_id)).await?.ok_or(ProfilesError::NotFound)?;
+    let profile = with_db(state.db_path.clone(), move |conn| reads::get_profile(conn, profile_id)).await?.ok_or(ProfilesError::NotFound)?;
+    tokio::spawn(engine::push_profile_upsert(state.db_path, profile_id));
     Ok(Json(profile.into()))
 }
 
@@ -115,7 +117,8 @@ async fn patch_profile(
     AxumPath(profile_id): AxumPath<i64>,
     Json(input): Json<ProfileInput>,
 ) -> Result<StatusCode, ProfilesError> {
-    with_db(state.db_path, move |conn| queries::update_profile(conn, profile_id, &input.name, input.avatar.as_deref(), input.adult_ok)).await?;
+    with_db(state.db_path.clone(), move |conn| queries::update_profile(conn, profile_id, &input.name, input.avatar.as_deref(), input.adult_ok)).await?;
+    tokio::spawn(engine::push_profile_upsert(state.db_path, profile_id));
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -127,7 +130,13 @@ async fn delete_profile_route(State(state): State<ProfilesState>, AxumPath(profi
     if count <= 1 {
         return Err(ProfilesError::LastProfile);
     }
+    // El remote_id hace falta ANTES de borrar la fila local (para poder borrar también
+    // el espejo en Supabase) — una vez borrada, ya no habría de dónde sacarlo.
+    let remote_id = with_db(state.db_path.clone(), move |conn| reads::get_profile_remote_id(conn, profile_id)).await?;
     with_db(state.db_path, move |conn| queries::delete_profile(conn, profile_id)).await?;
+    if let Some(remote_id) = remote_id {
+        tokio::spawn(engine::push_profile_delete(remote_id));
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -147,7 +156,8 @@ async fn post_set_pin(
     Json(input): Json<SetProfilePinInput>,
 ) -> Result<StatusCode, ProfilesError> {
     let pin_hash = input.pin.as_deref().map(hash_pin);
-    with_db(state.db_path, move |conn| queries::set_profile_pin_hash(conn, profile_id, pin_hash.as_deref())).await?;
+    with_db(state.db_path.clone(), move |conn| queries::set_profile_pin_hash(conn, profile_id, pin_hash.as_deref())).await?;
+    tokio::spawn(engine::push_profile_upsert(state.db_path, profile_id));
     Ok(StatusCode::NO_CONTENT)
 }
 

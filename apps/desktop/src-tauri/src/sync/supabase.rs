@@ -59,6 +59,95 @@ impl SupabaseClient {
         format!("{SUPABASE_URL}/auth/v1/{path}")
     }
 
+    fn rest_url(&self, table: &str, query: &str) -> String {
+        if query.is_empty() {
+            format!("{SUPABASE_URL}/rest/v1/{table}")
+        } else {
+            format!("{SUPABASE_URL}/rest/v1/{table}?{query}")
+        }
+    }
+
+    /// `SELECT` sobre una tabla de PostgREST. `query` es lo que va tras el `?`, ya en
+    /// sintaxis de PostgREST (p. ej. `"select=*&profile_id=eq.<uuid>"`) — sin
+    /// constructor propio de filtros: para los pocos que hacen falta aquí, una cadena a
+    /// mano es más simple y más fácil de leer que una capa de abstracción encima.
+    pub async fn select(&self, session: &Session, table: &str, query: &str) -> Result<Vec<serde_json::Value>> {
+        let response = self
+            .client
+            .get(self.rest_url(table, query))
+            .header("apikey", SUPABASE_ANON_KEY)
+            .bearer_auth(&session.access_token)
+            .send()
+            .await
+            .map_err(|_| SupabaseError::Network)?;
+        Self::parse_json_array(response).await
+    }
+
+    /// Inserta o actualiza (según `Prefer: resolution=merge-duplicates`) una o varias
+    /// filas. `on_conflict_query` es la parte `on_conflict=col1,col2` cuando la tabla
+    /// tiene una clave compuesta (favoritos, progreso) — vacío para las que tienen `id`
+    /// como PK de verdad (perfiles), donde basta el conflicto por PK por defecto.
+    /// Devuelve las filas resultantes (`return=representation`): hace falta para saber
+    /// el UUID que Supabase generó en un `INSERT` nuevo de perfil.
+    pub async fn upsert(&self, session: &Session, table: &str, on_conflict_query: &str, body: &serde_json::Value) -> Result<Vec<serde_json::Value>> {
+        let response = self
+            .client
+            .post(self.rest_url(table, on_conflict_query))
+            .header("apikey", SUPABASE_ANON_KEY)
+            .bearer_auth(&session.access_token)
+            .header("Prefer", "resolution=merge-duplicates,return=representation")
+            .json(body)
+            .send()
+            .await
+            .map_err(|_| SupabaseError::Network)?;
+        Self::parse_json_array(response).await
+    }
+
+    pub async fn patch(&self, session: &Session, table: &str, query: &str, body: &serde_json::Value) -> Result<()> {
+        let response = self
+            .client
+            .patch(self.rest_url(table, query))
+            .header("apikey", SUPABASE_ANON_KEY)
+            .bearer_auth(&session.access_token)
+            .json(body)
+            .send()
+            .await
+            .map_err(|_| SupabaseError::Network)?;
+        Self::check_ok(response).await
+    }
+
+    pub async fn delete_rows(&self, session: &Session, table: &str, query: &str) -> Result<()> {
+        let response = self
+            .client
+            .delete(self.rest_url(table, query))
+            .header("apikey", SUPABASE_ANON_KEY)
+            .bearer_auth(&session.access_token)
+            .send()
+            .await
+            .map_err(|_| SupabaseError::Network)?;
+        Self::check_ok(response).await
+    }
+
+    async fn parse_json_array(response: reqwest::Response) -> Result<Vec<serde_json::Value>> {
+        let status = response.status();
+        let bytes = response.bytes().await.map_err(|_| SupabaseError::Network)?;
+        if !status.is_success() {
+            let message = extract_error_message(&bytes).unwrap_or_else(|| format!("El servidor de sincronización respondió {status}."));
+            return Err(SupabaseError::Api(message));
+        }
+        serde_json::from_slice(&bytes).map_err(|_| SupabaseError::InvalidResponse)
+    }
+
+    async fn check_ok(response: reqwest::Response) -> Result<()> {
+        let status = response.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let bytes = response.bytes().await.unwrap_or_default();
+        let message = extract_error_message(&bytes).unwrap_or_else(|| format!("El servidor de sincronización respondió {status}."));
+        Err(SupabaseError::Api(message))
+    }
+
     /// Crea una cuenta nueva. Si el proyecto de Supabase exige confirmar el email antes
     /// de dar sesión (configuración por defecto), no hay `Session` que devolver todavía
     /// — se informa como error de API con un mensaje claro, no como fallo de red.

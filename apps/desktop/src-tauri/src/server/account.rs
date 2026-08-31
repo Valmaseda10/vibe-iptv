@@ -3,21 +3,30 @@
 //! aquí — catálogo, credenciales de proveedor y streaming siguen siendo cosa exclusiva
 //! de este PC (reglas R2/R5 de `CLAUDE.md` intactas).
 
+use std::path::PathBuf;
+
+use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use crate::sync::session;
 use crate::sync::supabase::{SupabaseClient, SupabaseError};
+use crate::sync::{engine, session};
 
-pub fn account_router() -> Router {
+#[derive(Clone)]
+pub struct AccountState {
+    pub db_path: PathBuf,
+}
+
+pub fn account_router(state: AccountState) -> Router {
     Router::new()
         .route("/api/account/status", get(get_status))
         .route("/api/account/signup", post(post_signup))
         .route("/api/account/login", post(post_login))
         .route("/api/account/logout", post(post_logout))
+        .with_state(state)
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -50,17 +59,21 @@ impl IntoResponse for SupabaseError {
     }
 }
 
-async fn post_signup(Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, SupabaseError> {
+async fn post_signup(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, SupabaseError> {
     let session = SupabaseClient::new().sign_up(&input.email, &input.password).await?;
     let email = session.email.clone();
     session::save(&session);
+    tokio::spawn(engine::pull_and_merge(state.db_path));
     Ok(Json(AccountStatusResponse { logged_in: true, email: Some(email) }))
 }
 
-async fn post_login(Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, SupabaseError> {
+async fn post_login(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, SupabaseError> {
     let session = SupabaseClient::new().sign_in(&input.email, &input.password).await?;
     let email = session.email.clone();
     session::save(&session);
+    // En segundo plano: el login responde en cuanto Supabase confirma las credenciales,
+    // no hace falta esperar a que baje y fusione perfiles/favoritos/progreso.
+    tokio::spawn(engine::pull_and_merge(state.db_path));
     Ok(Json(AccountStatusResponse { logged_in: true, email: Some(email) }))
 }
 
@@ -86,7 +99,7 @@ mod tests {
     #[tokio::test]
     async fn status_reports_logged_out_when_no_session_saved() {
         session::clear(); // por si un test anterior de sync::session dejó algo.
-        let response = account_router()
+        let response = account_router(AccountState { db_path: std::env::temp_dir() })
             .oneshot(Request::builder().uri("/api/account/status").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -107,7 +120,7 @@ mod tests {
             expires_at: crate::db::now_epoch() + 3600,
         });
 
-        let response = account_router()
+        let response = account_router(AccountState { db_path: std::env::temp_dir() })
             .oneshot(Request::builder().method("POST").uri("/api/account/logout").body(Body::empty()).unwrap())
             .await
             .unwrap();
