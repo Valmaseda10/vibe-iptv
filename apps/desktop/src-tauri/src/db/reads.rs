@@ -465,6 +465,33 @@ pub fn resolve_channel_stream(conn: &Connection, channel_id: i64) -> Result<Opti
     .map_err(Into::into)
 }
 
+/// Datos para decidir y construir una petición de catch-up (F9): además de lo que
+/// necesita `resolve_channel_stream`, cuántos días atrás guarda el proveedor. El
+/// llamador compara eso contra el `start` pedido antes de construir ninguna URL.
+pub struct ChannelCatchupInfo {
+    pub provider_id: i64,
+    pub remote_id: String,
+    pub has_catchup: bool,
+    pub catchup_days: u32,
+}
+
+pub fn resolve_channel_catchup(conn: &Connection, channel_id: i64) -> Result<Option<ChannelCatchupInfo>> {
+    conn.query_row(
+        "SELECT provider_id, remote_id, has_catchup, catchup_days FROM channels WHERE id = ?1",
+        params![channel_id],
+        |row| {
+            Ok(ChannelCatchupInfo {
+                provider_id: row.get(0)?,
+                remote_id: row.get(1)?,
+                has_catchup: row.get::<_, i64>(2)? != 0,
+                catchup_days: row.get::<_, Option<i64>>(3)?.unwrap_or(0).max(0) as u32,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 pub struct MovieStreamInfo {
     pub provider_id: i64,
     pub remote_id: String,

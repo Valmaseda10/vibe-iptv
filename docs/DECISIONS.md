@@ -747,6 +747,83 @@ ya no arrastra sus canales de zapping de pruebas anteriores.
 
 ---
 
+## 2026-08-31 — F9 mpv, catch-up y pulido
+
+**Construida de manera autónoma.** Nivel 3 de la cascada (mpv), catch-up/timeshift,
+mensajes de error en español y un registro de diagnóstico exportable. **Dos piezas no
+se han podido verificar contra software real** (ver deuda técnica): no hay mpv
+instalado en la máquina donde se ha escrito esto, y ningún canal del proveedor real del
+usuario tiene `has_catchup=1` en los datos vistos hasta ahora.
+
+**Qué se ha construido.**
+- **Nivel 3 — mpv en ventana propia**: `media::mpv::spawn_mpv` lanza mpv con
+  `--input-ipc-server`, `--user-agent` y `--force-window=yes`, con la URL *real* del
+  proveedor, no la del proxy de nivel 2 — mpv existe precisamente para lo que el
+  `-c:v copy` de ffmpeg no puede remuxear sin recodificar. Nuevo endpoint
+  `POST /stream/mpv/:kind/:id`: responde `204` en cuanto mpv arranca (no cuando
+  termina) y registra `play_tier=3`. Como aquí no hay cuerpo de respuesta HTTP al que
+  atar la vida de la sesión (a diferencia de nivel 1/2), `StreamGuard` gana
+  `run_until_exit_or_replaced`, que mantiene `is_busy()` a `true` sondeando el proceso
+  cada 500 ms hasta que mpv cierra su ventana o llega una sesión más nueva. El
+  frontend ofrece un botón **"Abrir con mpv"** solo cuando el backend contesta 501
+  (códec no compatible con la ventana de la app). No se ha implementado la escalada
+  automática "dos fallos de nivel 2 → mpv" que menciona `PROMPTS.md`: sin mpv real que
+  probar, automatizar esa transición a ciegas parecía peor que dejarla manual.
+- **Catch-up y timeshift**: `Source` gana `catchup_url`/`catchup_url_fallback` (por
+  defecto "no soportado"; M3U no los sobreescribe, no hay forma estándar de pedirlo).
+  `XtreamSource` construye las dos formas que documenta `docs/XTREAM-API.md` — la de
+  segmentos de ruta (`/timeshift/user/pass/{min}/{fecha}/{id}.ts`) y la de query string
+  (`/streaming/timeshift.php?...`) —, reutilizando `util::civil_time` (antes solo del
+  EPG) para formatear la fecha `YYYY-MM-DD:HH-MM` en UTC. Nuevo
+  `GET /stream/catchup/:channel_id?start=&duration_min=`: comprueba
+  `channels.has_catchup` y que `start` caiga dentro de `channels.catchup_days` *antes*
+  de construir ninguna URL o abrir ninguna conexión (regla R1); si está soportado,
+  reutiliza la misma sonda/caché/cascada de nivel 1-2 que el directo. La Guía abre este
+  endpoint en vez del directo al pulsar un programa ya emitido en un canal con
+  catch-up; el resto de celdas (en curso, futuro, o canal sin catch-up) siguen
+  llevando al directo tal cual, y es el backend quien rechaza con un mensaje claro si
+  de verdad no se puede.
+- **Mensajes de error en español**: `StreamError` reescrito con texto pensado para
+  enseñarse tal cual al usuario ("la cuenta caducó, revisa tu suscripción", "puede que
+  hayas alcanzado el límite de conexiones simultáneas..."), incluyendo una
+  comprobación explícita de `expires_at` antes de intentar conectar. El frontend
+  (`PlayerScreen`) ya no se conforma con el `onError` mudo de `<video>`: hace un
+  `fetch` puntual de diagnóstico a la misma URL de stream (la sesión ya falló, así que
+  esto no compite con nada) y enseña el texto real que dio el backend.
+- **Registro de diagnóstico exportable**: `util::diag_log::DiagnosticsLog` es un
+  segundo `tracing_subscriber::fmt::layer()` que copia en un anillo de memoria (2000
+  líneas como máximo, regla R4) el mismo texto ya formateado que ve la consola — no
+  vuelve a redactar nada porque no hace falta: cada sitio que loguea una URL de
+  proveedor ya pasa por `redact()` antes de que la línea exista (invariante de R5 que
+  ya cumplía el código desde F1). Nuevo comando de Tauri `export_diagnostics_log`
+  vuelca el contenido a `<datos de la app>/diagnostico.log` y un botón en Ajustes
+  enseña la ruta resultante.
+- **Repaso de rendimiento**: revisado sin encontrar nada que corregir. Las listas de
+  catálogo (películas, series, canales) ya paginan con `useInfiniteQuery` o
+  virtualizan (`VirtualPosterGrid`/Directo) desde F4/F5; favoritos, continuar viendo y
+  siguiente episodio son listas acotadas por diseño (unas pocas decenas de filas como
+  mucho), no el catálogo completo, así que una consulta por ítem para enriquecerlas
+  (ver F8) no es el problema de rendimiento que sería sobre 20-100k filas. Los índices
+  que usan las consultas nuevas de F7-F9 (`idx_epg_lookup`, `idx_playback_recent`, PK
+  de `channels`) ya existían desde `001_schema_inicial.sql`.
+
+**Deuda técnica que deja esta fase.**
+- **mpv sin verificar de verdad.** Todo lo construido (`media::mpv`,
+  `run_until_exit_or_replaced`, el endpoint, el botón) compila y tiene tests de forma
+  (argumentos, códigos de estado), pero nunca se ha lanzado mpv de verdad: no está
+  instalado en esta máquina. Antes de confiar en esto hace falta probarlo contra un
+  proveedor real con un canal que fuerce nivel 3 (p. ej. HEVC).
+- **Catch-up sin verificar contra un proveedor que lo ofrezca de verdad.** La
+  construcción de las dos URLs sigue `docs/XTREAM-API.md` al pie de la letra y tiene
+  tests unitarios, pero ningún canal visto hasta ahora en los datos reales del usuario
+  tiene `has_catchup=1`, así que el camino feliz completo (probar de verdad qué forma
+  de URL acepta el panel) sigue sin confirmar.
+- **mpv no sabe pedir catch-up.** `POST /stream/mpv/:kind/:id` solo lanza el directo;
+  si un canal con catch-up necesitara nivel 3, el botón "Abrir con mpv" no aparece en
+  ese modo (se oculta a propósito) en vez de abrir el momento equivocado.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

@@ -314,7 +314,7 @@ fn parse_xmltv_datetime(raw: &str) -> Option<i64> {
     let minute: i64 = datetime_part[10..12].parse().ok()?;
     let second: i64 = datetime_part[12..14].parse().ok()?;
 
-    let days_since_epoch = days_from_civil(year, month, day)?;
+    let days_since_epoch = crate::util::civil_time::days_from_civil(year, month, day)?;
     let seconds_local = days_since_epoch * 86_400 + hour * 3600 + minute * 60 + second;
     Some(seconds_local - (offset_minutes as i64) * 60)
 }
@@ -334,22 +334,6 @@ fn parse_offset_minutes(offset: &str) -> Option<i32> {
     let hours: i32 = hours_str.parse().ok()?;
     let minutes: i32 = minutes_str.parse().ok()?;
     Some(sign * (hours * 60 + minutes))
-}
-
-/// Días desde 1970-01-01 hasta la fecha civil dada (algoritmo de Howard Hinnant,
-/// dominio público: https://howardhinnant.github.io/date_algorithms.html). Evita
-/// depender de una librería de fechas solo para convertir año/mes/día a un entero.
-fn days_from_civil(y: i32, m: u32, d: u32) -> Option<i64> {
-    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return None;
-    }
-    let y = if m <= 2 { y - 1 } else { y } as i64;
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as i64;
-    let mp = ((m as i64 + 9) % 12) as i64;
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146_097 + doe - 719_468)
 }
 
 #[cfg(test)]
@@ -477,13 +461,6 @@ mod tests {
     }
 
     #[test]
-    fn days_from_civil_matches_known_epoch_dates() {
-        assert_eq!(days_from_civil(1970, 1, 1), Some(0));
-        assert_eq!(days_from_civil(2000, 1, 1), Some(10957));
-        assert_eq!(days_from_civil(2020, 1, 1), Some(18262));
-    }
-
-    #[test]
     fn parse_xmltv_datetime_handles_offset_without_space() {
         assert_eq!(parse_xmltv_datetime("20200101120000+0000"), Some(1_577_880_000));
         assert_eq!(parse_xmltv_datetime("20200101120000 +0000"), Some(1_577_880_000));
@@ -581,25 +558,8 @@ mod tests {
     /// construir fixtures relativos a "ahora" sin depender de una librería de fechas
     /// (mismo espíritu que `days_from_civil`: aritmética de enteros, sin atajos).
     fn epoch_to_xmltv(epoch: i64) -> String {
-        let days = epoch.div_euclid(86_400);
-        let secs_of_day = epoch.rem_euclid(86_400);
-        let (y, m, d) = civil_from_days(days);
-        format!("{y:04}{m:02}{d:02}{:02}{:02}{:02} +0000", secs_of_day / 3600, (secs_of_day / 60) % 60, secs_of_day % 60)
-    }
-
-    /// Inverso de `days_from_civil` (mismo algoritmo de Howard Hinnant).
-    fn civil_from_days(z: i64) -> (i32, u32, u32) {
-        let z = z + 719_468;
-        let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-        let doe = z - era * 146_097;
-        let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-        let y = yoe + era * 400;
-        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-        let mp = (5 * doy + 2) / 153;
-        let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-        let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-        let y = if m <= 2 { y + 1 } else { y } as i32;
-        (y, m, d)
+        let (y, m, d, h, mi, s) = crate::util::civil_time::epoch_to_ymd_hms(epoch);
+        format!("{y:04}{m:02}{d:02}{h:02}{mi:02}{s:02} +0000")
     }
 
     /// Prueba real: descarga de verdad no se hace contra un servidor externo en un test

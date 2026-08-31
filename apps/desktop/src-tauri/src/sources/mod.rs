@@ -6,7 +6,7 @@ pub mod xtream;
 
 pub use error::{Result, SourceError};
 pub use model::{
-    AccountInfo, MediaKind, RawCategory, RawChannel, RawMovie, RawSeries, RawSeriesDetail,
+    AccountInfo, CatchupRef, MediaKind, RawCategory, RawChannel, RawMovie, RawSeries, RawSeriesDetail,
     StreamRef, XmltvStream,
 };
 
@@ -32,6 +32,21 @@ pub trait Source {
     /// del proxy de stream (F6), no de la capa de fuentes — aquí solo se ofrece la
     /// alternativa, sin abrir ninguna conexión (regla R1).
     fn stream_url_fallback(&self, _item: &StreamRef) -> Result<Option<Url>> {
+        Ok(None)
+    }
+
+    /// URL de catch-up/timeshift (F9). Por defecto, "no soportado" (`NotFound`): M3U no
+    /// tiene forma estándar de pedirlo, así que ni lo intenta. `XtreamSource` la
+    /// sobreescribe; el llamador siempre comprueba `channels.has_catchup` antes de pedir
+    /// esto, así que llegar aquí sin soporte real ya sería un error de todas formas.
+    fn catchup_url(&self, item: &CatchupRef) -> Result<Url> {
+        Err(SourceError::NotFound { remote_id: item.remote_id.clone() })
+    }
+
+    /// Forma alternativa del catch-up, igual que `stream_url_fallback` para el directo:
+    /// los paneles Xtream documentan dos formas de URL (ver `docs/XTREAM-API.md`) y cuál
+    /// funciona varía por versión de panel.
+    fn catchup_url_fallback(&self, _item: &CatchupRef) -> Result<Option<Url>> {
         Ok(None)
     }
 }

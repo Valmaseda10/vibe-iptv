@@ -89,6 +89,16 @@ pub struct StreamRef {
     pub container_extension: Option<String>,
 }
 
+/// Referencia mínima para construir la URL de catch-up/timeshift (F9). `duration_min`
+/// es cuánto pedir a partir de `start_epoch`, no la duración total archivada del canal
+/// (eso es `channels.catchup_days`, ya en la base de datos).
+#[derive(Debug, Clone)]
+pub struct CatchupRef {
+    pub remote_id: String,
+    pub start_epoch: i64,
+    pub duration_min: u32,
+}
+
 /// Fuente resuelta del EPG en formato XMLTV. Descargarla y parsearla es trabajo de la
 /// fase F7 (`catalog::epg`); aquí solo se resuelve dónde está.
 #[derive(Debug, Clone)]

@@ -8,9 +8,16 @@
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::process::Child;
 use tokio::sync::Mutex as TokioMutex;
+
+/// Intervalo de sondeo de `run_until_exit_or_replaced`: no hay forma de "esperar" a que
+/// un proceso ajeno termine sin bloquear su `Child` (que vive dentro del `Mutex`
+/// compartido), así que se comprueba `try_wait()` a intervalos cortos en vez de una
+/// espera bloqueante.
+const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 #[derive(Default)]
 pub struct StreamGuard {
@@ -71,6 +78,31 @@ impl StreamGuard {
     /// mientras haya reproducción activa, nunca cancela por eso.
     pub fn is_busy(&self) -> bool {
         self.active.load(Ordering::SeqCst)
+    }
+
+    /// Para sesiones sin cuerpo de respuesta HTTP al que atar la duración del permiso
+    /// (nivel 3, mpv: se lanza y la petición HTTP que lo pidió termina al instante, pero
+    /// la reproducción de verdad sigue en su propia ventana). Mantiene `is_busy()` en
+    /// `true` hasta que el proceso adjunto a `permit` termine solo, o hasta que una
+    /// sesión más nueva ya se lo haya llevado (entonces esa sesión nueva es quien manda,
+    /// y aquí no queda nada que esperar). Consume `permit`: al volver, ya se soltó.
+    pub async fn run_until_exit_or_replaced(&self, permit: StreamPermit) {
+        loop {
+            let mut slot = self.process.lock().await;
+            match slot.as_mut() {
+                Some((gen, _)) if *gen != permit.generation => break, // reemplazada: la sesión nueva ya se ocupa del suyo.
+                Some((_, child)) => {
+                    if matches!(child.try_wait(), Ok(Some(_))) {
+                        slot.take(); // terminó solo (p. ej. el usuario cerró la ventana de mpv).
+                        break;
+                    }
+                }
+                None => break, // nunca se adjuntó proceso, o ya se limpió por otra vía.
+            }
+            drop(slot);
+            tokio::time::sleep(EXIT_POLL_INTERVAL).await;
+        }
+        drop(permit); // libera `active` ahora, no antes.
     }
 }
 
@@ -200,5 +232,53 @@ mod tests {
         // no debe tocar nada (no hay proceso que matar dos veces).
         let _second = guard.acquire().await;
         guard.release_process(permit.generation()).await;
+    }
+
+    /// Un proceso que termina solo en cuanto puede: usado para probar
+    /// `run_until_exit_or_replaced` sin esperar los 60 s del proceso longevo de arriba.
+    fn spawn_quick_exit_process() -> Child {
+        #[cfg(windows)]
+        {
+            tokio::process::Command::new("cmd").args(["/C", "exit", "0"]).stdout(Stdio::null()).kill_on_drop(true).spawn().unwrap()
+        }
+        #[cfg(not(windows))]
+        {
+            tokio::process::Command::new("true").stdout(Stdio::null()).kill_on_drop(true).spawn().unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn run_until_exit_or_replaced_returns_once_the_process_exits_on_its_own() {
+        let guard = StreamGuard::new();
+        let permit = guard.acquire().await;
+        guard.attach_process(&permit, spawn_quick_exit_process()).await;
+        assert!(guard.is_busy());
+
+        // Sin `timeout`, un fallo real (nunca detecta la salida) colgaría el test para
+        // siempre en vez de fallar con un mensaje claro.
+        tokio::time::timeout(std::time::Duration::from_secs(5), guard.run_until_exit_or_replaced(permit))
+            .await
+            .expect("run_until_exit_or_replaced no debería colgarse");
+
+        assert!(!guard.is_busy(), "is_busy() debe volver a false cuando el proceso termina solo");
+    }
+
+    #[tokio::test]
+    async fn run_until_exit_or_replaced_returns_immediately_if_superseded() {
+        let guard = StreamGuard::new();
+        let first = guard.acquire().await;
+        guard.attach_process(&first, spawn_long_lived_process()).await;
+
+        let second = guard.acquire().await; // mata y espera el de `first` de verdad.
+        guard.attach_process(&second, spawn_quick_exit_process()).await;
+
+        // `first` ya no es la sesión vigente: no debe quedarse esperando nada.
+        tokio::time::timeout(std::time::Duration::from_secs(2), guard.run_until_exit_or_replaced(first))
+            .await
+            .expect("no debería bloquear: la sesión ya fue reemplazada");
+
+        // La sesión vigente (`second`) sigue contando como ocupada.
+        assert!(guard.is_busy());
+        drop(second);
     }
 }

@@ -12,16 +12,27 @@ mod util;
 use std::net::TcpListener as StdTcpListener;
 
 use commands::{
-    add_provider, has_tmdb_api_key, list_providers, match_tmdb, set_tmdb_api_key, sync_provider, validate_m3u,
-    validate_xtream,
+    add_provider, export_diagnostics_log, has_tmdb_api_key, list_providers, match_tmdb, set_tmdb_api_key, sync_provider,
+    validate_m3u, validate_xtream,
 };
 use server::{get_server_port, serve, ServerPort};
 use tauri::Manager;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use util::diag_log::DiagnosticsLog;
 use util::stream_guard::StreamGuard;
 
 fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+    let diagnostics_log = DiagnosticsLog::new();
+    // Dos salidas para el mismo log: la consola de siempre (con color, para desarrollo)
+    // y una copia en memoria acotada (regla R4) que `commands::export_diagnostics_log`
+    // puede volcar a fichero cuando el usuario lo pida (F9) — ninguna de las dos ve una
+    // URL de proveedor sin redactar antes, así que no hace falta redactar otra vez aquí
+    // (ver `util::diag_log`).
+    tracing_subscriber::registry()
+        .with(tracing_subscriber::EnvFilter::from_default_env())
+        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(diagnostics_log.clone()))
         .init();
 
     let listener =
@@ -41,6 +52,7 @@ fn main() {
     tauri::Builder::default()
         .manage(ServerPort(port))
         .manage(stream_guard.clone())
+        .manage(diagnostics_log)
         .setup(move |app| {
             let app_data_dir = app.path().app_data_dir().expect("no se pudo resolver el directorio de datos");
             let image_cache_dir = app_data_dir.join("images");
@@ -67,6 +79,7 @@ fn main() {
             set_tmdb_api_key,
             has_tmdb_api_key,
             match_tmdb,
+            export_diagnostics_log,
         ])
         .run(tauri::generate_context!())
         .expect("error al arrancar VIBE IPTV");

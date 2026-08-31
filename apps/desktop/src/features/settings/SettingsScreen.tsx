@@ -306,6 +306,7 @@ export function SettingsScreen() {
       </section>
 
       <ParentalControlSection />
+      <DiagnosticsSection />
 
       <section>
         <h2 className="mb-4 text-xl font-medium">Proveedores</h2>
@@ -481,6 +482,47 @@ function ParentalControlSection() {
           </div>
         </div>
       )}
+    </section>
+  );
+}
+
+/** Registro de diagnóstico exportable (F9): vuelca a un fichero las últimas líneas de
+ * log capturadas en memoria. Ya vienen sin credenciales (ver `util::diag_log` en el
+ * núcleo: toda URL de proveedor pasa por `redact()` antes de llegar a un log). */
+function DiagnosticsSection() {
+  const [result, setResult] = useState<{ ok: true; path: string } | { ok: false; error: string } | null>(null);
+  const [exporting, setExporting] = useState(false);
+
+  async function handleExport() {
+    setExporting(true);
+    setResult(null);
+    try {
+      const path = await invoke<string>("export_diagnostics_log");
+      setResult({ ok: true, path });
+    } catch (error) {
+      setResult({ ok: false, error: String(error) });
+    } finally {
+      setExporting(false);
+    }
+  }
+
+  return (
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+      <h2 className="mb-4 text-xl font-medium">Diagnóstico</h2>
+      <p className="mb-3 text-sm text-neutral-400">
+        Guarda en un fichero las últimas líneas de registro de esta sesión, por si necesitas compartirlas para resolver un
+        problema. Nunca incluye usuario, contraseña ni URLs del proveedor.
+      </p>
+      <button
+        type="button"
+        className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50"
+        onClick={handleExport}
+        disabled={exporting}
+      >
+        {exporting ? "Exportando…" : "Exportar registro de diagnóstico"}
+      </button>
+      {result?.ok && <p className="mt-3 text-sm text-neutral-300">Guardado en: {result.path}</p>}
+      {result && !result.ok && <p className="mt-3 text-red-400">{result.error}</p>}
     </section>
   );
 }

@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 use super::error::{Result, SourceError};
 use super::model::{
-    AccountInfo, MediaKind, RawCategory, RawChannel, RawEpisode, RawMovie, RawSeries,
+    AccountInfo, CatchupRef, MediaKind, RawCategory, RawChannel, RawEpisode, RawMovie, RawSeries,
     RawSeriesDetail, StreamRef, XmltvStream,
 };
 use super::serde_helpers::{lenient_f64, lenient_i64, lenient_id_opt, lenient_u32, non_empty_string_opt};
@@ -205,6 +205,50 @@ impl Source for XtreamSource {
             return Ok(None); // el segmento de tipo es obligatorio salvo en directo.
         }
         Ok(Some(self.stream_url_variant(item, false)?))
+    }
+
+    fn catchup_url(&self, item: &CatchupRef) -> Result<Url> {
+        // Forma "más nueva" de docs/XTREAM-API.md, con segmentos de ruta: menos frágil
+        // que una query string ante paneles quisquillosos con el orden de parámetros.
+        let date = self.timeshift_date(item.start_epoch);
+        let mut url = Url::parse(&self.base_url).map_err(|_| SourceError::invalid_response(&self.base_url, "URL base inválida"))?;
+        {
+            let mut path = url
+                .path_segments_mut()
+                .map_err(|_| SourceError::invalid_response(&self.base_url, "la URL base no admite ruta"))?;
+            path.clear();
+            path.push("timeshift");
+            path.push(&self.username);
+            path.push(&self.password);
+            path.push(&item.duration_min.to_string());
+            path.push(&date);
+            path.push(&format!("{}.ts", item.remote_id));
+        }
+        Ok(url)
+    }
+
+    fn catchup_url_fallback(&self, item: &CatchupRef) -> Result<Option<Url>> {
+        // Forma antigua de docs/XTREAM-API.md: streaming/timeshift.php con query string.
+        let date = self.timeshift_date(item.start_epoch);
+        let mut url = Url::parse(&self.base_url).map_err(|_| SourceError::invalid_response(&self.base_url, "URL base inválida"))?;
+        url.set_path("streaming/timeshift.php");
+        url.query_pairs_mut()
+            .append_pair("username", &self.username)
+            .append_pair("password", &self.password)
+            .append_pair("stream", &item.remote_id)
+            .append_pair("start", &date)
+            .append_pair("duration", &item.duration_min.to_string());
+        Ok(Some(url))
+    }
+}
+
+impl XtreamSource {
+    /// `YYYY-MM-DD:HH-MM`, el formato de fecha que piden las dos formas de URL de
+    /// catch-up (ver `docs/XTREAM-API.md`). Siempre en UTC: igual que el resto de la
+    /// app, no se intenta adivinar la zona horaria del proveedor.
+    fn timeshift_date(&self, start_epoch: i64) -> String {
+        let (y, m, d, h, mi, _s) = crate::util::civil_time::epoch_to_ymd_hms(start_epoch);
+        format!("{y:04}-{m:02}-{d:02}:{h:02}-{mi:02}")
     }
 }
 
@@ -684,6 +728,31 @@ mod tests {
 
         let movie = StreamRef { kind: MediaKind::Movie, remote_id: "5001".to_string(), container_extension: Some("mkv".to_string()) };
         assert!(source.stream_url_fallback(&movie).unwrap().is_none());
+    }
+
+    #[test]
+    fn catchup_url_uses_the_path_segment_form_from_xtream_api_docs() {
+        let source = XtreamSource::new("http://panel.example.com:8080", "user", "pass", None).unwrap();
+        // 1700000000 = 2023-11-14T22:13:20Z.
+        let item = CatchupRef { remote_id: "77".to_string(), start_epoch: 1_700_000_000, duration_min: 120 };
+
+        let url = source.catchup_url(&item).unwrap();
+        assert_eq!(
+            url.as_str(),
+            "http://panel.example.com:8080/timeshift/user/pass/120/2023-11-14:22-13/77.ts"
+        );
+    }
+
+    #[test]
+    fn catchup_url_fallback_uses_the_query_string_form_from_xtream_api_docs() {
+        let source = XtreamSource::new("http://panel.example.com:8080", "user", "pass", None).unwrap();
+        let item = CatchupRef { remote_id: "77".to_string(), start_epoch: 1_700_000_000, duration_min: 120 };
+
+        let url = source.catchup_url_fallback(&item).unwrap().unwrap();
+        assert_eq!(
+            url.as_str(),
+            "http://panel.example.com:8080/streaming/timeshift.php?username=user&password=pass&stream=77&start=2023-11-14%3A22-13&duration=120"
+        );
     }
 
     #[tokio::test]

@@ -13,9 +13,29 @@ function roundDownToHalfHour(epochSeconds: number): number {
   return Math.floor(epochSeconds / 1800) * 1800;
 }
 
+/** A qué ruta lleva pulsar una celda de programa: catch-up si ya terminó y el canal lo
+ * soporta, directo en cualquier otro caso (en curso, futuro, o sin catch-up — el
+ * backend decide si de verdad se puede, esto solo elige la ruta a intentar). */
+function playerTargetFor(channel: ChannelsPage["items"][number], programme: EpgGridProgramme) {
+  const nowSeconds = Date.now() / 1000;
+  const alreadyAired = programme.stop_ts <= nowSeconds;
+  const categoryId = channel.category_id ? String(channel.category_id) : undefined;
+  const catchup =
+    alreadyAired && channel.has_catchup
+      ? { catchupStart: programme.start_ts, catchupDuration: Math.max(1, Math.ceil((programme.stop_ts - programme.start_ts) / 60)) }
+      : {};
+  return {
+    to: "/player/$kind/$id" as const,
+    params: { kind: "channel", id: String(channel.id) },
+    search: { categoryId, ...catchup },
+  };
+}
+
 /** Guía en rejilla (F7): filas = canales, columnas = tiempo. Flechas izquierda/derecha
  * desplazan la ventana temporal; arriba/abajo mueven el foco entre canales; Enter abre
- * el directo de la fila (no la reproducción del programa concreto: catch-up es F9). */
+ * el directo de la fila. Pulsar un programa ya emitido en un canal con catch-up (F9)
+ * abre ese bloque concreto en vez del directo; el resto de celdas siguen abriendo el
+ * directo (el backend rechaza con un mensaje claro si el proveedor no lo permite). */
 export function GuideScreen() {
   const navigate = useNavigate();
   const [categoryId, setCategoryId] = useState<number | null>(null);
@@ -181,13 +201,7 @@ export function GuideScreen() {
                           type="button"
                           key={`${p.start_ts}-${p.title}`}
                           title={p.title}
-                          onClick={() =>
-                            navigate({
-                              to: "/player/$kind/$id",
-                              params: { kind: "channel", id: String(channel.id) },
-                              search: channel.category_id ? { categoryId: String(channel.category_id) } : {},
-                            })
-                          }
+                          onClick={() => navigate(playerTargetFor(channel, p))}
                           className="absolute top-1 h-[calc(100%-8px)] overflow-hidden truncate rounded border border-neutral-700 bg-neutral-800 px-2 text-left text-xs outline-none hover:bg-neutral-700 focus-visible:ring-2 focus-visible:ring-red-600"
                           style={{ left: `${left}%`, width: `${right - left}%` }}
                         >

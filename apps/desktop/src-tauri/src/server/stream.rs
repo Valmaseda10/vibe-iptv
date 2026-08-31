@@ -23,8 +23,8 @@ use tokio_util::io::ReaderStream;
 
 use crate::commands::build_source_for_provider;
 use crate::db::{queries, reads, schema, DbError};
-use crate::media::{ffmpeg, probe};
-use crate::sources::model::{MediaKind, StreamRef};
+use crate::media::{ffmpeg, mpv, probe};
+use crate::sources::model::{CatchupRef, MediaKind, StreamRef};
 use crate::sources::xtream::DEFAULT_USER_AGENT;
 use crate::sources::Source;
 use crate::util::redact;
@@ -39,11 +39,16 @@ pub struct StreamState {
     /// F10 lo sustituye por la ruta del sidecar empaquetado.
     pub ffmpeg_path: Option<PathBuf>,
     pub ffprobe_path: Option<PathBuf>,
+    /// Nivel 3 (F9): igual de opcional y por el mismo motivo. Sin verificar de verdad
+    /// (ver `media::mpv`) — no hay mpv instalado en la máquina donde se escribió esto.
+    pub mpv_path: Option<PathBuf>,
 }
 
 pub fn stream_router(state: StreamState) -> Router {
     Router::new()
         .route("/stream/:kind/:id", get(get_stream))
+        .route("/stream/mpv/:kind/:id", axum::routing::post(post_launch_mpv))
+        .route("/stream/catchup/:channel_id", get(get_catchup))
         .route("/api/playback/tier/:kind/:id", get(get_playback_tier))
         .with_state(state)
 }
@@ -91,22 +96,37 @@ async fn get_playback_tier(State(state): State<StreamState>, AxumPath((kind, id)
     }))
 }
 
+/// Mensajes en español, pensados para enseñarse tal cual al usuario (F9: "mensajes que
+/// digan qué hacer"), no solo para depurar. Sin inventar causas que no se puedan
+/// distinguir de verdad: cuando la causa real es ambigua (p. ej. "no se pudo conectar"
+/// puede ser límite de conexiones, cuenta caída o sin red), el mensaje lista las
+/// candidatas en vez de fingir certeza que no se tiene.
 #[derive(Debug, thiserror::Error)]
 enum StreamError {
-    #[error("no encontrado")]
+    #[error("No se encontró este contenido en el catálogo.")]
     NotFound,
     #[error("kind inválido: debe ser channel, movie o episode")]
     BadKind,
-    #[error("proveedor no encontrado")]
+    #[error("El proveedor de este contenido ya no está configurado.")]
     ProviderNotFound,
-    #[error("no se pudo preparar la fuente: {0}")]
+    #[error("No se pudo preparar la conexión con el proveedor: {0}")]
     Source(String),
-    #[error("no se pudo abrir el stream del proveedor")]
+    #[error("La cuenta de este proveedor caducó. Revisa tu suscripción en Ajustes.")]
+    AccountExpired,
+    #[error("No se pudo conectar con el proveedor. Puede que hayas alcanzado el límite de conexiones simultáneas, que la cuenta esté caída, o que no haya conexión a internet. Inténtalo de nuevo en un momento.")]
     Unreachable,
-    #[error("ffmpeg o ffprobe no están disponibles todavía (se instalan como sidecar en F10)")]
+    #[error("ffmpeg o ffprobe no están instalados todavía (se empaquetan como sidecar en una fase posterior).")]
     BinariesMissing,
-    #[error("este contenido necesita el nivel 3 (mpv), disponible en la fase F9")]
-    Tier3NotYetImplemented,
+    #[error("Este contenido necesita mpv como reproductor externo y no está instalado. Instálalo y vuelve a intentarlo, o usa \"Abrir con mpv\" una vez lo tengas.")]
+    MpvMissing,
+    #[error("Este contenido no se puede reproducir en la ventana de la app (códec no compatible). Usa \"Abrir con mpv\" para reproducirlo en una ventana externa.")]
+    NeedsMpv,
+    #[error("No se pudo abrir mpv: {0}")]
+    MpvLaunchFailed(String),
+    #[error("Este canal no ofrece contenido pasado (catch-up) según el proveedor.")]
+    CatchupNotSupported,
+    #[error("Ese momento está fuera del rango de contenido pasado que guarda el proveedor para este canal.")]
+    CatchupOutOfRange,
     #[error("error de base de datos: {0}")]
     Db(#[from] DbError),
     #[error("error interno")]
@@ -118,9 +138,12 @@ impl IntoResponse for StreamError {
         let status = match &self {
             StreamError::NotFound | StreamError::ProviderNotFound => StatusCode::NOT_FOUND,
             StreamError::BadKind => StatusCode::BAD_REQUEST,
-            StreamError::Source(_) | StreamError::Unreachable => StatusCode::BAD_GATEWAY,
-            StreamError::BinariesMissing => StatusCode::SERVICE_UNAVAILABLE,
-            StreamError::Tier3NotYetImplemented => StatusCode::NOT_IMPLEMENTED,
+            StreamError::Source(_) | StreamError::Unreachable | StreamError::MpvLaunchFailed(_) => StatusCode::BAD_GATEWAY,
+            StreamError::AccountExpired => StatusCode::PAYMENT_REQUIRED,
+            StreamError::BinariesMissing | StreamError::MpvMissing => StatusCode::SERVICE_UNAVAILABLE,
+            StreamError::NeedsMpv => StatusCode::NOT_IMPLEMENTED,
+            StreamError::CatchupNotSupported => StatusCode::NOT_FOUND,
+            StreamError::CatchupOutOfRange => StatusCode::BAD_REQUEST,
             StreamError::Db(_) | StreamError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
@@ -158,6 +181,42 @@ async fn get_stream(
         Ok(response) => response,
         Err(err) => {
             tracing::warn!(kind = %kind, id, error = %err, "fallo al servir /stream");
+            err.into_response()
+        }
+    }
+}
+
+async fn post_launch_mpv(State(state): State<StreamState>, AxumPath((kind, id)): AxumPath<(String, i64)>, Query(query): Query<StreamQuery>) -> Response {
+    match handle_mpv_launch(state, kind.clone(), id, query.source).await {
+        Ok(response) => response,
+        Err(err) => {
+            tracing::warn!(kind = %kind, id, error = %err, "fallo al lanzar mpv");
+            err.into_response()
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CatchupQuery {
+    /// Inicio del bloque pedido, en epoch (segundos UTC) — no la hora civil que espera
+    /// el proveedor: eso lo traduce `XtreamSource::timeshift_date`.
+    start: i64,
+    /// Minutos a pedir desde `start`. Por defecto 60: suficiente para un episodio típico
+    /// sin arriesgarse a pedir un bloque tan largo que el panel lo rechace.
+    duration_min: Option<u32>,
+}
+
+async fn get_catchup(
+    State(state): State<StreamState>,
+    AxumPath(channel_id): AxumPath<i64>,
+    Query(query): Query<CatchupQuery>,
+    headers: HeaderMap,
+) -> Response {
+    let range = headers.get(header::RANGE).cloned();
+    match handle_catchup(state, channel_id, query.start, query.duration_min.unwrap_or(60), range).await {
+        Ok(response) => response,
+        Err(err) => {
+            tracing::warn!(channel_id, error = %err, "fallo al servir /stream/catchup");
             err.into_response()
         }
     }
@@ -223,6 +282,16 @@ async fn handle_stream(
     let provider_row = with_db(state.db_path.clone(), move |conn| queries::get_provider(conn, provider_id))
         .await?
         .ok_or(StreamError::ProviderNotFound)?;
+
+    // Falla rápido y con un mensaje concreto si la cuenta ya caducó (dato fiable: viene
+    // de la última sincronización), en vez de intentar abrir una conexión que el
+    // proveedor va a rechazar de todas formas — mensajes claros de F9.
+    if let Some(expires_at) = provider_row.expires_at {
+        if expires_at < crate::db::now_epoch() {
+            return Err(StreamError::AccountExpired);
+        }
+    }
+
     let source = build_source_for_provider(provider_row).await.map_err(StreamError::Source)?;
 
     let item = StreamRef { kind: media_kind, remote_id, container_extension };
@@ -256,8 +325,165 @@ async fn handle_stream(
             spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), transcode_audio, start_seconds, permit, Arc::clone(&state.stream_guard))
                 .await
         }
-        _ => Err(StreamError::Tier3NotYetImplemented),
+        _ => Err(StreamError::NeedsMpv),
     }
+}
+
+/// Nivel 3 (F9): lanza mpv en su propia ventana con la URL real del proveedor (no la de
+/// `/stream/*`: mpv existe justo para lo que el proxy de nivel 2 no puede remuxear sin
+/// recodificar). Responde en cuanto mpv arranca, no cuando termina — a diferencia de
+/// nivel 1/2, aquí no hay cuerpo de respuesta al que atar la duración de la sesión, así
+/// que `StreamGuard::run_until_exit_or_replaced` la mantiene ocupada en una tarea aparte
+/// hasta que el usuario cierre la ventana de mpv o se abra otra sesión.
+///
+/// **Sin verificar de verdad** (ver `media::mpv`): no hay mpv instalado en la máquina
+/// donde se ha escrito esto.
+async fn handle_mpv_launch(state: StreamState, kind_str: String, id: i64, source_id: Option<i64>) -> Result<Response, StreamError> {
+    let media_kind = parse_kind(&kind_str)?;
+    let (provider_id, remote_id, container_extension) = resolve_stream_target(&state.db_path, media_kind, id, source_id).await?;
+
+    let provider_row = with_db(state.db_path.clone(), move |conn| queries::get_provider(conn, provider_id))
+        .await?
+        .ok_or(StreamError::ProviderNotFound)?;
+    if let Some(expires_at) = provider_row.expires_at {
+        if expires_at < crate::db::now_epoch() {
+            return Err(StreamError::AccountExpired);
+        }
+    }
+
+    let source = build_source_for_provider(provider_row).await.map_err(StreamError::Source)?;
+    let item = StreamRef { kind: media_kind, remote_id, container_extension };
+    let url = source.stream_url(&item).map_err(|err| StreamError::Source(err.to_string()))?;
+
+    let mpv_path = state.mpv_path.clone().ok_or(StreamError::MpvMissing)?;
+    let permit = state.stream_guard.acquire().await;
+
+    let ipc_pipe = mpv::new_ipc_pipe_path();
+    let child = mpv::spawn_mpv(&mpv_path, url.as_str(), DEFAULT_USER_AGENT, &ipc_pipe).map_err(|err| {
+        tracing::error!(error = %err, "no se pudo lanzar mpv");
+        StreamError::MpvLaunchFailed(err.to_string())
+    })?;
+    state.stream_guard.attach_process(&permit, child).await;
+    record_tier(&state.db_path, &kind_str, id, 3).await;
+
+    let guard = Arc::clone(&state.stream_guard);
+    tokio::spawn(async move { guard.run_until_exit_or_replaced(permit).await });
+
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+/// `GET /stream/catchup/:channel_id` — timeshift (F9): reproduce un bloque pasado de un
+/// canal en vez del directo. Solo se ofrece si `channels.has_catchup` y el `start` pedido
+/// cae dentro de `channels.catchup_days`; fuera de eso ni se intenta abrir conexión.
+async fn handle_catchup(
+    state: StreamState,
+    channel_id: i64,
+    start_epoch: i64,
+    duration_min: u32,
+    range_header: Option<HeaderValue>,
+) -> Result<Response, StreamError> {
+    let channel = with_db(state.db_path.clone(), move |conn| reads::resolve_channel_catchup(conn, channel_id))
+        .await?
+        .ok_or(StreamError::NotFound)?;
+    if !channel.has_catchup {
+        return Err(StreamError::CatchupNotSupported);
+    }
+
+    let now = crate::db::now_epoch();
+    let oldest_allowed = now - (channel.catchup_days as i64) * 86_400;
+    let end_epoch = start_epoch + (duration_min as i64) * 60;
+    if start_epoch < oldest_allowed || start_epoch > now || end_epoch > now {
+        return Err(StreamError::CatchupOutOfRange);
+    }
+
+    let provider_row = with_db(state.db_path.clone(), move |conn| queries::get_provider(conn, channel.provider_id))
+        .await?
+        .ok_or(StreamError::ProviderNotFound)?;
+    if let Some(expires_at) = provider_row.expires_at {
+        if expires_at < now {
+            return Err(StreamError::AccountExpired);
+        }
+    }
+
+    let source = build_source_for_provider(provider_row).await.map_err(StreamError::Source)?;
+    let item = CatchupRef { remote_id: channel.remote_id, start_epoch, duration_min };
+    let primary_url = source.catchup_url(&item).map_err(|err| StreamError::Source(err.to_string()))?;
+
+    let permit = state.stream_guard.acquire().await;
+
+    let (ffmpeg_path, ffprobe_path) = match (&state.ffmpeg_path, &state.ffprobe_path) {
+        (Some(ffmpeg), Some(ffprobe)) => (ffmpeg.clone(), ffprobe.clone()),
+        _ => return Err(StreamError::BinariesMissing),
+    };
+
+    let (resolved_url, tier, audio_codec) =
+        resolve_catchup_tier_and_url(&source, &item, primary_url, &ffprobe_path, &state.db_path).await?;
+    record_tier(&state.db_path, "channel", channel_id, tier).await;
+
+    match tier {
+        1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
+        2 => {
+            let transcode_audio = probe::audio_needs_transcode(audio_codec.as_deref());
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), transcode_audio, None, permit, Arc::clone(&state.stream_guard))
+                .await
+        }
+        _ => Err(StreamError::NeedsMpv),
+    }
+}
+
+/// Igual que `resolve_tier_and_url`, pero para catch-up: la sonda y la caché son
+/// idénticas, solo cambia de dónde sale la URL principal y la alternativa
+/// (`Source::catchup_url`/`catchup_url_fallback` en vez de `stream_url`/`stream_url_fallback`).
+async fn resolve_catchup_tier_and_url(
+    source: &Arc<dyn Source + Send + Sync>,
+    item: &CatchupRef,
+    primary_url: Url,
+    ffprobe_path: &Path,
+    db_path: &PathBuf,
+) -> Result<(Url, u8, Option<String>), StreamError> {
+    let cache_key = probe::stream_cache_key(primary_url.as_str());
+    let cached = with_db(db_path.clone(), {
+        let cache_key = cache_key.clone();
+        move |conn| queries::get_probe_cache(conn, &cache_key)
+    })
+    .await?;
+    if let Some(cached) = cached {
+        return Ok((primary_url, cached.play_tier as u8, cached.audio_codec));
+    }
+
+    let probe_attempt = probe::probe_url(ffprobe_path, primary_url.as_str(), DEFAULT_USER_AGENT).await;
+    let (resolved_url, probe_result) = match probe_attempt {
+        Ok(result) => (primary_url, result),
+        Err(primary_err) => {
+            let fallback = source.catchup_url_fallback(item).map_err(|err| StreamError::Source(err.to_string()))?;
+            let Some(fallback_url) = fallback else {
+                tracing::warn!(error = %primary_err, "no se pudo inspeccionar el catch-up y no hay URL alternativa");
+                return Err(StreamError::Unreachable);
+            };
+            match probe::probe_url(ffprobe_path, fallback_url.as_str(), DEFAULT_USER_AGENT).await {
+                Ok(result) => (fallback_url, result),
+                Err(fallback_err) => {
+                    tracing::warn!(primary = %primary_err, fallback = %fallback_err, "ninguna de las dos formas de la URL de catch-up respondió");
+                    return Err(StreamError::Unreachable);
+                }
+            }
+        }
+    };
+
+    let tier = probe::decide_tier(&probe_result.container, probe_result.video_codec.as_deref(), probe_result.audio_codec.as_deref());
+    let store_key = probe::stream_cache_key(resolved_url.as_str());
+    let video = probe_result.video_codec.clone();
+    let audio = probe_result.audio_codec.clone();
+    let container = probe_result.container.clone();
+    // Catch-up es contenido con fin (el bloque pedido), pero su "duración" no es la del
+    // programa: no tiene sentido pintarla como barra de búsqueda editorial, así que no
+    // se guarda (igual que el directo en `resolve_tier_and_url`).
+    with_db(db_path.clone(), move |conn| {
+        queries::set_probe_cache(conn, &store_key, video.as_deref(), audio.as_deref(), Some(&container), tier as i64, None)
+    })
+    .await?;
+
+    Ok((resolved_url, tier, probe_result.audio_codec))
 }
 
 /// Decide el nivel y la URL a usar. Si la sonda ya está cacheada (por ítem, identificada
@@ -495,7 +721,7 @@ mod tests {
     }
 
     fn base_state(db_path: PathBuf, ffmpeg_path: Option<PathBuf>, ffprobe_path: Option<PathBuf>) -> StreamState {
-        StreamState { db_path, stream_guard: StreamGuard::new(), ffmpeg_path, ffprobe_path }
+        StreamState { db_path, stream_guard: StreamGuard::new(), ffmpeg_path, ffprobe_path, mpv_path: None }
     }
 
     #[tokio::test]
@@ -729,6 +955,126 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn mpv_launch_responds_service_unavailable_when_mpv_is_not_configured() {
+        let db_path = temp_db_path("mpv-missing");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "mpv-missing");
+        let conn = open_connection_at(&db_path).unwrap();
+        let raw = RawMovie {
+            remote_id: "1".into(),
+            category_remote_id: None,
+            raw_title: "Peli".into(),
+            container_extension: Some("mp4".into()),
+            logo_url: None,
+            added_at: None,
+            rating: None,
+            tmdb_id: None,
+        };
+        let fields = TitleFields { clean_title: "Peli", year: Some(2020), match_key: "peli-mpv-missing", quality: None, language: None };
+        write_queries::upsert_movie(&conn, provider_id, &HashMap::new(), &raw, &fields).unwrap();
+        let movie_id: i64 = conn.query_row("SELECT id FROM movies WHERE match_key = 'peli-mpv-missing'", [], |r| r.get(0)).unwrap();
+        drop(conn);
+
+        // base_state() deja mpv_path en None: exactamente el caso de esta máquina, sin
+        // mpv instalado. La ruta debe fallar con un mensaje claro, no en pánico.
+        let state = base_state(db_path.clone(), None, None);
+        let response = state_router_oneshot(state, &format!("/stream/mpv/movie/{movie_id}")).await;
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("mpv"));
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn mpv_launch_returns_404_for_an_unknown_item() {
+        let state = base_state(temp_db_path("mpv-404"), None, None);
+        let db_path = state.db_path.clone();
+        open_connection_at(&db_path).unwrap(); // solo crear el fichero con el esquema, sin ítems.
+        let response = state_router_oneshot(state, "/stream/mpv/movie/9999").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    async fn state_router_oneshot(state: StreamState, uri: &str) -> Response {
+        stream_router(state).oneshot(Request::builder().method("POST").uri(uri).body(Body::empty()).unwrap()).await.unwrap()
+    }
+
+    async fn get_oneshot(state: StreamState, uri: &str) -> Response {
+        stream_router(state).oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap()
+    }
+
+    fn seed_channel(db_path: &Path, provider_id: i64, remote_id: &str, has_catchup: bool, catchup_days: u32) -> i64 {
+        let conn = open_connection_at(db_path).unwrap();
+        let channel = RawChannel {
+            remote_id: remote_id.to_string(),
+            category_remote_id: None,
+            raw_name: "Canal".into(),
+            logo_url: None,
+            epg_channel_id: None,
+            has_catchup,
+            catchup_days,
+            sort_order: None,
+        };
+        let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
+        write_queries::upsert_channel(&conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+        conn.query_row("SELECT id FROM channels WHERE remote_id = ?1", [remote_id], |r| r.get(0)).unwrap()
+    }
+
+    #[tokio::test]
+    async fn catchup_returns_404_for_an_unknown_channel() {
+        let state = base_state(temp_db_path("catchup-404"), None, None);
+        let db_path = state.db_path.clone();
+        open_connection_at(&db_path).unwrap();
+        let response = get_oneshot(state, "/stream/catchup/9999?start=0").await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn catchup_returns_404_when_the_channel_has_no_catchup_support() {
+        let db_path = temp_db_path("catchup-unsupported");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "catchup-unsupported");
+        let channel_id = seed_channel(&db_path, provider_id, "1", false, 0);
+
+        let state = base_state(db_path.clone(), None, None);
+        let now = crate::db::now_epoch();
+        let response = get_oneshot(state, &format!("/stream/catchup/{channel_id}?start={now}")).await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(String::from_utf8_lossy(&body).contains("catch-up"));
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn catchup_rejects_a_start_older_than_catchup_days() {
+        let db_path = temp_db_path("catchup-range");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "catchup-range");
+        let channel_id = seed_channel(&db_path, provider_id, "1", true, 3);
+
+        let state = base_state(db_path.clone(), None, None);
+        let too_old = crate::db::now_epoch() - 10 * 86_400;
+        let response = get_oneshot(state, &format!("/stream/catchup/{channel_id}?start={too_old}")).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn catchup_rejects_a_start_in_the_future() {
+        let db_path = temp_db_path("catchup-future");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "catchup-future");
+        let channel_id = seed_channel(&db_path, provider_id, "1", true, 3);
+
+        let state = base_state(db_path.clone(), None, None);
+        let in_the_future = crate::db::now_epoch() + 3600;
+        let response = get_oneshot(state, &format!("/stream/catchup/{channel_id}?start={in_the_future}")).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
         let _ = std::fs::remove_file(&db_path);
     }
 }

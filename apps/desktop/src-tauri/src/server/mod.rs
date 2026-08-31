@@ -45,9 +45,13 @@ pub async fn serve(
         // sidecar empaquetado y esto deja de poder ser `None`.
         ffmpeg_path: crate::media::resolve_binary("ffmpeg"),
         ffprobe_path: crate::media::resolve_binary("ffprobe"),
+        mpv_path: crate::media::resolve_binary("mpv"),
     };
     if stream_state.ffmpeg_path.is_none() || stream_state.ffprobe_path.is_none() {
         tracing::warn!("ffmpeg y/o ffprobe no están en el PATH: el nivel 2 de reproducción no funcionará hasta F10");
+    }
+    if stream_state.mpv_path.is_none() {
+        tracing::warn!("mpv no está en el PATH: el nivel 3 de reproducción no funcionará hasta que se instale");
     }
 
     // Se olvida al reiniciar la app a propósito (regla de `util::parental`): el
@@ -92,6 +96,7 @@ mod tests {
             stream_guard: StreamGuard::new(),
             ffmpeg_path: None,
             ffprobe_path: None,
+            mpv_path: None,
         };
         let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state, ParentalGuard::new());
 

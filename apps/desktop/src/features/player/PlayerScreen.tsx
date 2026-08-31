@@ -61,6 +61,8 @@ export function PlayerScreen() {
   const [channelOverlayVisible, setChannelOverlayVisible] = useState(true);
   const [nextCountdown, setNextCountdown] = useState<number | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [needsMpv, setNeedsMpv] = useState(false);
+  const [mpvLaunching, setMpvLaunching] = useState(false);
 
   const movieQuery = useQuery({
     queryKey: ["player-movie", itemId],
@@ -166,9 +168,55 @@ export function PlayerScreen() {
   const displayDuration = metadataDurationSeconds;
   const displayCurrentTime = nativeSeekable ? videoCurrentTime : appliedStart + videoCurrentTime;
 
-  const streamPath =
-    kind === "channel" ? `/stream/channel/${itemId}` : `/stream/${kind}/${itemId}${appliedStart > 0 ? `?start=${appliedStart}` : ""}`;
+  // Catch-up (F9): la Guía manda aquí en vez de al directo cuando el programa pulsado ya
+  // pasó. Solo se distingue por la presencia de `catchupStart` en la URL de la ruta, no
+  // por un `kind` aparte: sigue siendo el mismo canal, solo cambia a qué momento apunta.
+  const isCatchup = kind === "channel" && search.catchupStart !== undefined;
+  const streamPath = isCatchup
+    ? `/stream/catchup/${itemId}?start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}`
+    : kind === "channel"
+      ? `/stream/channel/${itemId}`
+      : `/stream/${kind}/${itemId}${appliedStart > 0 ? `?start=${appliedStart}` : ""}`;
   const streamUrl = base ? `${base}${streamPath}` : undefined;
+
+  // `<video onError>` no da el porqué (el navegador nunca ve el cuerpo de una respuesta
+  // que no pudo interpretar como vídeo). En vez de un mensaje genérico siempre igual, se
+  // hace una comprobación puntual de diagnóstico contra la misma URL: la sesión ya
+  // falló, así que esto no abre una conexión de más que compita con nada — mensajes
+  // que digan qué hacer, no solo que algo falló (F9).
+  const handleVideoError = useCallback(async () => {
+    if (!streamUrl) return;
+    try {
+      const response = await fetch(streamUrl);
+      const text = await response.text();
+      // "Abrir con mpv" lanza siempre el directo del canal (`/stream/mpv/:kind/:id`):
+      // todavía no sabe pedir un bloque de catch-up, así que no se ofrece aquí para no
+      // prometer algo que reproduciría el momento equivocado.
+      setNeedsMpv(response.status === 501 && !isCatchup);
+      setErrorMessage(text || "No se pudo reproducir este contenido.");
+    } catch {
+      setNeedsMpv(false);
+      setErrorMessage("No se pudo reproducir este contenido. Comprueba tu conexión a internet.");
+    }
+  }, [streamUrl, isCatchup]);
+
+  const launchMpv = useCallback(async () => {
+    if (!base) return;
+    setMpvLaunching(true);
+    try {
+      const response = await fetch(`${base}/stream/mpv/${kind}/${itemId}`, { method: "POST" });
+      if (response.ok) {
+        setErrorMessage(null);
+        setNeedsMpv(false);
+      } else {
+        setErrorMessage((await response.text()) || "No se pudo abrir mpv.");
+      }
+    } catch {
+      setErrorMessage("No se pudo abrir mpv.");
+    } finally {
+      setMpvLaunching(false);
+    }
+  }, [base, kind, itemId]);
 
   // `saveProgress` necesita ser estable de verdad: si cambiara en cada `timeupdate` (como
   // pasaría si dependiera directamente de `displayCurrentTime`), el intervalo de guardado
@@ -376,7 +424,7 @@ export function PlayerScreen() {
           onPlay={() => setPlaying(true)}
           onPause={() => setPlaying(false)}
           onVolumeChange={(e) => setMuted(e.currentTarget.muted)}
-          onError={() => setErrorMessage("No se pudo reproducir este contenido. Comprueba tu conexión o el estado de la cuenta.")}
+          onError={handleVideoError}
         />
       ) : (
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-700 border-t-red-600" aria-label="Cargando" />
@@ -405,7 +453,19 @@ export function PlayerScreen() {
       )}
 
       {errorMessage && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/80 px-10 text-center text-neutral-200">{errorMessage}</div>
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black/80 px-10 text-center text-neutral-200">
+          <p className="max-w-md">{errorMessage}</p>
+          {needsMpv && (
+            <button
+              type="button"
+              onClick={launchMpv}
+              disabled={mpvLaunching}
+              className="rounded-lg bg-red-600 px-5 py-2.5 font-medium text-white outline-none hover:bg-red-500 disabled:opacity-50"
+            >
+              {mpvLaunching ? "Abriendo…" : "Abrir con mpv (ventana externa)"}
+            </button>
+          )}
+        </div>
       )}
 
       {nextCountdown !== null && nextEpisode && (

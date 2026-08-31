@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use ts_rs::TS;
 
 use crate::catalog::epg;
@@ -255,6 +255,18 @@ pub fn match_tmdb(app: AppHandle) -> CmdResult<()> {
     }
     spawn_tmdb_matching(app);
     Ok(())
+}
+
+/// Vuelca a fichero las últimas líneas de log capturadas (F9). Ya vienen redactadas: el
+/// `DiagnosticsLog` solo copia lo que el `fmt` layer normal de `tracing` produjo, y esa
+/// capa nunca ve una URL de proveedor sin redactar (regla R5, ver `util::diag_log`).
+#[tauri::command]
+pub fn export_diagnostics_log(app: AppHandle, log: State<'_, crate::util::diag_log::DiagnosticsLog>) -> CmdResult<String> {
+    let dir = app.path().app_data_dir().map_err(|_| "no se pudo resolver el directorio de datos".to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    let path = dir.join("diagnostico.log");
+    std::fs::write(&path, log.snapshot()).map_err(|err| err.to_string())?;
+    Ok(path.display().to_string())
 }
 
 fn spawn_tmdb_matching(app: AppHandle) {

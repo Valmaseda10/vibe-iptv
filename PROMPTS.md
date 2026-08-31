@@ -17,7 +17,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F6 Reproductor (construido sin iterar contigo por partes como pide esta fase — ver DECISIONS.md)
 - [x] F7 EPG y directo (construido de manera autónoma — ver DECISIONS.md)
 - [x] F8 Búsqueda, favoritos, continuar viendo (construido de manera autónoma — ver DECISIONS.md)
-- [ ] F9 mpv, catch-up y pulido
+- [x] F9 mpv, catch-up y pulido (construido de manera autónoma — mpv y catch-up sin verificar contra software/proveedor real, ver DECISIONS.md)
 - [ ] F10 Empaquetado y apertura a la LAN
 
 ---
