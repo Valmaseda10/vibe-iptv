@@ -514,12 +514,37 @@ visibles en vídeo/episodio (no solo la barra numérica): si por lo que sea la d
 tarda en saberse, buscar hacia detrás/delante nunca depende de que se haya pintado la
 barra.
 
+**Cuarta vuelta: la causa real, encontrada con el panel de estadísticas como
+instrumento.** Las tres correcciones anteriores eran necesarias pero ninguna era la
+causa raíz. Se añadieron filas de diagnóstico al panel (Ctrl+Shift+D) y el usuario mandó
+una captura: "Nivel: desconocido" incluso con la película ya por el minuto 1 — es decir,
+`GET /api/playback/tier` nunca llegaba a resolverse en el cliente, pese a que llamarlo
+a mano con `curl` contra el mismo puerto devolvía el dato correcto al instante. La
+diferencia entre `curl` y el `fetch()` del WebView es CORS, y ahí estaba: el
+`.layer(CorsLayer)` de F0 se aplicaba dentro de `routes::build_router()`, **antes** de
+que F6 fusionara `stream::stream_router` (que añade `/stream/*` y
+`/api/playback/tier/*`) en `server::serve()`. Un `.layer()` en axum solo cubre las rutas
+que ya existen en el router en el momento de llamarlo, no las que se fusionan después:
+esas dos rutas nunca llevaron cabecera CORS. `<video src>` no lo notó porque cargar un
+recurso de vídeo no pasa por CORS (solo `fetch`/`XHR` lo hacen), así que la reproducción
+en sí siempre funcionó — únicamente `fetch()` a `/api/playback/tier` fallaba, en
+silencio, cada vez, para siempre. Las tres correcciones anteriores estaban resolviendo
+problemas reales que habrían aparecido de todas formas en cuanto esta petición
+funcionara; sin este arreglo, ninguna podía demostrarse.
+
+Arreglado moviendo el `CorsLayer` a `server::full_router()`, aplicado sobre el router ya
+fusionado por completo (catálogo + salud/imágenes + streaming), con un test de
+regresión que pide una ruta de F6 y comprueba la cabecera — para que este error de nuevo
+no pueda colarse en silencio. Lección para las fases futuras que añadan rutas: el CORS
+se aplica una vez, al final, sobre el router completo, nunca sobre una mitad antes de
+fusionar.
+
 **Deuda técnica pendiente.**
 - Toda la de fases anteriores.
 - **Verificado por el usuario**: audio y vídeo van bien en directo y en película. La
-  barra/búsqueda de VOD ha necesitado tres vueltas de corrección; la última (reintento
-  activo hasta conocer el nivel + botones de salto siempre visibles) **todavía sin
-  confirmar** por el usuario.
+  barra/búsqueda de VOD necesitó cuatro vueltas de corrección; la causa raíz (CORS) ya
+  tiene test de regresión, pero la confirmación visual final de la barra **todavía la
+  tiene pendiente el usuario**.
 - Series, zapping y reanudar no se han probado todavía con el proveedor real del
   usuario.
 - HLS: proxy transparente sin reescritura de manifiesto, sin `hls.js` en el cliente (ver

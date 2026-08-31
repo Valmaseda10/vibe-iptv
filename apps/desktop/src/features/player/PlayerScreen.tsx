@@ -394,6 +394,7 @@ export function PlayerScreen() {
           <StatRow label="Vídeo" value={tierQuery.data?.video_codec ?? "—"} />
           <StatRow label="Audio" value={tierQuery.data?.audio_codec ?? "—"} />
           <StatRow label="Contenedor" value={tierQuery.data?.container ?? "—"} />
+          <StatRow label="Duración" value={displayDuration != null ? formatTime(displayDuration) : "—"} />
           <StatRow label="Resolución" value={videoRef.current ? `${videoRef.current.videoWidth}×${videoRef.current.videoHeight}` : "—"} />
           <StatRow label="1er fotograma" value={firstFrameMsRef.current != null ? `${firstFrameMsRef.current} ms` : "—"} />
           <StatRow label="Buffer" value={`${bufferedSeconds(videoRef.current).toFixed(1)} s`} />

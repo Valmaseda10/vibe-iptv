@@ -6,6 +6,9 @@ use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::Router;
+use tower_http::cors::{Any, CorsLayer};
+
 use crate::util::stream_guard::StreamGuard;
 
 /// Puerto del servidor local, gestionado como estado de Tauri para que el frontend lo
@@ -46,6 +49,60 @@ pub async fn serve(
         tracing::warn!("ffmpeg y/o ffprobe no están en el PATH: el nivel 2 de reproducción no funcionará hasta F10");
     }
 
-    let router = routes::build_router(image_cache_dir, db_path).merge(stream::stream_router(stream_state));
+    let router = full_router(image_cache_dir, db_path, stream_state);
     axum::serve(listener, router).await
+}
+
+/// El router completo: catálogo + salud/imágenes + streaming, con CORS aplicado una
+/// sola vez sobre el conjunto. Separado de `serve()` (que además reserva el socket real)
+/// para poder probarlo con `oneshot` sin abrir ningún puerto.
+///
+/// CORS abierto a cualquier origen: el WebView de Tauri sirve el frontend desde un
+/// origen distinto al del servidor (`http://localhost:1420` en dev, `tauri://localhost`
+/// empaquetado), y este servidor solo escucha en 127.0.0.1 sin cookies ni sesión (R2).
+/// Se revisará al abrir la LAN en la fase F10.
+///
+/// Tiene que envolver el router ya fusionado, no una de sus mitades por separado: un
+/// `.layer()` aplicado antes de `.merge()` no cubre las rutas que se fusionan después.
+/// Ese error real llegó a producción (F6): `fetch()` desde el WebView a
+/// `/api/playback/tier/*` fallaba en silencio por CORS —`<video src>` no lo notó porque
+/// cargar un recurso de vídeo no pasa por CORS, solo `fetch`/`XHR` sí— y el panel de
+/// estadísticas del reproductor se quedó mostrando "nivel desconocido" para siempre.
+fn full_router(image_cache_dir: PathBuf, db_path: PathBuf, stream_state: stream::StreamState) -> Router {
+    routes::build_router(image_cache_dir, db_path)
+        .merge(stream::stream_router(stream_state))
+        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::{header, Request};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn cors_covers_routes_merged_after_the_catalog_router() {
+        let stream_state = stream::StreamState {
+            db_path: std::env::temp_dir(),
+            stream_guard: StreamGuard::new(),
+            ffmpeg_path: None,
+            ffprobe_path: None,
+        };
+        let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state);
+
+        // Una respuesta a una ruta de F6 (fusionada tras el CORS de F4) debe llevar la
+        // cabecera igual que una del catálogo: el bug real fue que no la llevaba.
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .uri("/api/playback/tier/movie/999999")
+                    .header(header::ORIGIN, "http://localhost:1420")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(response.headers().contains_key(header::ACCESS_CONTROL_ALLOW_ORIGIN), "falta la cabecera CORS");
+    }
 }

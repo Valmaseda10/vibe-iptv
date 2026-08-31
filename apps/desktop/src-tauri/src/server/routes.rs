@@ -5,7 +5,6 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{routing::get, Json, Router};
 use serde::Serialize;
-use tower_http::cors::{Any, CorsLayer};
 use ts_rs::TS;
 
 /// Estado del núcleo devuelto por `GET /api/health`.
@@ -63,21 +62,19 @@ fn content_type_for(filename: &str) -> &'static str {
     }
 }
 
-/// Construye el router de la API local. `/stream/*` llega en F6.
-///
-/// CORS abierto a cualquier origen: el WebView de Tauri sirve el frontend desde un
-/// origen distinto al del servidor (`http://localhost:1420` en dev, `tauri://localhost`
-/// empaquetado), y este servidor solo escucha en 127.0.0.1 sin cookies ni sesión (R2).
-/// Se revisará al abrir la LAN en la fase F10.
+/// Construye el router del catálogo y de salud/imágenes. `/stream/*` y
+/// `/api/playback/tier/*` viven en `server::stream` (F6) y se añaden aparte en
+/// `server::serve`, que es quien aplica el CORS al router final ya completo — antes
+/// vivía aquí y solo cubría este router, dejando sin CORS las rutas de F6 (un `fetch()`
+/// del WebView a `/api/playback/tier/*` fallaba en silencio; `<video src>` no lo notó
+/// porque cargar un recurso de vídeo no pasa por CORS, solo `fetch`/`XHR`).
 pub fn build_router(image_cache_dir: PathBuf, db_path: PathBuf) -> Router {
     let health_and_images = Router::new()
         .route("/api/health", get(health))
         .route("/img/:size/:image_id", get(serve_image))
         .with_state(image_cache_dir);
 
-    health_and_images
-        .merge(super::api::catalog_router(db_path))
-        .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
+    health_and_images.merge(super::api::catalog_router(db_path))
 }
 
 #[cfg(test)]
