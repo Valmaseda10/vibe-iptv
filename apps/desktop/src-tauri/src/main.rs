@@ -36,9 +36,11 @@ fn main() {
 
     tracing::info!(port, "servidor local reservado");
 
+    let stream_guard = StreamGuard::new();
+
     tauri::Builder::default()
         .manage(ServerPort(port))
-        .manage(StreamGuard::new())
+        .manage(stream_guard.clone())
         .setup(move |app| {
             let app_data_dir = app.path().app_data_dir().expect("no se pudo resolver el directorio de datos");
             let image_cache_dir = app_data_dir.join("images");
@@ -47,8 +49,9 @@ fn main() {
             let listener = listener
                 .try_clone()
                 .expect("no se pudo clonar el socket local");
+            let stream_guard = stream_guard.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = serve(listener, image_cache_dir, db_path).await {
+                if let Err(err) = serve(listener, image_cache_dir, db_path, stream_guard).await {
                     tracing::error!(error = %err, "el servidor local se detuvo inesperadamente");
                 }
             });

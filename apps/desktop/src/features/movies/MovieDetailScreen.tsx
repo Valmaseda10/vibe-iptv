@@ -51,9 +51,8 @@ export function MovieDetailScreen() {
         <div className="flex gap-3 pt-2">
           <button
             type="button"
-            disabled
-            title="La reproducción llega en la fase F6"
-            className="cursor-not-allowed rounded-lg bg-red-600/50 px-6 py-3 font-medium text-white/70"
+            onClick={() => navigate({ to: "/player/$kind/$id", params: { kind: "movie", id: movieId } })}
+            className="rounded-lg bg-red-600 px-6 py-3 font-medium text-white outline-none hover:bg-red-500"
           >
             ▶ Reproducir
           </button>

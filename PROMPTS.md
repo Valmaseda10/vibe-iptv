@@ -14,7 +14,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F3 Normalización y TMDB
 - [x] F4 API local y tipos
 - [x] F5 Cascarón de interfaz (primera versión, sin iterar contigo — ver DECISIONS.md)
-- [ ] F6 Reproductor
+- [x] F6 Reproductor (construido sin iterar contigo por partes como pide esta fase — ver DECISIONS.md)
 - [ ] F7 EPG y directo
 - [ ] F8 Búsqueda, favoritos, continuar viendo
 - [ ] F9 mpv, catch-up y pulido

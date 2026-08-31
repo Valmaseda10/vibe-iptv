@@ -419,6 +419,73 @@ fn like_pattern(input: &str) -> String {
     format!("%{escaped}%")
 }
 
+// ─────────────── Resolución de streams (F6) ───────────────
+//
+// El proxy de streaming (`server::stream`) necesita provider_id + remote_id (+
+// container, en VOD) para reconstruir la URL real con `Source::stream_url`. Ninguna de
+// estas funciones expone esa URL: solo los datos con los que construirla, que quedan
+// dentro del núcleo (regla R5 — la API nunca devuelve URLs de proveedor).
+
+pub struct ChannelStreamInfo {
+    pub provider_id: i64,
+    pub remote_id: String,
+}
+
+pub fn resolve_channel_stream(conn: &Connection, channel_id: i64) -> Result<Option<ChannelStreamInfo>> {
+    conn.query_row(
+        "SELECT provider_id, remote_id FROM channels WHERE id = ?1",
+        params![channel_id],
+        |row| Ok(ChannelStreamInfo { provider_id: row.get(0)?, remote_id: row.get(1)? }),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub struct MovieStreamInfo {
+    pub provider_id: i64,
+    pub remote_id: String,
+    pub container_extension: Option<String>,
+}
+
+/// Si `source_id` se da, resuelve esa fuente concreta (varias calidades de la misma
+/// película); si no, la primera disponible.
+pub fn resolve_movie_stream(conn: &Connection, movie_id: i64, source_id: Option<i64>) -> Result<Option<MovieStreamInfo>> {
+    let row = if let Some(source_id) = source_id {
+        conn.query_row(
+            "SELECT provider_id, remote_id, container FROM movie_sources WHERE id = ?1 AND movie_id = ?2",
+            params![source_id, movie_id],
+            |row| Ok(MovieStreamInfo { provider_id: row.get(0)?, remote_id: row.get(1)?, container_extension: row.get(2)? }),
+        )
+        .optional()?
+    } else {
+        conn.query_row(
+            "SELECT provider_id, remote_id, container FROM movie_sources WHERE movie_id = ?1 ORDER BY id LIMIT 1",
+            params![movie_id],
+            |row| Ok(MovieStreamInfo { provider_id: row.get(0)?, remote_id: row.get(1)?, container_extension: row.get(2)? }),
+        )
+        .optional()?
+    };
+    Ok(row)
+}
+
+pub struct EpisodeStreamInfo {
+    pub provider_id: i64,
+    pub remote_id: String,
+    pub container_extension: Option<String>,
+}
+
+pub fn resolve_episode_stream(conn: &Connection, episode_id: i64) -> Result<Option<EpisodeStreamInfo>> {
+    conn.query_row(
+        "SELECT ss.provider_id, e.remote_id, e.container
+         FROM episodes e JOIN series_sources ss ON ss.id = e.series_source_id
+         WHERE e.id = ?1",
+        params![episode_id],
+        |row| Ok(EpisodeStreamInfo { provider_id: row.get(0)?, remote_id: row.get(1)?, container_extension: row.get(2)? }),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 // ─────────────── Continuar viendo, recientes, favoritos ───────────────
 
 pub fn ensure_default_profile(conn: &Connection) -> Result<i64> {
@@ -461,6 +528,28 @@ pub fn upsert_playback_progress(
         params![profile_id, item_kind, item_id, position_s, duration_s, finished as i64, now_epoch()],
     )?;
     Ok(())
+}
+
+/// Progreso guardado de un ítem concreto: lo consulta el reproductor al abrir algo, para
+/// ofrecer "reanudar desde X" (F6). `None` si nunca se guardó progreso para ese ítem.
+pub fn get_playback_progress(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64) -> Result<Option<PlaybackItem>> {
+    conn.query_row(
+        "SELECT item_kind, item_id, position_s, duration_s, finished, played_at FROM playback_state
+         WHERE profile_id = ?1 AND item_kind = ?2 AND item_id = ?3",
+        params![profile_id, item_kind, item_id],
+        |row| {
+            Ok(PlaybackItem {
+                item_kind: row.get(0)?,
+                item_id: row.get(1)?,
+                position_s: row.get(2)?,
+                duration_s: row.get(3)?,
+                finished: row.get::<_, i64>(4)? != 0,
+                played_at: row.get(5)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 pub fn list_continue_watching(conn: &Connection, profile_id: i64, limit: i64) -> Result<Vec<PlaybackItem>> {
@@ -651,6 +740,18 @@ mod tests {
     }
 
     #[test]
+    fn get_playback_progress_returns_none_when_never_played() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        assert!(get_playback_progress(&conn, profile_id, "movie", 1).unwrap().is_none());
+
+        upsert_playback_progress(&conn, profile_id, "movie", 1, 42, Some(100)).unwrap();
+        let progress = get_playback_progress(&conn, profile_id, "movie", 1).unwrap().unwrap();
+        assert_eq!(progress.position_s, 42);
+        assert!(!progress.finished);
+    }
+
+    #[test]
     fn continue_watching_excludes_finished_items() {
         let conn = memory_conn();
         let profile_id = ensure_default_profile(&conn).unwrap();
@@ -694,6 +795,92 @@ mod tests {
         let live = list_categories(&conn, "live").unwrap();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].name, "ESPAÑA");
+    }
+
+    #[test]
+    fn resolve_channel_stream_returns_provider_and_remote_id() {
+        use crate::sources::model::RawChannel;
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let channel = RawChannel {
+            remote_id: "101".into(),
+            category_remote_id: None,
+            raw_name: "Canal".into(),
+            logo_url: None,
+            epg_channel_id: None,
+            has_catchup: false,
+            catchup_days: 0,
+            sort_order: None,
+        };
+        let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
+        queries::upsert_channel(&conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+
+        let channel_id: i64 = conn.query_row("SELECT id FROM channels WHERE remote_id = '101'", [], |r| r.get(0)).unwrap();
+        let info = resolve_channel_stream(&conn, channel_id).unwrap().unwrap();
+        assert_eq!(info.provider_id, provider_id);
+        assert_eq!(info.remote_id, "101");
+
+        assert!(resolve_channel_stream(&conn, 9999).unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_movie_stream_picks_specific_or_first_source() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let movie_id = seed_movie(&conn, provider_id, "Peli", Some(2020), None, Some("HD"));
+
+        let raw_4k = RawMovie {
+            remote_id: "extra-4k".into(),
+            category_remote_id: None,
+            raw_title: "Peli 4K".into(),
+            container_extension: Some("mkv".into()),
+            logo_url: None,
+            added_at: None,
+            rating: None,
+            tmdb_id: None,
+        };
+        let fields_4k = TitleFields { clean_title: "Peli", year: Some(2020), match_key: "peli-2020", quality: Some("4K"), language: None };
+        queries::upsert_movie(&conn, provider_id, &HashMap::new(), &raw_4k, &fields_4k).unwrap();
+
+        let first = resolve_movie_stream(&conn, movie_id, None).unwrap().unwrap();
+        assert_eq!(first.provider_id, provider_id);
+
+        let source_4k_id: i64 =
+            conn.query_row("SELECT id FROM movie_sources WHERE remote_id = 'extra-4k'", [], |r| r.get(0)).unwrap();
+        let specific = resolve_movie_stream(&conn, movie_id, Some(source_4k_id)).unwrap().unwrap();
+        assert_eq!(specific.remote_id, "extra-4k");
+        assert_eq!(specific.container_extension.as_deref(), Some("mkv"));
+
+        assert!(resolve_movie_stream(&conn, 9999, None).unwrap().is_none());
+    }
+
+    #[test]
+    fn resolve_episode_stream_joins_series_sources_for_provider_id() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let series_raw = RawSeries { remote_id: "9001".into(), raw_title: "Serie".into(), cover_url: None, plot: None, release_date: None };
+        let fields = TitleFields { clean_title: "Serie", year: None, match_key: "serie-0000", quality: None, language: None };
+        queries::upsert_series(&conn, provider_id, &series_raw, &fields).unwrap();
+        let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources", [], |r| r.get(0)).unwrap();
+
+        let episode = crate::sources::model::RawEpisode {
+            remote_id: "9001-1-1".into(),
+            season: 1,
+            number: 1,
+            title: Some("Piloto".into()),
+            container_extension: Some("mp4".into()),
+            duration_s: Some(1200),
+            still_url: None,
+        };
+        upsert_episodes(&conn, series_source_id, &[episode]).unwrap();
+        let episode_id: i64 = conn.query_row("SELECT id FROM episodes", [], |r| r.get(0)).unwrap();
+
+        let info = resolve_episode_stream(&conn, episode_id).unwrap().unwrap();
+        assert_eq!(info.provider_id, provider_id);
+        assert_eq!(info.remote_id, "9001-1-1");
+        assert_eq!(info.container_extension.as_deref(), Some("mp4"));
+
+        assert!(resolve_episode_stream(&conn, 9999).unwrap().is_none());
     }
 
     #[test]

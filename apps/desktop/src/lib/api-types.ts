@@ -43,6 +43,15 @@ export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | nul
 
 export type PlaybackProgressInput = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
 
+export type PlaybackProgressResponse = { position_s: number, duration_s: number | null, finished: boolean, };
+
+export type PlaybackTierResponse = { 
+/**
+ * `None` si el ítem nunca se ha reproducido todavía: la sonda solo ocurre al abrir
+ * el stream de verdad (regla R1), así que hasta entonces no hay nada que enseñar.
+ */
+tier: number | null, video_codec: string | null, audio_codec: string | null, container: string | null, };
+
 /**
  * Tipo de proveedor, igual que la columna `kind` de `providers` en `docs/DATA-MODEL.md`.
  */

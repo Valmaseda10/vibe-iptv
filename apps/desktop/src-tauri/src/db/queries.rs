@@ -444,6 +444,68 @@ pub fn set_tmdb_cache(conn: &Connection, key: &str, response_json: &str) -> Resu
     Ok(())
 }
 
+// ─────────────── Caché de inspección de códecs (F6) ───────────────
+
+pub struct ProbeCacheRow {
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub container: Option<String>,
+    pub play_tier: i64,
+}
+
+/// `stream_key` es `media::probe::stream_cache_key(url)`: un hash, nunca la URL en sí
+/// (regla R5). Ver `docs/ARCHITECTURE.md`, "ffprobe inspecciona el stream una vez y el
+/// resultado se cachea por ítem".
+pub fn get_probe_cache(conn: &Connection, stream_key: &str) -> Result<Option<ProbeCacheRow>> {
+    conn.query_row(
+        "SELECT video_codec, audio_codec, container, play_tier FROM probe_cache WHERE stream_key = ?1",
+        params![stream_key],
+        |row| {
+            Ok(ProbeCacheRow {
+                video_codec: row.get(0)?,
+                audio_codec: row.get(1)?,
+                container: row.get(2)?,
+                play_tier: row.get(3)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+pub fn set_probe_cache(
+    conn: &Connection,
+    stream_key: &str,
+    video_codec: Option<&str>,
+    audio_codec: Option<&str>,
+    container: Option<&str>,
+    play_tier: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT INTO probe_cache (stream_key, video_codec, audio_codec, container, play_tier, probed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(stream_key) DO UPDATE SET
+            video_codec = excluded.video_codec, audio_codec = excluded.audio_codec,
+            container = excluded.container, play_tier = excluded.play_tier, probed_at = excluded.probed_at",
+        params![stream_key, video_codec, audio_codec, container, play_tier, now_epoch()],
+    )?;
+    Ok(())
+}
+
+/// Registra qué nivel de la cascada sirvió un ítem, para el diagnóstico que menciona
+/// `docs/ARCHITECTURE.md` ("si el nivel 3 aparece a menudo, hay que revisar la
+/// detección de códecs"). No toca `position_s` si la fila ya existía: el punto de
+/// reproducción es responsabilidad exclusiva de `upsert_playback_progress`.
+pub fn record_play_tier(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64, play_tier: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO playback_state (profile_id, item_kind, item_id, position_s, duration_s, finished, played_at, play_tier)
+         VALUES (?1, ?2, ?3, 0, NULL, 0, ?4, ?5)
+         ON CONFLICT(profile_id, item_kind, item_id) DO UPDATE SET play_tier = excluded.play_tier, played_at = excluded.played_at",
+        params![profile_id, item_kind, item_id, now_epoch(), play_tier],
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,5 +708,42 @@ mod tests {
 
         assert!(list_pending_movies(&conn).unwrap().is_empty());
         assert_eq!(count_matched_movies(&conn).unwrap(), 1);
+    }
+
+    #[test]
+    fn probe_cache_roundtrip_and_update() {
+        let conn = memory_conn();
+        assert!(get_probe_cache(&conn, "probe:abc").unwrap().is_none());
+
+        set_probe_cache(&conn, "probe:abc", Some("h264"), Some("aac"), Some("mpegts"), 2).unwrap();
+        let cached = get_probe_cache(&conn, "probe:abc").unwrap().unwrap();
+        assert_eq!(cached.video_codec.as_deref(), Some("h264"));
+        assert_eq!(cached.play_tier, 2);
+
+        // Reprobar el mismo stream (p. ej. el proveedor cambió de códec) actualiza, no duplica.
+        set_probe_cache(&conn, "probe:abc", Some("hevc"), Some("aac"), Some("mpegts"), 3).unwrap();
+        let updated = get_probe_cache(&conn, "probe:abc").unwrap().unwrap();
+        assert_eq!(updated.video_codec.as_deref(), Some("hevc"));
+        assert_eq!(updated.play_tier, 3);
+    }
+
+    #[test]
+    fn record_play_tier_does_not_disturb_existing_position() {
+        let conn = memory_conn();
+        let profile_id = crate::db::reads::ensure_default_profile(&conn).unwrap();
+        crate::db::reads::upsert_playback_progress(&conn, profile_id, "channel", 1, 0, None).unwrap();
+        record_play_tier(&conn, profile_id, "channel", 1, 2).unwrap();
+
+        let tier: i64 = conn
+            .query_row("SELECT play_tier FROM playback_state WHERE profile_id=?1 AND item_id=1", params![profile_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tier, 2);
+
+        // Un ítem nunca reproducido (sin progreso previo) también debe poder recibir tier.
+        record_play_tier(&conn, profile_id, "movie", 5, 1).unwrap();
+        let tier2: i64 = conn
+            .query_row("SELECT play_tier FROM playback_state WHERE profile_id=?1 AND item_id=5", params![profile_id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tier2, 1);
     }
 }

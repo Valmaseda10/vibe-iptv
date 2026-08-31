@@ -493,6 +493,39 @@ async fn get_search(State(state): State<CatalogState>, Query(query): Query<Searc
     Ok(Json(SearchResults { channels, movies, series }))
 }
 
+#[derive(Deserialize)]
+struct PlaybackProgressQuery {
+    item_kind: String,
+    #[serde(rename = "item_id")]
+    item_id: i64,
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct PlaybackProgressResponse {
+    #[ts(type = "number")]
+    pub position_s: i64,
+    #[ts(type = "number | null")]
+    pub duration_s: Option<i64>,
+    pub finished: bool,
+}
+
+/// El reproductor la consulta al abrir un ítem, para ofrecer "reanudar desde X" (F6).
+/// Sin progreso guardado, responde 204 en vez de un objeto vacío: es más claro para el
+/// cliente que comprobar un campo nulo.
+async fn get_playback_progress(State(state): State<CatalogState>, Query(query): Query<PlaybackProgressQuery>) -> Result<Response, ApiError> {
+    let progress = with_db(state.db_path, move |conn| {
+        let profile_id = reads::ensure_default_profile(conn)?;
+        reads::get_playback_progress(conn, profile_id, &query.item_kind, query.item_id)
+    })
+    .await?;
+
+    Ok(match progress {
+        Some(p) => Json(PlaybackProgressResponse { position_s: p.position_s, duration_s: p.duration_s, finished: p.finished }).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    })
+}
+
 async fn post_playback_progress(State(state): State<CatalogState>, Json(input): Json<PlaybackProgressInput>) -> Result<StatusCode, ApiError> {
     if !matches!(input.item_kind.as_str(), "movie" | "episode" | "channel") {
         return Err(ApiError::BadRequest("item_kind debe ser movie, episode o channel".to_string()));
@@ -548,7 +581,7 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/series", get(get_series_list))
         .route("/api/series/:id", get(get_series_detail))
         .route("/api/search", get(get_search))
-        .route("/api/playback/progress", post(post_playback_progress))
+        .route("/api/playback/progress", get(get_playback_progress).post(post_playback_progress))
         .route("/api/favorites", get(get_favorites).post(post_favorite).delete(delete_favorite))
         .with_state(CatalogState { db_path })
 }
@@ -654,6 +687,43 @@ mod tests {
         let response = router.oneshot(Request::builder().uri("/api/home").body(Body::empty()).unwrap()).await.unwrap();
         let json = body_json(response).await;
         assert_eq!(json["continue_watching"][0]["item_id"], 1);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn get_playback_progress_returns_204_without_saved_position_and_data_after() {
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri("/api/playback/progress?item_kind=movie&item_id=1").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let body = serde_json::json!({"item_kind": "movie", "item_id": 1, "position_s": 42, "duration_s": 100});
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/playback/progress")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let response = router
+            .oneshot(Request::builder().uri("/api/playback/progress?item_kind=movie&item_id=1").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["position_s"], 42);
 
         let _ = std::fs::remove_file(&db_path);
     }

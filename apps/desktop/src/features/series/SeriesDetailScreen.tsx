@@ -75,21 +75,29 @@ export function SeriesDetailScreen() {
 
             <ul className="flex flex-col gap-3">
               {episodesOfSeason.map((episode) => (
-                <li key={episode.id} className="flex gap-4 rounded-lg p-2 hover:bg-neutral-900">
-                  <div className="flex h-20 w-32 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-xs text-neutral-500">
-                    {imagePath(base, episode.still_path, "w342") ? (
-                      <img src={imagePath(base, episode.still_path, "w342")!} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      episode.number
-                    )}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="truncate font-medium">
-                      {episode.number}. {episode.title || `Episodio ${episode.number}`}
-                    </p>
-                    {episode.duration_s && <p className="text-xs text-neutral-500">{Math.round(episode.duration_s / 60)} min</p>}
-                    {episode.overview && <p className="mt-1 line-clamp-2 text-sm text-neutral-400">{episode.overview}</p>}
-                  </div>
+                <li key={episode.id}>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(episode.id) }, search: { seriesId } })
+                    }
+                    className="flex w-full gap-4 rounded-lg p-2 text-left outline-none hover:bg-neutral-900 focus-visible:bg-neutral-900"
+                  >
+                    <div className="flex h-20 w-32 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-xs text-neutral-500">
+                      {imagePath(base, episode.still_path, "w342") ? (
+                        <img src={imagePath(base, episode.still_path, "w342")!} alt="" className="h-full w-full object-cover" />
+                      ) : (
+                        episode.number
+                      )}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">
+                        {episode.number}. {episode.title || `Episodio ${episode.number}`}
+                      </p>
+                      {episode.duration_s && <p className="text-xs text-neutral-500">{Math.round(episode.duration_s / 60)} min</p>}
+                      {episode.overview && <p className="mt-1 line-clamp-2 text-sm text-neutral-400">{episode.overview}</p>}
+                    </div>
+                  </button>
                 </li>
               ))}
             </ul>

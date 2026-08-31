@@ -17,6 +17,12 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
 
+  // El reproductor va a pantalla completa, sin barra lateral ni cromo alrededor: es la
+  // única pantalla de toda la app que no vive dentro de este layout de navegación.
+  if (pathname.startsWith("/player/")) {
+    return <div className="h-full bg-black">{children}</div>;
+  }
+
   return (
     <div className="flex h-full bg-neutral-950 text-neutral-100">
       <nav

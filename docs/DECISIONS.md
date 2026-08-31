@@ -353,6 +353,145 @@ lista M3U de 50 entradas con los casos raros). 41 tests, todos en verde.
 
 ---
 
+## 2026-08-31 — F6 Reproductor
+
+**Aviso importante sobre esta fase.** `PROMPTS.md` la marca como "la parte más
+delicada del proyecto" y pide hacerla por partes, enseñando cada una funcionando — pero
+se ha construido en modo autónomo, sin el usuario delante. He podido verificar de
+verdad, con ffmpeg/ffprobe reales instalados en esta máquina (no simulados) y sin tocar
+ninguna credencial real: que la sonda de códecs decide el nivel correcto, que el remux
+produce fMP4 válido byte a byte, que el proxy nivel 1 sirve Range de verdad, y que 20
+aperturas de stream seguidas no dejan procesos ffmpeg huérfanos (los cuatro, contra
+servidores HTTP locales sirviendo ficheros generados por el propio ffmpeg). **Lo que no
+he podido verificar es lo único que de verdad importa de un reproductor: que un canal se
+vea y se oiga bien, que el audio vaya sincronizado, que el zapping se sienta fluido.**
+Eso solo lo puede confirmar quien tenga ojos y oídos delante de la ventana de la app.
+
+**Qué se ha construido.**
+- **Parte A — `media/probe.rs`.** `probe_url()` lanza `ffprobe` (vía `tokio::process`,
+  `kill_on_drop`, timeout de 10 s) y extrae códec de vídeo, de audio y contenedor.
+  `decide_tier()` es una función pura (muy testeada: 12 casos) que decide 1/2/3 según la
+  tabla de `docs/ARCHITECTURE.md`. `stream_cache_key()` genera la clave de `probe_cache`
+  con un hash (nunca la URL en claro, regla R5).
+- **Parte B — `GET /stream/:kind/:id` en `server/stream.rs`.**
+  - Resuelve `provider_id`+`remote_id` desde la base (`db/reads.rs`:
+    `resolve_channel_stream`/`resolve_movie_stream`/`resolve_episode_stream`, nuevas),
+    reconstruye el `Source` con `commands::build_source_for_provider` (ya existía, de
+    F4) y pide `stream_url()`.
+  - Nivel 1: proxy transparente con soporte de Range (cabeceras reenviadas tal cual).
+  - Nivel 2: `media/ffmpeg.rs::spawn_remux` con los flags exactos del documento; audio a
+    AAC solo si es AC3/E-AC3/DTS; `-ss` antes de `-i` cuando el cliente pide
+    `?start=<segundos>` (así implementa la búsqueda en VOD remuxeado).
+  - `util::stream_guard::StreamGuard` ahora de verdad mata y espera (`.wait().await`,
+    no solo la señal) el proceso ffmpeg de la sesión anterior antes de devolver el
+    permiso siguiente. Un `PermitBoundBody` envuelve el cuerpo de la respuesta HTTP para
+    que, se acabe el stream solo o corte el cliente la conexión, se libere el permiso y
+    se mate el proceso — un único `Drop` cubre los dos casos.
+  - `GET /api/playback/tier/:kind/:id`: lee `probe_cache` sin abrir ninguna conexión
+    (resolver la URL es cálculo local), para el panel de estadísticas del reproductor.
+  - `GET /api/playback/progress?item_kind=&item_id=`: progreso guardado de un ítem
+    concreto (existía el POST desde F4; faltaba poder leer uno solo para "reanudar").
+- **Parte C — `features/player/PlayerScreen.tsx`.** Un único componente para directo,
+  película y episodio (`/player/:kind/:id`), fuera del `AppLayout` (pantalla completa,
+  sin barra lateral). Controles superpuestos que se ocultan a los 3 s de inactividad,
+  barra de progreso, volumen, pantalla completa, guardado de posición cada 10 s y al
+  desmontar, reanudar con aviso ("Reanudando desde MM:SS"), siguiente episodio con
+  cuenta atrás cancelable, zapping en directo con flechas (dentro de la categoría del
+  canal), panel de estadísticas tras Ctrl+Shift+D (nivel, códecs, resolución, tiempo al
+  primer fotograma, buffer).
+
+**Decisiones tomadas.**
+- **El reintento sin `/live/` (pendiente desde F1) se resuelve aquí.** `Source` gana un
+  método `stream_url_fallback()` con implementación por defecto `None`; `XtreamSource`
+  lo sobreescribe para el directo. `resolve_tier_and_url()` prueba la URL principal y,
+  si `ffprobe` falla, reintenta con la alternativa antes de rendirse — con las dos
+  ocurriendo secuencialmente (nunca en paralelo), respeta el límite de conexiones.
+- **Sin sondear más de una vez por ítem, ni fuera de la sesión que ya se iba a abrir.**
+  R1 prohíbe el prefetch, pero sondear la URL que el usuario ya pidió reproducir no lo
+  es: es la misma conexión, no una especulativa. Se cachea en `probe_cache` por hash de
+  URL: si el hash de la URL principal falla y hace falta la alternativa, se cachea bajo
+  el hash de la que de verdad funcionó — la próxima vez que la principal falle, se
+  vuelve a sondear (degradación honesta: nunca se rompe en silencio, solo re-sondea algo
+  más para paneles antiguos).
+- **Sin `hls.js` en esta fase**, pese a que `PROMPTS.md`/`docs/ARCHITECTURE.md` lo
+  mencionan para el nivel 1. El nivel 1 real hoy (MP4 progresivo con H.264/AAC) y el
+  nivel 2 (fMP4 remuxeado) se sirven los dos igual de bien con un `<video src>` nativo,
+  sin necesitar MSE. HLS de verdad (`.m3u8`) sí está reconocido y proxied de forma
+  transparente en el backend (`handle_stream`), pero **sin reescribir las URIs internas
+  del manifiesto** y **sin integrar `hls.js` en el cliente todavía** — no se ha podido
+  verificar contra ningún proveedor real que sirva HLS (ni Xtream ni M3U del usuario lo
+  hacen). Añadir `hls.js` cuando aparezca tráfico real en ese formato es deuda explícita,
+  no un olvido.
+- **Cómo decide el reproductor si puede buscar de forma nativa.** En vez de exponer el
+  nivel al cliente antes de reproducir (que obligaría a sondear dos veces, o a arriesgar
+  una conexión especulativa concurrente con la que ya estuviera activa), el `<video>`
+  mira `Number.isFinite(video.duration)` tras `loadedmetadata`: finito = nivel 1
+  byte-seekable de verdad (`video.currentTime =` funciona solo), infinito = nivel 2, y
+  buscar significa pedir un stream nuevo con `?start=`. Al primer resumen (`resume`) se
+  manda `?start=<posición>` siempre por si acaso es nivel 2; si resulta ser nivel 1, se
+  corrige con una búsqueda nativa real en cuanto se conoce la duración. Ningún sondeo
+  adicional, ninguna conexión de más.
+- **`StreamGuard` pasa a poseer el `Child` de ffmpeg**, no solo el flag booleano de F2.
+  `acquire()` mata y espera al de la sesión anterior; `attach_process`/`release_process`
+  lo registran y lo liberan. Se consideró tener el proceso solo en el cuerpo de la
+  respuesta HTTP (más simple), pero entonces "cerrar el anterior antes de abrir el
+  siguiente" no tendría un punto único y determinista si el cliente tardaba en notar la
+  desconexión — con el proceso en el guard, `acquire()` es ese punto, siempre.
+- **Los binarios de ffmpeg/ffprobe se buscan en el `PATH`** (`media::resolve_binary`),
+  no como sidecar de Tauri todavía. Empaquetarlos en `src-tauri/binaries/` con
+  `externalBin` es trabajo de F10 (`docs/PROMPTS.md` los lista ahí explícitamente); hacerlo
+  ahora habría significado inventar un binario que no existe en este repo. Si faltan, el
+  endpoint responde 503 en vez de entrar en pánico.
+- **Dependencias nuevas**: `tokio` (features `process`/`time`/`io-util`/`fs`),
+  `tokio-util` (`io`, para `ReaderStream`), `futures-core`/`futures-util` (combinadores
+  de `Stream`), `bytes`, `reqwest` feature `stream`, `tower-http` feature `fs` (solo en
+  tests, para servir un fichero real con Range vía `ServeFile`). Todas justificadas por
+  necesitar streaming de bytes real entre procesos/HTTP; ninguna sustituible por código
+  propio sin reinventar combinadores de `Stream` estándar.
+
+**Verificación real hecha (sin credenciales, con ffmpeg/ffprobe instalados en esta
+máquina).**
+- `probe.rs`: sonda un MP4 h264/aac generado con ffmpeg de verdad (no solo JSON escrito
+  a mano) y confirma nivel 1.
+- `ffmpeg.rs`: remux real de un TS servido por HTTP a fMP4 por stdout; confirma cajas
+  `ftyp` válidas en los primeros bytes.
+- `server/stream.rs`: dos pruebas de extremo a extremo por HTTP (axum `oneshot`) contra
+  un proveedor Xtream simulado (`tower_http::ServeFile` sirviendo el fichero real en la
+  ruta exacta `/movie/user/pass/1.mp4` / `/live/user/pass/1.ts`) — nivel 1 con Range y
+  nivel 2 con remux, las dos confirmando el `play_tier` guardado en `probe_cache`.
+- Verificación manual (marcada `#[ignore]`, se queda en el repo para repetirla a mano
+  tras tocar `StreamGuard`): 20 apertures seguidas de `/stream/channel/:id` sin leer el
+  cuerpo (simula cambiar de canal antes de que cargue) — `tasklist` confirma cero
+  `ffmpeg.exe` huérfanos al terminar.
+- `tsc --noEmit` y `vite build` limpios; `npm run tauri dev` arranca sin errores en el
+  terminal.
+
+**Deuda técnica pendiente.**
+- Toda la de fases anteriores.
+- **No verificado con audio/vídeo real** (ver aviso arriba): hace falta que el usuario
+  abra un canal y una película de su proveedor real y confirme que se ve y se oye bien.
+- HLS: proxy transparente sin reescritura de manifiesto, sin `hls.js` en el cliente (ver
+  decisión arriba).
+- **Solo una fuente/calidad por película en el reproductor** (la primera de
+  `movie_sources`, sin selector); `?source=<id>` ya lo soporta el backend, falta la UI.
+- **Pistas de audio y subtítulos no seleccionables.** El remux solo copia una pista de
+  audio (la que ffmpeg mapea por defecto) y ninguna de subtítulos: falta lógica de
+  `-map` para exponer varias, y la interfaz para elegir. `docs/PROMPTS.md` pide el
+  control en la interfaz; no hay nada que controlar todavía en el flujo de datos.
+- **Zapping limitado a 200 canales de la categoría actual** (o los primeros 200 sin
+  categoría): razonable para listas reales, pero no es "toda la lista" en categorías
+  enormes.
+- **Nivel 3 (mpv) no implementado**: cualquier ítem que decida nivel 3 responde 501.
+  Es trabajo de F9 según el plan de fases.
+- **Catch-up/timeshift no implementado**: F9.
+- **Sin mensajes de error en español para el usuario final** más allá de un texto
+  genérico ("no se pudo reproducir..."): F9 pide errores claros por causa (cuenta
+  caducada, límite de conexiones, sin conexión).
+- `ffmpeg`/`ffprobe` se buscan en el `PATH` (ver decisión arriba): el sidecar de F10
+  sustituye esto por una ruta empaquetada.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

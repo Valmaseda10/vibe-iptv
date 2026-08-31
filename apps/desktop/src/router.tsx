@@ -8,6 +8,7 @@ import { seriesRoute } from "./routes/series";
 import { seriesDetailRoute } from "./routes/series.$seriesId";
 import { searchRoute } from "./routes/search";
 import { settingsRoute } from "./routes/settings";
+import { playerRoute } from "./routes/player.$kind.$id";
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -18,6 +19,7 @@ const routeTree = rootRoute.addChildren([
   seriesDetailRoute,
   searchRoute,
   settingsRoute,
+  playerRoute,
 ]);
 
 export const router = createRouter({ routeTree });

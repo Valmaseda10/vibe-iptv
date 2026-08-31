@@ -67,3 +67,62 @@ export function ChevronIcon(props: SVGProps<SVGSVGElement>) {
     </Icon>
   );
 }
+
+export function PlayIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon fill="currentColor" stroke="none" {...props}>
+      <path d="M7 4.5v15l13-7.5-13-7.5Z" />
+    </Icon>
+  );
+}
+
+export function PauseIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon fill="currentColor" stroke="none" {...props}>
+      <rect x="6" y="4" width="4" height="16" rx="1" />
+      <rect x="14" y="4" width="4" height="16" rx="1" />
+    </Icon>
+  );
+}
+
+export function VolumeIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M4 9v6h4l5 4V5L8 9H4Z" />
+      <path d="M17.5 8.5a5 5 0 0 1 0 7" />
+    </Icon>
+  );
+}
+
+export function MuteIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M4 9v6h4l5 4V5L8 9H4Z" />
+      <path d="m17 9 4 6M21 9l-4 6" />
+    </Icon>
+  );
+}
+
+export function FullscreenIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M8 3H4v4M16 3h4v4M8 21H4v-4M16 21h4v-4" />
+    </Icon>
+  );
+}
+
+export function ArrowUpIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M12 19V5M5 12l7-7 7 7" />
+    </Icon>
+  );
+}
+
+export function ArrowDownIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M12 5v14M19 12l-7 7-7-7" />
+    </Icon>
+  );
+}

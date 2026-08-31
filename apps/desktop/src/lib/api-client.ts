@@ -21,6 +21,17 @@ export async function apiGet<T>(path: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+/** Igual que `apiGet`, pero un 204 (sin contenido) da `null` en vez de reventar
+ * `response.json()` sobre un cuerpo vacío. Lo usan las consultas "¿hay algo guardado
+ * para esto?" (progreso de reproducción, nivel de la cascada). */
+export async function apiGetOrNull<T>(path: string): Promise<T | null> {
+  const base = await getApiBase();
+  const response = await fetch(`${base}${path}`);
+  if (response.status === 204) return null;
+  if (!response.ok) throw new Error(`${path} -> ${response.status}`);
+  return response.json() as Promise<T>;
+}
+
 export async function apiPost(path: string, body: unknown): Promise<void> {
   const base = await getApiBase();
   const response = await fetch(`${base}${path}`, {

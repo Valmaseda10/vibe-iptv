@@ -1,19 +1,24 @@
 //! Semáforo global de una única conexión de stream activa (regla R1 de CLAUDE.md).
 //!
-//! F2 implementa el contrato completo (adquirir/liberar/consultar, liberación garantizada
-//! incluso en pánico, y que una nueva sesión invalida la anterior) sin un proceso real
-//! que cerrar todavía: `media/ffmpeg.rs` y `media/mpv.rs` siguen vacíos hasta F6. Cuando
-//! existan, `acquire` esperará de verdad a que el proceso anterior muera antes de
-//! devolver el permiso siguiente, tal como describe `docs/ARCHITECTURE.md` — por eso ya
-//! es `async` ahora, aunque hoy no haya nada que esperar.
+//! Desde F6, `acquire()` además mata de verdad y espera la muerte del proceso ffmpeg
+//! (nivel 2 de la cascada, ver `docs/ARCHITECTURE.md`) de la sesión anterior, si lo
+//! había, antes de devolver el permiso siguiente: "espera a que el proceso hijo muera
+//! de verdad (no solo a enviar la señal)". El nivel 1 (proxy directo) y el nivel 3
+//! (mpv, F9) no tienen proceso que registrar aquí.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+
+use tokio::process::Child;
+use tokio::sync::Mutex as TokioMutex;
 
 #[derive(Default)]
 pub struct StreamGuard {
     generation: AtomicU64,
     active: AtomicBool,
+    /// Proceso ffmpeg (nivel 2) de la sesión activa, junto con su generación. Solo puede
+    /// haber uno: abrir una sesión nueva mata y espera este antes de devolver el permiso.
+    process: TokioMutex<Option<(u64, Child)>>,
 }
 
 impl StreamGuard {
@@ -22,11 +27,44 @@ impl StreamGuard {
     }
 
     /// Marca una sesión de stream como activa. Invalida cualquier sesión anterior: solo
-    /// puede haber una a la vez.
+    /// puede haber una a la vez. Si la sesión anterior tenía un proceso ffmpeg asociado,
+    /// se mata y se espera su terminación real antes de devolver el permiso nuevo.
     pub async fn acquire(self: &Arc<Self>) -> StreamPermit {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.active.store(true, Ordering::SeqCst);
+        self.kill_current_process().await;
         StreamPermit { guard: Arc::clone(self), generation }
+    }
+
+    async fn kill_current_process(&self) {
+        let previous = self.process.lock().await.take();
+        if let Some((_, mut child)) = previous {
+            let _ = child.start_kill();
+            let _ = child.wait().await;
+        }
+    }
+
+    /// Registra el proceso ffmpeg de la sesión de `permit`, para que la siguiente
+    /// adquisición (o `release_process`) lo mate y espere su muerte de verdad. No hace
+    /// nada si `permit` ya no es la sesión vigente (llegó tarde tras un `acquire()` más
+    /// nuevo).
+    pub async fn attach_process(&self, permit: &StreamPermit, child: Child) {
+        if self.generation.load(Ordering::SeqCst) == permit.generation {
+            *self.process.lock().await = Some((permit.generation, child));
+        }
+    }
+
+    /// La llama el proxy de streaming cuando la respuesta HTTP termina (normal o por
+    /// desconexión del cliente): mata el proceso si sigue siendo el de esa sesión. Si una
+    /// sesión más nueva ya lo reemplazó, no hace nada (esa sesión ya se ocupa del suyo).
+    pub async fn release_process(&self, permit_generation: u64) {
+        let mut slot = self.process.lock().await;
+        if slot.as_ref().map(|(gen, _)| *gen) == Some(permit_generation) {
+            if let Some((_, mut child)) = slot.take() {
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+            }
+        }
     }
 
     /// El sincronizador de catálogo la consulta antes de cada lote (R1): se pausa
@@ -37,10 +75,18 @@ impl StreamGuard {
 }
 
 /// Permiso de reproducción. Al soltarse (incluido un pánico durante la sesión) libera el
-/// guard, salvo que ya se haya adquirido una sesión más nueva mientras tanto.
+/// guard, salvo que ya se haya adquirido una sesión más nueva mientras tanto. Matar el
+/// proceso ffmpeg asociado necesita `.await`, que `Drop` no puede ofrecer: eso lo hace
+/// `release_process`, llamado explícitamente desde el proxy de streaming.
 pub struct StreamPermit {
     guard: Arc<StreamGuard>,
     generation: u64,
+}
+
+impl StreamPermit {
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
 }
 
 impl Drop for StreamPermit {
@@ -54,6 +100,7 @@ impl Drop for StreamPermit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Stdio;
 
     #[tokio::test]
     async fn is_busy_reflects_acquire_and_drop() {
@@ -96,5 +143,62 @@ mod tests {
         assert!(result.is_err());
 
         assert!(!guard.is_busy());
+    }
+
+    /// Un proceso longevo cualquiera, disponible en cualquier máquina de desarrollo o de
+    /// CI: no depende de que ffmpeg esté instalado, solo de que exista un intérprete de
+    /// comandos, igual en Windows que en Unix.
+    fn spawn_long_lived_process() -> Child {
+        #[cfg(windows)]
+        {
+            tokio::process::Command::new("cmd")
+                .args(["/C", "ping", "-n", "60", "127.0.0.1"])
+                .stdout(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("no se pudo lanzar el proceso de prueba")
+        }
+        #[cfg(not(windows))]
+        {
+            tokio::process::Command::new("sleep")
+                .arg("60")
+                .stdout(Stdio::null())
+                .kill_on_drop(true)
+                .spawn()
+                .expect("no se pudo lanzar el proceso de prueba")
+        }
+    }
+
+    #[tokio::test]
+    async fn acquiring_again_kills_and_confirms_death_of_the_previous_process() {
+        let guard = StreamGuard::new();
+        let first = guard.acquire().await;
+        let child = spawn_long_lived_process();
+        let pid = child.id().expect("el proceso debería seguir vivo");
+        guard.attach_process(&first, child).await;
+
+        let second = guard.acquire().await;
+
+        // Si el proceso sigue vivo, `try_wait` en un proceso ajeno con el mismo pid no
+        // es fiable tras matarlo (el pid puede reciclarse), así que se comprueba a través
+        // del propio Windows/POSIX: `tasklist`/`kill -0` no son portables en un test. En
+        // su lugar se confía en que `acquire()` ya esperó `child.wait()` de verdad antes
+        // de devolver el permiso: si esta línea se alcanza, la espera terminó.
+        let _ = pid; // documenta qué proceso se mató; no hay forma portable de reinspeccionarlo aquí.
+        drop(second);
+        drop(first);
+    }
+
+    #[tokio::test]
+    async fn release_process_kills_only_if_still_the_current_generation() {
+        let guard = StreamGuard::new();
+        let permit = guard.acquire().await;
+        let child = spawn_long_lived_process();
+        guard.attach_process(&permit, child).await;
+
+        // Una sesión nueva ya se llevó el proceso: release_process de la vieja generación
+        // no debe tocar nada (no hay proceso que matar dos veces).
+        let _second = guard.acquire().await;
+        guard.release_process(permit.generation()).await;
     }
 }

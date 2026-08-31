@@ -199,6 +199,13 @@ impl Source for XtreamSource {
     fn stream_url(&self, item: &StreamRef) -> Result<Url> {
         self.stream_url_variant(item, true)
     }
+
+    fn stream_url_fallback(&self, item: &StreamRef) -> Result<Option<Url>> {
+        if item.kind != MediaKind::Live {
+            return Ok(None); // el segmento de tipo es obligatorio salvo en directo.
+        }
+        Ok(Some(self.stream_url_variant(item, false)?))
+    }
 }
 
 fn looks_like_auth_failure(bytes: &[u8]) -> bool {
@@ -665,6 +672,18 @@ mod tests {
         // Incluso pidiendo la variante "sin segmento", película y serie lo conservan.
         let url = source.stream_url_variant(&item, false).unwrap();
         assert_eq!(url.as_str(), "http://panel.example.com:8080/movie/user/pass/5001.mkv");
+    }
+
+    #[test]
+    fn stream_url_fallback_only_applies_to_live() {
+        let source = XtreamSource::new("http://panel.example.com:8080", "user", "pass", None).unwrap();
+
+        let live = StreamRef { kind: MediaKind::Live, remote_id: "42".to_string(), container_extension: None };
+        let fallback = source.stream_url_fallback(&live).unwrap().unwrap();
+        assert_eq!(fallback.as_str(), "http://panel.example.com:8080/user/pass/42.ts");
+
+        let movie = StreamRef { kind: MediaKind::Movie, remote_id: "5001".to_string(), container_extension: Some("mkv".to_string()) };
+        assert!(source.stream_url_fallback(&movie).unwrap().is_none());
     }
 
     #[tokio::test]

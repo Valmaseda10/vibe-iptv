@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { apiGet } from "../../lib/api-client";
@@ -7,6 +8,7 @@ import type { CategorySummary, ChannelsPage } from "../../lib/api-types";
 const ROW_HEIGHT = 60;
 
 export function LiveScreen() {
+  const navigate = useNavigate();
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const categoriesQuery = useQuery({
@@ -106,7 +108,13 @@ export function LiveScreen() {
                     <button
                       type="button"
                       data-row-index={row.index}
-                      title="El zapping llega en la fase F7"
+                      onClick={() =>
+                        navigate({
+                          to: "/player/$kind/$id",
+                          params: { kind: "channel", id: String(channel.id) },
+                          search: channel.category_id ? { categoryId: String(channel.category_id) } : {},
+                        })
+                      }
                       className="flex h-full w-full items-center gap-4 rounded-lg px-3 text-left outline-none hover:bg-neutral-900"
                     >
                       <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500">

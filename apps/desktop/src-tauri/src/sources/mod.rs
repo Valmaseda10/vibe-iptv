@@ -25,4 +25,13 @@ pub trait Source {
     async fn series_detail(&self, id: &str) -> Result<RawSeriesDetail>;
     async fn epg_xmltv(&self) -> Result<Option<XmltvStream>>;
     fn stream_url(&self, item: &StreamRef) -> Result<Url>;
+
+    /// Forma alternativa de la URL de stream, si la fuente conoce una. Hoy solo la usa
+    /// `XtreamSource` para el directo: algunos paneles antiguos sirven el directo sin el
+    /// segmento `/live/` (ver `docs/XTREAM-API.md`), y probar cuál funciona es trabajo
+    /// del proxy de stream (F6), no de la capa de fuentes — aquí solo se ofrece la
+    /// alternativa, sin abrir ninguna conexión (regla R1).
+    fn stream_url_fallback(&self, _item: &StreamRef) -> Result<Option<Url>> {
+        Ok(None)
+    }
 }
