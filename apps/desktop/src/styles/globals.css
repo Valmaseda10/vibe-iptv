@@ -19,7 +19,23 @@ body {
     sans-serif;
 }
 
-/* Foco siempre visible: la app se navega con teclado y mando desde el día uno. */
+/* Foco siempre visible: la app se navega con teclado y mando desde el día uno. Más
+   grueso y con más separación que un anillo de formulario normal — pensado para verse
+   también a la distancia de un sofá, no solo a la de un teclado. */
 :focus-visible {
-  @apply outline-2 outline-offset-2 outline-red-500;
+  @apply outline-[3px] outline-offset-4 outline-red-500;
+}
+
+/* Quien pide menos movimiento (macOS/Windows "reducir movimiento") lo pide para toda la
+   app, no solo para el sistema operativo — los spinners de carga y los "scale" de hover
+   de las tarjetas son justo el tipo de animación que puede marear o resultar molesta. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

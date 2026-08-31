@@ -139,7 +139,7 @@ function AccountForm({ onLoggedIn }: { onLoggedIn: () => void }) {
         {authMutation.isPending ? "…" : mode === "login" ? "Entrar" : "Crear cuenta"}
       </button>
 
-      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="mt-3 text-sm text-red-400">{error}</p>}
       {info && <p className="mt-3 text-sm text-neutral-300">{info}</p>}
     </AuthShell>
   );
@@ -202,7 +202,7 @@ function ForgotPasswordForm({ email: initialEmail, onSent, onBack }: { email: st
           Volver
         </button>
       </div>
-      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="mt-3 text-sm text-red-400">{error}</p>}
     </>
   );
 }
@@ -272,7 +272,7 @@ function ResetPasswordForm({ email: initialEmail, onDone, onBack }: { email: str
           Volver
         </button>
       </div>
-      {error && <p className="mt-3 text-sm text-red-400">{error}</p>}
+      {error && <p role="alert" className="mt-3 text-sm text-red-400">{error}</p>}
     </>
   );
 }

@@ -479,14 +479,19 @@ function AccountSection() {
       <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
         <h2 className="mb-4 text-xl font-medium">Cuenta</h2>
         <p className="mb-3 text-sm text-neutral-300">Sesión iniciada como {statusQuery.data.email}.</p>
+        <p className="mb-4 text-xs text-neutral-500">
+          Se sincronizan perfiles, favoritos y progreso — nunca las credenciales de tus proveedores IPTV, que se
+          quedan solo en este PC.
+        </p>
         <button
           type="button"
-          className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600"
+          className="mb-6 rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600"
           onClick={() => logoutMutation.mutate()}
           disabled={logoutMutation.isPending}
         >
           Cerrar sesión
         </button>
+        <ChangePasswordForm />
       </section>
     );
   }
@@ -530,9 +535,68 @@ function AccountSection() {
           {authMutation.isPending ? "…" : mode === "login" ? "Entrar" : "Crear cuenta"}
         </button>
       </div>
-      {error && <p className="text-red-400">{error}</p>}
+      {error && <p role="alert" className="text-red-400">{error}</p>}
       {info && <p className="text-neutral-300">{info}</p>}
     </section>
+  );
+}
+
+/** Cambiar contraseña con la sesión ya abierta (F "premium" — confianza de cuenta). El
+ * backend vuelve a pedir la actual contra Supabase antes de fijar la nueva, aunque la
+ * sesión ya esté abierta: no es cosa de esta pantalla, es la propia API la que lo exige. */
+function ChangePasswordForm() {
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState(false);
+
+  const mutation = useMutation({
+    mutationFn: () => apiPost("/api/account/change-password", { current_password: currentPassword, new_password: newPassword }),
+    onSuccess: () => {
+      setError(null);
+      setSuccess(true);
+      setCurrentPassword("");
+      setNewPassword("");
+    },
+    onError: (err) => {
+      setSuccess(false);
+      setError(String(err).replace(/^Error:\s*/, ""));
+    },
+  });
+
+  return (
+    <div className="border-t border-neutral-800 pt-4">
+      <h3 className="mb-3 text-sm font-medium text-neutral-300">Cambiar contraseña</h3>
+      <div className="flex flex-wrap gap-3">
+        <input
+          type="password"
+          placeholder="Contraseña actual"
+          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm"
+          value={currentPassword}
+          onChange={(e) => setCurrentPassword(e.target.value)}
+        />
+        <input
+          type="password"
+          placeholder="Contraseña nueva (mínimo 6 caracteres)"
+          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm"
+          value={newPassword}
+          onChange={(e) => setNewPassword(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && currentPassword && newPassword.length >= 6) mutation.mutate();
+          }}
+        />
+        <button
+          type="button"
+          className="shrink-0 rounded bg-neutral-700 px-4 py-2 text-sm hover:bg-neutral-600 disabled:opacity-50"
+          onClick={() => mutation.mutate()}
+          disabled={!currentPassword || newPassword.length < 6 || mutation.isPending}
+        >
+          {mutation.isPending ? "…" : "Cambiar"}
+        </button>
+      </div>
+      {error && <p role="alert" className="mt-2 text-sm text-red-400">{error}</p>}
+      {success && <p className="mt-2 text-sm text-emerald-400">Contraseña actualizada.</p>}
+    </div>
   );
 }
 

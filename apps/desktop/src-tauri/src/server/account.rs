@@ -28,6 +28,7 @@ pub fn account_router(state: AccountState) -> Router {
         .route("/api/account/logout", post(post_logout))
         .route("/api/account/forgot-password", post(post_forgot_password))
         .route("/api/account/reset-password", post(post_reset_password))
+        .route("/api/account/change-password", post(post_change_password))
         .with_state(state)
 }
 
@@ -138,6 +139,26 @@ async fn post_reset_password(State(state): State<AccountState>, Json(input): Jso
     Ok(Json(AccountStatusResponse { logged_in: true, email: Some(email) }))
 }
 
+#[derive(Deserialize)]
+struct ChangePasswordInput {
+    current_password: String,
+    new_password: String,
+}
+
+/// Cambiar contraseña con la sesión ya abierta (Ajustes) — a diferencia de
+/// `post_reset_password`, aquí no hace falta ningún enlace de correo: pero sí se vuelve
+/// a pedir la contraseña actual antes de cambiarla (`sign_in` de verificación), aunque
+/// la sesión ya esté abierta. Sin eso, quien encontrara el PC con la sesión abierta
+/// podría cambiar la contraseña sin saber la actual — sesión abierta no debería ser lo
+/// mismo que "puedo cambiar la contraseña sin más".
+async fn post_change_password(Json(input): Json<ChangePasswordInput>) -> Result<StatusCode, SupabaseError> {
+    let session = session::get_valid().await.ok_or_else(|| SupabaseError::Api("no hay sesión iniciada".to_string()))?;
+    let client = SupabaseClient::new();
+    client.sign_in(&session.email, &input.current_password).await?;
+    client.update_password(&session.access_token, &input.new_password).await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,5 +213,24 @@ mod tests {
     #[test]
     fn extract_recovery_token_trims_surrounding_whitespace() {
         assert_eq!(extract_recovery_token("  abc123  "), "abc123");
+    }
+
+    #[tokio::test]
+    async fn change_password_rejects_when_there_is_no_session_at_all() {
+        session::clear();
+        let response = account_router(AccountState { db_path: std::env::temp_dir() })
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/account/change-password")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"current_password":"x","new_password":"y"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        // No debe entrar siquiera a intentar verificar la contraseña actual contra
+        // Supabase (no hay red en un test) — se rechaza antes, por falta de sesión.
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
