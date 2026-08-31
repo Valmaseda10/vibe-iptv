@@ -2,6 +2,8 @@
 
 export type AccountStatus = { auth_ok: boolean, status: string, expires_at: number | null, max_connections: number, };
 
+export type AccountStatusResponse = { logged_in: boolean, email: string | null, };
+
 export type AddProviderInput = { kind: ProviderKind, name: string, base_url: string, username: string | null, password: string | null, m3u_url: string | null, user_agent: string | null, };
 
 export type BinariesStatus = { ffmpeg: boolean, ffprobe: boolean, mpv: boolean, };

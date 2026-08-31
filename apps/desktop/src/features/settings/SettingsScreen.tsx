@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { apiGet, apiPost } from "../../lib/api-client";
 import type {
   AccountStatus,
+  AccountStatusResponse,
   AddProviderInput,
   BinariesStatus,
   LanStatusResponse,
@@ -324,6 +325,7 @@ export function SettingsScreen() {
         )}
       </section>
 
+      <AccountSection />
       <ParentalControlSection />
       <LanSection />
       <DiagnosticsSection />
@@ -515,6 +517,108 @@ function ParentalControlSection() {
           </div>
         </div>
       )}
+    </section>
+  );
+}
+
+/** Cuenta de sincronización: perfiles/favoritos/progreso viajan entre dispositivos vía
+ * Supabase (excepción consciente a "el PC es el servidor" — ver docs/DECISIONS.md). El
+ * catálogo, las credenciales de proveedor y el streaming en sí nunca pasan por aquí. */
+function AccountSection() {
+  const queryClient = useQueryClient();
+  const [mode, setMode] = useState<"login" | "signup">("login");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+
+  const statusQuery = useQuery({
+    queryKey: ["account-status"],
+    queryFn: () => apiGet<AccountStatusResponse>("/api/account/status"),
+  });
+
+  function invalidate() {
+    queryClient.invalidateQueries({ queryKey: ["account-status"] });
+  }
+
+  const authMutation = useMutation({
+    mutationFn: () => apiPost<AccountStatusResponse>(mode === "login" ? "/api/account/login" : "/api/account/signup", { email, password }),
+    onSuccess: (result) => {
+      setError(null);
+      setPassword("");
+      if (result.logged_in) {
+        invalidate();
+      } else {
+        // Alta hecha pero pendiente de confirmar el email: no hay sesión todavía.
+        setInfo("Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión.");
+      }
+    },
+    onError: (err) => setError(String(err).replace(/^Error:\s*/, "")),
+  });
+
+  const logoutMutation = useMutation({
+    mutationFn: () => apiPost("/api/account/logout", {}),
+    onSuccess: invalidate,
+  });
+
+  if (statusQuery.data?.logged_in) {
+    return (
+      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <h2 className="mb-4 text-xl font-medium">Cuenta</h2>
+        <p className="mb-3 text-sm text-neutral-300">Sesión iniciada como {statusQuery.data.email}.</p>
+        <button
+          type="button"
+          className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600"
+          onClick={() => logoutMutation.mutate()}
+          disabled={logoutMutation.isPending}
+        >
+          Cerrar sesión
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+      <h2 className="mb-4 text-xl font-medium">Cuenta</h2>
+      <p className="mb-4 text-sm text-neutral-400">
+        Inicia sesión para que tus perfiles, favoritos y progreso te sigan a otros dispositivos donde uses VIBE IPTV. Sin
+        cuenta, la app funciona igual, solo en este PC.
+      </p>
+      <div className="mb-4 flex gap-4" role="radiogroup" aria-label="Iniciar sesión o crear cuenta">
+        {(["login", "signup"] as const).map((m) => (
+          <label key={m} className="flex items-center gap-2">
+            <input type="radio" checked={mode === m} onChange={() => setMode(m)} />
+            {m === "login" ? "Iniciar sesión" : "Crear cuenta"}
+          </label>
+        ))}
+      </div>
+      <div className="mb-3 flex gap-3">
+        <input
+          type="email"
+          placeholder="Correo"
+          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+        />
+        <input
+          type="password"
+          placeholder="Contraseña"
+          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <button
+          type="button"
+          className="shrink-0 rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50"
+          onClick={() => authMutation.mutate()}
+          disabled={!email || !password || authMutation.isPending}
+        >
+          {authMutation.isPending ? "…" : mode === "login" ? "Entrar" : "Crear cuenta"}
+        </button>
+      </div>
+      {error && <p className="text-red-400">{error}</p>}
+      {info && <p className="text-neutral-300">{info}</p>}
     </section>
   );
 }

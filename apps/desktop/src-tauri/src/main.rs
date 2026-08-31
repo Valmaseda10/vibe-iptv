@@ -7,6 +7,7 @@ mod db;
 mod media;
 mod server;
 mod sources;
+mod sync;
 mod util;
 
 use std::net::TcpListener as StdTcpListener;

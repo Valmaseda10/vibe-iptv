@@ -1,3 +1,4 @@
+pub mod account;
 pub mod api;
 pub mod lan;
 pub mod routes;
@@ -114,6 +115,7 @@ fn full_router(
     routes::build_router(image_cache_dir, db_path, parental_guard)
         .merge(stream::stream_router(stream_state))
         .merge(lan::lan_router(lan_state.clone()))
+        .merge(account::account_router())
         .layer(axum::middleware::from_fn_with_state(lan_state, lan::require_local_or_paired))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
 }
