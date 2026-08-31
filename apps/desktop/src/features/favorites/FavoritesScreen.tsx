@@ -1,18 +1,22 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { apiGet } from "../../lib/api-client";
+import { useActiveProfile } from "../../lib/activeProfile";
 import { useFavorites } from "../../lib/favorites";
 import { PosterCard } from "../../components/PosterCard";
 import type { FavoriteItem } from "../../lib/api-types";
 
-/** Lista de favoritos (F8): sin esto, marcar algo como favorito no llevaba a ningún
- * sitio — el conmutador cambiaba, pero no había manera de volver a encontrarlo. */
+/** Lista de favoritos: sin esto, marcar algo como favorito no llevaba a ningún sitio —
+ * el conmutador cambiaba, pero no había manera de volver a encontrarlo. Una lista por
+ * perfil, como el resto de "lo tuyo" (F "perfiles Netflix"). */
 export function FavoritesScreen() {
   const navigate = useNavigate();
   const { toggleFavorite } = useFavorites();
+  const { profileId } = useActiveProfile();
   const { data, isPending } = useQuery({
-    queryKey: ["favorites"],
-    queryFn: () => apiGet<FavoriteItem[]>("/api/favorites"),
+    queryKey: ["favorites", profileId],
+    queryFn: () => apiGet<FavoriteItem[]>(`/api/favorites?profile_id=${profileId}`),
+    enabled: profileId !== null,
   });
 
   const channels = data?.filter((f) => f.item_kind === "channel") ?? [];

@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { apiGet, apiPost } from "../../lib/api-client";
+import { useActiveProfile } from "../../lib/activeProfile";
 import type {
   AccountStatus,
   AccountStatusResponse,
@@ -11,7 +12,6 @@ import type {
   LanStatusResponse,
   M3uValidation,
   PairingStartResponse,
-  ParentalStatus,
   ProviderKind,
   ProviderSummary,
   SyncProgress,
@@ -326,7 +326,7 @@ export function SettingsScreen() {
       </section>
 
       <AccountSection />
-      <ParentalControlSection />
+      <ProfileSection />
       <LanSection />
       <DiagnosticsSection />
 
@@ -397,126 +397,23 @@ export function SettingsScreen() {
   );
 }
 
-/** Control parental (F8): un PIN oculta las categorías de canales y películas marcadas
- * como adultas (`is_adult`) hasta que se desbloquea. El desbloqueo nunca se guarda: se
- * pierde al reiniciar la app (ver `util::parental` en el núcleo). */
-function ParentalControlSection() {
-  const queryClient = useQueryClient();
-  const [pinInput, setPinInput] = useState("");
-  const [newPinInput, setNewPinInput] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const statusQuery = useQuery({
-    queryKey: ["parental-status"],
-    queryFn: () => apiGet<ParentalStatus>("/api/parental/status"),
-  });
-
-  function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["parental-status"] });
-  }
-
-  const unlockMutation = useMutation({
-    mutationFn: (pin: string) => apiPost("/api/parental/unlock", { pin }),
-    onSuccess: () => {
-      setPinInput("");
-      setError(null);
-      invalidate();
-    },
-    onError: () => setError("PIN incorrecto."),
-  });
-
-  const lockMutation = useMutation({
-    mutationFn: () => apiPost("/api/parental/lock", {}),
-    onSuccess: invalidate,
-  });
-
-  const setPinMutation = useMutation({
-    mutationFn: (pin: string | null) => apiPost("/api/parental/pin", { pin }),
-    onSuccess: () => {
-      setNewPinInput("");
-      setError(null);
-      invalidate();
-    },
-    onError: () => setError("No se pudo cambiar el PIN."),
-  });
-
-  const status = statusQuery.data;
+/** El control parental global de F8 (un PIN para toda la app) se sustituyó por perfiles
+ * reales: cada uno con su propio PIN de entrada y su propio "adulto"/"infantil" — se
+ * administran desde el propio selector de perfiles (botón "Administrar perfiles"), no
+ * desde Ajustes. Aquí solo queda un atajo para volver a ese selector. */
+function ProfileSection() {
+  const { setProfileId } = useActiveProfile();
 
   return (
     <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-      <h2 className="mb-4 text-xl font-medium">Control parental</h2>
+      <h2 className="mb-4 text-xl font-medium">Perfil</h2>
       <p className="mb-3 text-sm text-neutral-400">
-        Con un PIN configurado, las categorías de canales y películas marcadas como para adultos se ocultan hasta que lo
-        introduzcas. El desbloqueo dura solo mientras la app esté abierta.
+        Cambia de perfil, o crea/edita/borra perfiles y sus PIN desde el selector — cada perfil tiene su propia lista de
+        favoritos, su "continuar viendo", y su propio PIN opcional.
       </p>
-
-      {error && <p className="mb-3 text-red-400">{error}</p>}
-
-      {!status ? null : !status.has_pin ? (
-        <div className="flex gap-3">
-          <input
-            type="password"
-            inputMode="numeric"
-            placeholder="Nuevo PIN"
-            className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
-            value={newPinInput}
-            onChange={(e) => setNewPinInput(e.target.value)}
-          />
-          <button
-            type="button"
-            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50"
-            onClick={() => setPinMutation.mutate(newPinInput)}
-            disabled={!newPinInput || setPinMutation.isPending}
-          >
-            Establecer PIN
-          </button>
-        </div>
-      ) : !status.unlocked ? (
-        <div className="flex gap-3">
-          <input
-            type="password"
-            inputMode="numeric"
-            placeholder="PIN"
-            className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
-            value={pinInput}
-            onChange={(e) => setPinInput(e.target.value)}
-          />
-          <button
-            type="button"
-            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50"
-            onClick={() => unlockMutation.mutate(pinInput)}
-            disabled={!pinInput || unlockMutation.isPending}
-          >
-            Desbloquear
-          </button>
-        </div>
-      ) : (
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-3">
-            <span className="rounded bg-neutral-800 px-3 py-1 text-sm text-neutral-300">Desbloqueado por esta sesión</span>
-            <button type="button" className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600" onClick={() => lockMutation.mutate()}>
-              Bloquear ahora
-            </button>
-          </div>
-          <div className="flex gap-3">
-            <input
-              type="password"
-              inputMode="numeric"
-              placeholder="PIN nuevo (vacío para quitarlo)"
-              className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
-              value={newPinInput}
-              onChange={(e) => setNewPinInput(e.target.value)}
-            />
-            <button
-              type="button"
-              className="rounded bg-red-600 px-4 py-2 hover:bg-red-500"
-              onClick={() => setPinMutation.mutate(newPinInput || null)}
-            >
-              {newPinInput ? "Cambiar PIN" : "Quitar PIN"}
-            </button>
-          </div>
-        </div>
-      )}
+      <button type="button" className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600" onClick={() => setProfileId(null)}>
+        Cambiar de perfil
+      </button>
     </section>
   );
 }

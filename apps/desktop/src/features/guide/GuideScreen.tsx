@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../lib/api-client";
+import { useActiveProfile } from "../../lib/activeProfile";
 import type { CategorySummary, ChannelsPage, EpgGridProgramme } from "../../lib/api-types";
 
 const WINDOW_HOURS = 4;
@@ -38,18 +39,22 @@ function playerTargetFor(channel: ChannelsPage["items"][number], programme: EpgG
  * directo (el backend rechaza con un mensaje claro si el proveedor no lo permite). */
 export function GuideScreen() {
   const navigate = useNavigate();
+  const { profileId } = useActiveProfile();
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [windowStart, setWindowStart] = useState(() => roundDownToHalfHour(Date.now() / 1000));
   const [focusedIndex, setFocusedIndex] = useState(0);
 
   const categoriesQuery = useQuery({
-    queryKey: ["guide-categories"],
-    queryFn: () => apiGet<CategorySummary[]>("/api/live/categories"),
+    queryKey: ["guide-categories", profileId],
+    queryFn: () => apiGet<CategorySummary[]>(`/api/live/categories?profile_id=${profileId}`),
+    enabled: profileId !== null,
   });
 
   const channelsQuery = useQuery({
-    queryKey: ["guide-channels", categoryId],
-    queryFn: () => apiGet<ChannelsPage>(`/api/live/channels?limit=${CHANNEL_LIMIT}${categoryId ? `&category_id=${categoryId}` : ""}`),
+    queryKey: ["guide-channels", profileId, categoryId],
+    queryFn: () =>
+      apiGet<ChannelsPage>(`/api/live/channels?profile_id=${profileId}&limit=${CHANNEL_LIMIT}${categoryId ? `&category_id=${categoryId}` : ""}`),
+    enabled: profileId !== null,
   });
   const channels = channelsQuery.data?.items ?? [];
   const channelIds = useMemo(() => channels.map((c) => c.id), [channels]);

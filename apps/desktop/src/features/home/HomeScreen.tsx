@@ -1,15 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { apiGet } from "../../lib/api-client";
+import { useActiveProfile } from "../../lib/activeProfile";
 import type { HomeResponse } from "../../lib/api-types";
 import { Row } from "../../components/Row";
 import { PosterCard, PosterCardSkeleton } from "../../components/PosterCard";
 
 export function HomeScreen() {
   const navigate = useNavigate();
+  const { profileId } = useActiveProfile();
   const { data, isPending, isError } = useQuery({
-    queryKey: ["home"],
-    queryFn: () => apiGet<HomeResponse>("/api/home"),
+    queryKey: ["home", profileId],
+    queryFn: () => apiGet<HomeResponse>(`/api/home?profile_id=${profileId}`),
+    enabled: profileId !== null,
   });
 
   function openContinueWatching(itemKind: string, itemId: number) {

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiGetOrNull, apiPost, useApiBase } from "../../lib/api-client";
+import { useActiveProfile } from "../../lib/activeProfile";
 import type {
   ChannelsPage,
   EpgNowNextResponse,
@@ -41,6 +42,7 @@ export function PlayerScreen() {
   const search = useSearch({ from: "/player/$kind/$id" });
   const navigate = useNavigate();
   const { data: base } = useApiBase();
+  const { profileId } = useActiveProfile();
   const itemId = Number(id);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -80,10 +82,12 @@ export function PlayerScreen() {
     enabled: kind === "channel",
   });
   const channelsQuery = useQuery({
-    queryKey: ["player-channels", search.categoryId],
+    queryKey: ["player-channels", profileId, search.categoryId],
     queryFn: () =>
-      apiGetOrNull<ChannelsPage>(`/api/live/channels?limit=200${search.categoryId ? `&category_id=${search.categoryId}` : ""}`),
-    enabled: kind === "channel",
+      apiGetOrNull<ChannelsPage>(
+        `/api/live/channels?profile_id=${profileId}&limit=200${search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
+      ),
+    enabled: kind === "channel" && profileId !== null,
   });
   // Se pide siempre (no solo con el panel de estadísticas abierto) en VOD: es la fuente
   // más fiable de la duración real del fichero (ffprobe), mejor que `runtime_min` de
@@ -129,9 +133,9 @@ export function PlayerScreen() {
   // Cargar el progreso guardado antes de montar el <video> en VOD: decide si hay que
   // arrancar con `?start=` (nivel 2) — para directo no hay nada que resumir.
   useEffect(() => {
-    if (kind === "channel") return;
+    if (kind === "channel" || profileId === null) return;
     let cancelled = false;
-    apiGetOrNull<PlaybackProgressResponse>(`/api/playback/progress?item_kind=${kind}&item_id=${itemId}`).then((progress) => {
+    apiGetOrNull<PlaybackProgressResponse>(`/api/playback/progress?profile_id=${profileId}&item_kind=${kind}&item_id=${itemId}`).then((progress) => {
       if (cancelled) return;
       if (progress && !progress.finished && progress.position_s > RESUME_MIN_SECONDS) {
         setAppliedStart(progress.position_s);
@@ -143,7 +147,7 @@ export function PlayerScreen() {
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [kind, itemId]);
+  }, [kind, itemId, profileId]);
 
   useEffect(() => {
     if (resumeBanner == null) return;
@@ -173,11 +177,11 @@ export function PlayerScreen() {
   // por un `kind` aparte: sigue siendo el mismo canal, solo cambia a qué momento apunta.
   const isCatchup = kind === "channel" && search.catchupStart !== undefined;
   const streamPath = isCatchup
-    ? `/stream/catchup/${itemId}?start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}`
+    ? `/stream/catchup/${itemId}?profile_id=${profileId}&start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}`
     : kind === "channel"
-      ? `/stream/channel/${itemId}`
-      : `/stream/${kind}/${itemId}${appliedStart > 0 ? `?start=${appliedStart}` : ""}`;
-  const streamUrl = base ? `${base}${streamPath}` : undefined;
+      ? `/stream/channel/${itemId}?profile_id=${profileId}`
+      : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}`;
+  const streamUrl = base && profileId !== null ? `${base}${streamPath}` : undefined;
 
   // `<video onError>` no da el porqué (el navegador nunca ve el cuerpo de una respuesta
   // que no pudo interpretar como vídeo). En vez de un mensaje genérico siempre igual, se
@@ -201,10 +205,10 @@ export function PlayerScreen() {
   }, [streamUrl, isCatchup]);
 
   const launchMpv = useCallback(async () => {
-    if (!base) return;
+    if (!base || profileId === null) return;
     setMpvLaunching(true);
     try {
-      const response = await fetch(`${base}/stream/mpv/${kind}/${itemId}`, { method: "POST" });
+      const response = await fetch(`${base}/stream/mpv/${kind}/${itemId}?profile_id=${profileId}`, { method: "POST" });
       if (response.ok) {
         setErrorMessage(null);
         setNeedsMpv(false);
@@ -216,23 +220,24 @@ export function PlayerScreen() {
     } finally {
       setMpvLaunching(false);
     }
-  }, [base, kind, itemId]);
+  }, [base, kind, itemId, profileId]);
 
   // `saveProgress` necesita ser estable de verdad: si cambiara en cada `timeupdate` (como
   // pasaría si dependiera directamente de `displayCurrentTime`), el intervalo de guardado
   // de abajo se reiniciaría antes de completar sus 10 s y nunca llegaría a disparar. Por
   // eso lee los valores actuales de una ref en vez de cerrarlos por clausura.
-  const latestRef = useRef({ kind, itemId, displayCurrentTime, displayDuration, resumeReady });
+  const latestRef = useRef({ kind, itemId, profileId, displayCurrentTime, displayDuration, resumeReady });
   useEffect(() => {
-    latestRef.current = { kind, itemId, displayCurrentTime, displayDuration, resumeReady };
+    latestRef.current = { kind, itemId, profileId, displayCurrentTime, displayDuration, resumeReady };
   });
 
   const saveProgress = useCallback((finishedHint?: boolean) => {
-    const { kind, itemId, displayCurrentTime, displayDuration, resumeReady } = latestRef.current;
-    if (kind === "channel" || !resumeReady) return;
+    const { kind, itemId, profileId, displayCurrentTime, displayDuration, resumeReady } = latestRef.current;
+    if (kind === "channel" || !resumeReady || profileId === null) return;
     const position = Math.floor(displayCurrentTime);
     if (position <= 0 && !finishedHint) return;
     apiPost("/api/playback/progress", {
+      profile_id: profileId,
       item_kind: kind,
       item_id: itemId,
       position_s: position,

@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { apiGet } from "../../lib/api-client";
+import { useActiveProfile } from "../../lib/activeProfile";
 import type { CategorySummary, ChannelsPage, EpgNowNextResponse } from "../../lib/api-types";
 
 const ROW_HEIGHT = 60;
@@ -10,19 +11,24 @@ const EPG_REFRESH_MS = 60_000;
 
 export function LiveScreen() {
   const navigate = useNavigate();
+  const { profileId } = useActiveProfile();
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const categoriesQuery = useQuery({
-    queryKey: ["live-categories"],
-    queryFn: () => apiGet<CategorySummary[]>("/api/live/categories"),
+    queryKey: ["live-categories", profileId],
+    queryFn: () => apiGet<CategorySummary[]>(`/api/live/categories?profile_id=${profileId}`),
+    enabled: profileId !== null,
   });
 
   const channelsQuery = useInfiniteQuery({
-    queryKey: ["live-channels", categoryId],
+    queryKey: ["live-channels", profileId, categoryId],
     queryFn: ({ pageParam }: { pageParam: number | undefined }) =>
-      apiGet<ChannelsPage>(`/api/live/channels?limit=80${categoryId ? `&category_id=${categoryId}` : ""}${pageParam ? `&after=${pageParam}` : ""}`),
+      apiGet<ChannelsPage>(
+        `/api/live/channels?profile_id=${profileId}&limit=80${categoryId ? `&category_id=${categoryId}` : ""}${pageParam ? `&after=${pageParam}` : ""}`,
+      ),
     initialPageParam: undefined as number | undefined,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    enabled: profileId !== null,
   });
 
   const items = (channelsQuery.data?.pages ?? []).flatMap((page) => page.items);
