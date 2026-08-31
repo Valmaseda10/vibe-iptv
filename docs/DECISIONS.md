@@ -501,11 +501,25 @@ demuestra de verdad sobre soporte de Range) en vez de la duración. Aprendido: p
 el navegador infiera progresivamente (`duration` incluida) es sospechosa hasta que se
 demuestre estable — mejor apoyarse en lo que el núcleo ya sabe con certeza.
 
+**Tercera vuelta: la barra desapareció del todo.** Comprobado contra la base de datos
+real del usuario y contra el propio `GET /api/playback/tier` en caliente: el núcleo
+tenía el dato correcto (`tier: 2, duration_s: 8834.08`, ~2h27, coherente con una
+película). El fallo estaba en el cliente: `tierQuery` se pide en paralelo al montar,
+justo cuando el `/stream/*` de esa misma carga puede no haber terminado de sondear
+todavía, así que la primera respuesta puede llegar con la caché aún vacía; el único
+reintento que había (`onLoadedMetadata`) asumía un orden de eventos no garantizado.
+Arreglado con `refetchInterval` condicional: reintenta cada segundo mientras no se
+conozca el nivel, para en cuanto se conoce. Además, ahora hay botones «10s/10s» siempre
+visibles en vídeo/episodio (no solo la barra numérica): si por lo que sea la duración
+tarda en saberse, buscar hacia detrás/delante nunca depende de que se haya pintado la
+barra.
+
 **Deuda técnica pendiente.**
 - Toda la de fases anteriores.
 - **Verificado por el usuario**: audio y vídeo van bien en directo y en película. La
-  búsqueda en VOD remuxeado está corregida dos veces (ver arriba) pero **todavía sin una
-  tercera confirmación del usuario** tras este último cambio.
+  barra/búsqueda de VOD ha necesitado tres vueltas de corrección; la última (reintento
+  activo hasta conocer el nivel + botones de salto siempre visibles) **todavía sin
+  confirmar** por el usuario.
 - Series, zapping y reanudar no se han probado todavía con el proveedor real del
   usuario.
 - HLS: proxy transparente sin reescritura de manifiesto, sin `hls.js` en el cliente (ver

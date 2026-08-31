@@ -84,7 +84,16 @@ export function PlayerScreen() {
     queryKey: ["player-tier", kind, itemId],
     queryFn: () => apiGetOrNull<PlaybackTierResponse>(`/api/playback/tier/${kind}/${itemId}`),
     enabled: kind !== "channel",
-    refetchInterval: statsVisible ? 3000 : false,
+    // La primera petición puede llegar antes de que el propio /stream/* termine de
+    // sondear (van en paralelo al montar) y encontrar la caché todavía vacía. En vez de
+    // depender solo del refetch de `onLoadedMetadata` (que asume que loadedmetadata
+    // llega después de terminar el sondeo, no siempre demostrado), reintenta cada
+    // segundo mientras no se sepa el nivel; en cuanto se sabe, para de sondear salvo que
+    // el panel de estadísticas esté abierto (ahí sigue cada 3 s para verlo en vivo).
+    refetchInterval: (query) => {
+      if (query.state.data?.tier == null) return 1000;
+      return statsVisible ? 3000 : false;
+    },
   });
 
   const currentEpisode = seriesQuery.data?.episodes.find((e) => e.id === itemId);
@@ -414,6 +423,27 @@ export function PlayerScreen() {
           <button type="button" onClick={togglePlay} className="outline-none" aria-label={playing ? "Pausar" : "Reproducir"}>
             {playing ? <PauseIcon className="h-7 w-7" /> : <PlayIcon className="h-7 w-7" />}
           </button>
+
+          {kind !== "channel" && (
+            <div className="flex items-center gap-2 text-sm">
+              <button
+                type="button"
+                onClick={() => seekTo(displayCurrentTime - SEEK_STEP_SECONDS)}
+                className="rounded px-2 py-1 outline-none hover:bg-white/10"
+                title="Retroceder 10 s (flecha izquierda)"
+              >
+                «10s
+              </button>
+              <button
+                type="button"
+                onClick={() => seekTo(displayCurrentTime + SEEK_STEP_SECONDS)}
+                className="rounded px-2 py-1 outline-none hover:bg-white/10"
+                title="Avanzar 10 s (flecha derecha)"
+              >
+                10s»
+              </button>
+            </div>
+          )}
 
           {kind === "channel" ? (
             <div className="flex items-center gap-2">
