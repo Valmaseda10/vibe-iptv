@@ -807,12 +807,19 @@ usuario tiene `has_catchup=1` en los datos vistos hasta ahora.
   que usan las consultas nuevas de F7-F9 (`idx_epg_lookup`, `idx_playback_recent`, PK
   de `channels`) ya existían desde `001_schema_inicial.sql`.
 
+**Actualización 2026-08-31: mpv verificado contra la app real.** El usuario instaló
+mpv (build de `shinchiro/mpv-winbuild-cmake`) y lo añadió al PATH de usuario. Con la
+app corriendo de verdad (`npm run tauri dev`) se probó `POST /stream/mpv/channel/:id`
+contra dos canales reales del catálogo: la ventana de mpv se abre con el título
+correcto, cambiar de canal cierra sola la ventana anterior sin dejar duplicados, y
+cerrar mpv a mano (simulando al usuario) no deja la app "pensando que sigue ocupada" —
+un stream normal pedido justo después responde al instante. Sin ffmpeg ni mpv
+huérfanos al terminar. Sigue sin probarse against un canal que *de verdad* necesite
+nivel 3 por códec (HEVC, etc.): la prueba forzó el endpoint directamente, que no mira
+el códec real del canal — pero el ciclo de vida completo (lanzar, sustituir, cerrar)
+ya está confirmado, que era la parte que dependía de este proyecto y no del proveedor.
+
 **Deuda técnica que deja esta fase.**
-- **mpv sin verificar de verdad.** Todo lo construido (`media::mpv`,
-  `run_until_exit_or_replaced`, el endpoint, el botón) compila y tiene tests de forma
-  (argumentos, códigos de estado), pero nunca se ha lanzado mpv de verdad: no está
-  instalado en esta máquina. Antes de confiar en esto hace falta probarlo contra un
-  proveedor real con un canal que fuerce nivel 3 (p. ej. HEVC).
 - **Catch-up sin verificar contra un proveedor que lo ofrezca de verdad.** La
   construcción de las dos URLs sigue `docs/XTREAM-API.md` al pie de la letra y tiene
   tests unitarios, pero ningún canal visto hasta ahora en los datos reales del usuario
