@@ -14,10 +14,19 @@ export function useApiBase() {
   return useQuery({ queryKey: ["server-base-url"], queryFn: getApiBase, staleTime: Infinity });
 }
 
+/** El núcleo manda mensajes de error pensados para enseñarse tal cual (p. ej.
+ * "email rate limit exceeded", "PIN incorrecto") — antes se perdían y solo llegaba el
+ * número de estado (`502`, `401`...) a quien mostraba el error, un fallo real
+ * encontrado probando la cuenta de sincronización contra el proveedor real. */
+async function throwWithBody(path: string, response: Response): Promise<never> {
+  const text = await response.text().catch(() => "");
+  throw new Error(text || `${path} -> ${response.status}`);
+}
+
 export async function apiGet<T>(path: string): Promise<T> {
   const base = await getApiBase();
   const response = await fetch(`${base}${path}`);
-  if (!response.ok) throw new Error(`${path} -> ${response.status}`);
+  if (!response.ok) return throwWithBody(path, response);
   return response.json() as Promise<T>;
 }
 
@@ -28,7 +37,7 @@ export async function apiGetOrNull<T>(path: string): Promise<T | null> {
   const base = await getApiBase();
   const response = await fetch(`${base}${path}`);
   if (response.status === 204) return null;
-  if (!response.ok) throw new Error(`${path} -> ${response.status}`);
+  if (!response.ok) return throwWithBody(path, response);
   return response.json() as Promise<T>;
 }
 
@@ -43,7 +52,7 @@ export async function apiPost<T = void>(path: string, body: unknown): Promise<T>
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(`${path} -> ${response.status}`);
+  if (!response.ok) return throwWithBody(path, response);
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
@@ -55,13 +64,13 @@ export async function apiPatch(path: string, body: unknown): Promise<void> {
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!response.ok) throw new Error(`${path} -> ${response.status}`);
+  if (!response.ok) return throwWithBody(path, response);
 }
 
 export async function apiDelete(path: string): Promise<void> {
   const base = await getApiBase();
   const response = await fetch(`${base}${path}`, { method: "DELETE" });
-  if (!response.ok) throw new Error(`${path} -> ${response.status}`);
+  if (!response.ok) return throwWithBody(path, response);
 }
 
 /** URL de una imagen cacheada por el núcleo (`GET /img/:size/:image_id`), o `null` si
