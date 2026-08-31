@@ -1,0 +1,13 @@
+{
+  "info": {
+    "movie_image": "http://example.invalid/poster.jpg",
+    "duration_secs": 7200,
+    "duration": "02:00:00",
+    "video": { "codec_name": "h264", "width": 1920, "height": 1080 },
+    "audio": { "codec_name": "aac" }
+  },
+  "movie_data": {
+    "stream_id": 12345,
+    "container_extension": "mp4"
+  }
+}

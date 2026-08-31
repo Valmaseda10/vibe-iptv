@@ -12,7 +12,7 @@ use serde::Deserialize;
 use super::error::{Result, SourceError};
 use super::model::{
     AccountInfo, CatchupRef, MediaKind, RawCategory, RawChannel, RawEpisode, RawMovie, RawSeries,
-    RawSeriesDetail, StreamRef, XmltvStream,
+    RawSeriesDetail, StreamRef, VodInfo, XmltvStream,
 };
 use super::serde_helpers::{lenient_f64, lenient_i64, lenient_id_opt, lenient_u32, non_empty_string_opt};
 use super::Source;
@@ -186,6 +186,11 @@ impl Source for XtreamSource {
         Ok(RawSeriesDetail { episodes })
     }
 
+    async fn vod_info(&self, remote_id: &str) -> Result<VodInfo> {
+        let value: serde_json::Value = self.get_json(Some("get_vod_info"), &[("vod_id", remote_id)]).await?;
+        Ok(parse_vod_info(&value))
+    }
+
     async fn epg_xmltv(&self) -> Result<Option<XmltvStream>> {
         let mut url = Url::parse(&self.base_url)
             .map_err(|_| SourceError::invalid_response(&self.base_url, "URL base inválida"))?;
@@ -250,6 +255,27 @@ impl XtreamSource {
         let (y, m, d, h, mi, _s) = crate::util::civil_time::epoch_to_ymd_hms(start_epoch);
         format!("{y:04}-{m:02}-{d:02}:{h:02}-{mi:02}")
     }
+}
+
+/// Deliberadamente sobre `serde_json::Value` en vez de una `struct` tipada: sin una
+/// muestra real de `get_vod_info` contra la que contrastar (ver el comentario de
+/// `Source::vod_info`), forzar una forma concreta significaría que un panel con el JSON
+/// solo ligeramente distinto tirase la ficha entera con un error de parseo. Así, cada
+/// campo que no encaje se pierde solo, sin romper el resto.
+fn parse_vod_info(value: &serde_json::Value) -> VodInfo {
+    let info = value.get("info");
+    let duration_seconds = info.and_then(|i| i.get("duration_secs")).and_then(json_as_i64);
+    let video_codec = info.and_then(|i| i.get("video")).and_then(|v| v.get("codec_name")).and_then(|v| v.as_str()).map(str::to_string);
+    let audio_codec = info.and_then(|i| i.get("audio")).and_then(|v| v.get("codec_name")).and_then(|v| v.as_str()).map(str::to_string);
+    VodInfo { duration_seconds, video_codec, audio_codec }
+}
+
+/// Algunos paneles mandan los números como cadena ("7200" en vez de 7200) — el mismo
+/// patrón que ya hace falta en el resto de este fichero (`lenient_i64` y compañía), pero
+/// operando sobre un `serde_json::Value` ya parseado en vez de durante la
+/// deserialización.
+fn json_as_i64(value: &serde_json::Value) -> Option<i64> {
+    value.as_i64().or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
 
 fn looks_like_auth_failure(bytes: &[u8]) -> bool {
@@ -498,6 +524,7 @@ mod tests {
                 Some("get_vod_streams") => fixture("get_vod_streams.json"),
                 Some("get_series") => fixture("get_series.json"),
                 Some("get_series_info") => fixture("get_series_info.json"),
+                Some("get_vod_info") => fixture("get_vod_info.json"),
                 Some(other) => panic!("acción no cubierta por el mock de tests: {other}"),
             }
         };
@@ -666,6 +693,41 @@ mod tests {
             .unwrap();
         assert_eq!(ep_s2.season, 2);
         assert_eq!(ep_s2.duration_s, Some(1620));
+    }
+
+    #[tokio::test]
+    async fn vod_info_parses_duration_and_codecs_from_the_fixture() {
+        let base_url = spawn_mock_server(MockState::default()).await;
+        let source = XtreamSource::new(base_url, "demo", "demo", None).unwrap();
+
+        let info = source.vod_info("12345").await.unwrap();
+        assert_eq!(info.duration_seconds, Some(7200));
+        assert_eq!(info.video_codec.as_deref(), Some("h264"));
+        assert_eq!(info.audio_codec.as_deref(), Some("aac"));
+    }
+
+    /// El caso real que justifica parsear sobre `serde_json::Value` en vez de una
+    /// `struct` tipada: sin una muestra real del panel del usuario, un JSON con una
+    /// forma completamente distinta a la esperada no debe romper la ficha ni la
+    /// sincronización — solo dar "sin información técnica", igual que si faltara del
+    /// todo.
+    #[test]
+    fn parse_vod_info_tolerates_a_totally_different_shape() {
+        let weird = serde_json::json!({ "algo": "que no es en absoluto lo esperado", "info": "ni siquiera es un objeto" });
+        assert_eq!(parse_vod_info(&weird), VodInfo::default());
+    }
+
+    #[test]
+    fn parse_vod_info_tolerates_duration_as_a_string() {
+        let value = serde_json::json!({ "info": { "duration_secs": "5400" } });
+        let info = parse_vod_info(&value);
+        assert_eq!(info.duration_seconds, Some(5400));
+        assert_eq!(info.video_codec, None);
+    }
+
+    #[test]
+    fn parse_vod_info_handles_a_completely_empty_object() {
+        assert_eq!(parse_vod_info(&serde_json::json!({})), VodInfo::default());
     }
 
     #[tokio::test]

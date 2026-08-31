@@ -33,6 +33,11 @@ export function MovieDetailScreen() {
 
   const backdrop = imagePath(base, data.backdrop_path, "w1280");
   const qualities = [...new Set(data.sources.map((s) => s.quality).filter((q): q is string => Boolean(q)))];
+  // TMDB no siempre tiene la duración (títulos nuevos u oscuros); la duración real del
+  // fichero, sin abrir ningún stream (F "premium", Source::vod_info), es un buen
+  // respaldo cuando falta.
+  const technicalDurationMin = data.sources.find((s) => s.duration_s)?.duration_s;
+  const durationMin = data.runtime_min || (technicalDurationMin ? Math.round(technicalDurationMin / 60) : null);
 
   return (
     <div className="relative min-h-full">
@@ -50,7 +55,7 @@ export function MovieDetailScreen() {
         <div className="flex flex-wrap items-center gap-3 text-sm text-neutral-300">
           {data.age_rating && <span className="rounded border border-neutral-500 px-1.5 py-0.5 text-xs font-semibold">{data.age_rating}</span>}
           {data.year && <span>{data.year}</span>}
-          {data.runtime_min && <span>{data.runtime_min} min</span>}
+          {durationMin ? <span>{durationMin} min</span> : null}
           {data.rating != null && <span>★ {data.rating.toFixed(1)}</span>}
           <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs uppercase tracking-wide text-neutral-400">{tmdbStateLabel(data.tmdb_state)}</span>
         </div>

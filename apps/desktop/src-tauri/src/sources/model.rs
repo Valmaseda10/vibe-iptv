@@ -65,6 +65,17 @@ pub struct RawSeries {
     pub release_date: Option<String>,
 }
 
+/// Duración y códecs de una película, sin abrir ningún stream (F "premium": informe de
+/// I+D). Todo opcional a propósito: cada campo que falte o no se entienda simplemente
+/// se omite, nunca rompe la ficha — ver el comentario de `Source::vod_info` sobre la
+/// incertidumbre real del formato exacto de `get_vod_info` entre paneles Xtream.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct VodInfo {
+    pub duration_seconds: Option<i64>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+}
+
 #[derive(Debug, Clone)]
 pub struct RawEpisode {
     pub remote_id: String,

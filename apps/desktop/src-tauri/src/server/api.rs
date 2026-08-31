@@ -14,6 +14,7 @@ use ts_rs::TS;
 use crate::catalog::tmdb::{TmdbClient, TmdbExtras, TMDB_API_KEY_CREDENTIAL_REF};
 use crate::db::reads::{self, MovieSort};
 use crate::db::{queries, schema, DbError};
+use crate::sources::{Source, VodInfo};
 use crate::util::keychain;
 
 #[derive(Clone)]
@@ -141,11 +142,27 @@ pub struct MovieSourceSummary {
     pub quality: Option<String>,
     pub language: Option<String>,
     pub container: Option<String>,
+    /// Duración/códecs reales del fichero (F "premium", `Source::vod_info`) — `None`
+    /// hasta que se comprueba al abrir la ficha, o si el proveedor no dio nada.
+    #[ts(type = "number | null")]
+    pub duration_s: Option<i64>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
 }
 
 impl From<reads::MovieSourceItem> for MovieSourceSummary {
     fn from(row: reads::MovieSourceItem) -> Self {
-        Self { id: row.id, provider_id: row.provider_id, remote_id: row.remote_id, quality: row.quality, language: row.language, container: row.container }
+        Self {
+            id: row.id,
+            provider_id: row.provider_id,
+            remote_id: row.remote_id,
+            quality: row.quality,
+            language: row.language,
+            container: row.container,
+            duration_s: row.duration_s,
+            video_codec: row.video_codec,
+            audio_codec: row.audio_codec,
+        }
     }
 }
 
@@ -597,13 +614,30 @@ async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumP
 
     if movie.trailer_checked_at.is_none() {
         if let Some(tmdb_id) = movie.tmdb_id {
-            match fetch_and_store_movie_extras(db_path, id, tmdb_id).await {
+            match fetch_and_store_movie_extras(db_path.clone(), id, tmdb_id).await {
                 Ok(extras) => {
                     movie.youtube_trailer_key = extras.trailer_key;
                     movie.age_rating = extras.age_rating;
                 }
                 Err(err) => tracing::warn!(movie_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
             }
+        }
+    }
+
+    // Duración/códecs reales (F "premium", `Source::vod_info`): solo la primera fuente
+    // sin comprobar, y solo una por visita a la ficha — no tiene sentido preguntarle al
+    // proveedor por cada fuente disponible de la misma película a la vez.
+    if let Some(source) = movie.sources.iter().find(|s| s.vod_info_checked_at.is_none()) {
+        let (source_id, provider_id, remote_id) = (source.id, source.provider_id, source.remote_id.clone());
+        match fetch_and_store_vod_info(db_path, source_id, provider_id, remote_id).await {
+            Ok(info) => {
+                if let Some(s) = movie.sources.iter_mut().find(|s| s.id == source_id) {
+                    s.duration_s = info.duration_seconds;
+                    s.video_codec = info.video_codec;
+                    s.audio_codec = info.audio_codec;
+                }
+            }
+            Err(err) => tracing::warn!(movie_id = id, source_id, error = %err, "no se pudo comprobar la información técnica"),
         }
     }
 
@@ -632,6 +666,25 @@ async fn fetch_and_store_series_extras(db_path: PathBuf, series_id: i64, tmdb_id
         .await
         .map_err(|err| err.to_string())?;
     Ok(extras)
+}
+
+/// Duración/códecs reales de una fuente, sin abrir su stream (`Source::vod_info`) — el
+/// mismo `build_source_for_provider` que ya usa `refresh_series_detail` para reconstruir
+/// la fuente con las credenciales del proveedor desde el keychain.
+async fn fetch_and_store_vod_info(db_path: PathBuf, movie_source_id: i64, provider_id: i64, remote_id: String) -> Result<VodInfo, String> {
+    let provider_row = with_db(db_path.clone(), move |conn| queries::get_provider(conn, provider_id))
+        .await
+        .map_err(|err| err.to_string())?
+        .ok_or("proveedor no encontrado")?;
+    let source = crate::commands::build_source_for_provider(provider_row).await?;
+    let info = source.vod_info(&remote_id).await.map_err(|err| err.to_string())?;
+    let stored = info.clone();
+    with_db(db_path, move |conn| {
+        queries::set_movie_source_vod_info(conn, movie_source_id, stored.duration_seconds, stored.video_codec.as_deref(), stored.audio_codec.as_deref())
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    Ok(info)
 }
 
 #[derive(Serialize, TS)]
@@ -1094,6 +1147,43 @@ mod tests {
         let json = body_json(response).await;
         assert_eq!(json["trailer_key"], "ya-en-cache");
         assert_eq!(json["age_rating"], "16");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// La película sembrada tiene una fuente de un proveedor sin credenciales guardadas
+    /// (`seeded_db` no las pone) — `Source::vod_info` no se puede ni intentar sin ellas.
+    /// La ficha tiene que responder igual, con `duration_s`/`video_codec` a `null`, no
+    /// romperse por esto.
+    #[tokio::test]
+    async fn get_movie_detail_still_responds_when_the_provider_has_no_stored_credentials() {
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+
+        let response = router.oneshot(Request::builder().uri("/api/movies/1").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["sources"][0]["duration_s"], serde_json::Value::Null);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Si la información técnica ya se comprobó antes (`vod_info_checked_at` con fecha),
+    /// la ficha la devuelve de caché sin intentar reconstruir ninguna fuente.
+    #[tokio::test]
+    async fn get_movie_detail_returns_cached_vod_info_without_rechecking() {
+        let db_path = seeded_db();
+        {
+            let conn = open_connection_at(&db_path).unwrap();
+            let source_id: i64 = conn.query_row("SELECT id FROM movie_sources WHERE movie_id = 1", [], |r| r.get(0)).unwrap();
+            write_queries::set_movie_source_vod_info(&conn, source_id, Some(7200), Some("h264"), Some("aac")).unwrap();
+        }
+        let router = catalog_router(db_path.clone());
+
+        let response = router.oneshot(Request::builder().uri("/api/movies/1").body(Body::empty()).unwrap()).await.unwrap();
+        let json = body_json(response).await;
+        assert_eq!(json["sources"][0]["duration_s"], 7200);
+        assert_eq!(json["sources"][0]["video_codec"], "h264");
 
         let _ = std::fs::remove_file(&db_path);
     }

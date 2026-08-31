@@ -265,6 +265,10 @@ pub struct MovieSourceItem {
     pub quality: Option<String>,
     pub language: Option<String>,
     pub container: Option<String>,
+    pub duration_s: Option<i64>,
+    pub video_codec: Option<String>,
+    pub audio_codec: Option<String>,
+    pub vod_info_checked_at: Option<i64>,
 }
 
 pub struct MovieDetail {
@@ -339,7 +343,8 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
     let genres: Vec<i64> = genres_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
 
     let mut stmt = conn.prepare(
-        "SELECT id, provider_id, remote_id, quality, language, container FROM movie_sources WHERE movie_id = ?1",
+        "SELECT id, provider_id, remote_id, quality, language, container, duration_s, video_codec, audio_codec, vod_info_checked_at
+         FROM movie_sources WHERE movie_id = ?1",
     )?;
     let sources = stmt
         .query_map(params![id], |row| {
@@ -350,6 +355,10 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
                 quality: row.get(3)?,
                 language: row.get(4)?,
                 container: row.get(5)?,
+                duration_s: row.get(6)?,
+                video_codec: row.get(7)?,
+                audio_codec: row.get(8)?,
+                vod_info_checked_at: row.get(9)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;

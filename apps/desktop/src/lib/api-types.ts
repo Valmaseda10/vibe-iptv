@@ -76,7 +76,12 @@ trailer_key: string | null,
  */
 age_rating: string | null, sources: Array<MovieSourceSummary>, };
 
-export type MovieSourceSummary = { id: number, provider_id: number, remote_id: string, quality: string | null, language: string | null, container: string | null, };
+export type MovieSourceSummary = { id: number, provider_id: number, remote_id: string, quality: string | null, language: string | null, container: string | null, 
+/**
+ * Duración/códecs reales del fichero (F "premium", `Source::vod_info`) — `None`
+ * hasta que se comprueba al abrir la ficha, o si el proveedor no dio nada.
+ */
+duration_s: number | null, video_codec: string | null, audio_codec: string | null, };
 
 export type MovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, };
 

@@ -7,7 +7,7 @@ pub mod xtream;
 pub use error::{Result, SourceError};
 pub use model::{
     AccountInfo, CatchupRef, MediaKind, RawCategory, RawChannel, RawMovie, RawSeries, RawSeriesDetail,
-    StreamRef, XmltvStream,
+    StreamRef, VodInfo, XmltvStream,
 };
 
 use async_trait::async_trait;
@@ -48,5 +48,21 @@ pub trait Source {
     /// funciona varía por versión de panel.
     fn catchup_url_fallback(&self, _item: &CatchupRef) -> Result<Option<Url>> {
         Ok(None)
+    }
+
+    /// Duración y códecs de una película, sin abrir ningún stream (`get_vod_info` en
+    /// Xtream). Bajo demanda al abrir la ficha (`server::api`), nunca durante la
+    /// sincronización general — regla R4, con catálogos de hasta 100.000 títulos no
+    /// tiene sentido una llamada de más por título que puede que nadie abra nunca.
+    ///
+    /// `docs/XTREAM-API.md` solo documenta que la respuesta trae "duración, códecs", sin
+    /// dar la forma exacta del JSON — varía entre versiones de panel y no hay una
+    /// muestra real con la que contrastar. Por eso el valor por defecto (M3U, que no
+    /// tiene ningún endpoint equivalente) es "sin información" y no un error, y
+    /// `XtreamSource` la sobreescribe con un parseo deliberadamente tolerante: un campo
+    /// que falte o tenga una forma distinta a la esperada da `None`, nunca rompe la
+    /// ficha ni la sincronización.
+    async fn vod_info(&self, _remote_id: &str) -> Result<VodInfo> {
+        Ok(VodInfo::default())
     }
 }

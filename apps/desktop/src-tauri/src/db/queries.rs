@@ -478,6 +478,23 @@ pub fn set_series_extras(conn: &Connection, series_id: i64, trailer_key: Option<
     Ok(())
 }
 
+/// Guarda la duración/códecs reales de una fuente concreta (F "premium",
+/// `Source::vod_info`) — `checked_at` siempre se pone, aunque el proveedor no haya dado
+/// nada, para no volver a preguntar en cada visita a la ficha (migración 008).
+pub fn set_movie_source_vod_info(
+    conn: &Connection,
+    movie_source_id: i64,
+    duration_s: Option<i64>,
+    video_codec: Option<&str>,
+    audio_codec: Option<&str>,
+) -> Result<()> {
+    conn.execute(
+        "UPDATE movie_sources SET duration_s = ?1, video_codec = ?2, audio_codec = ?3, vod_info_checked_at = ?4 WHERE id = ?5",
+        params![duration_s, video_codec, audio_codec, now_epoch(), movie_source_id],
+    )?;
+    Ok(())
+}
+
 /// Nombres de género de TMDB (F "premium"): se piden una vez con la clave de API, casi
 /// nunca cambian, y no dependen de ningún proveedor ni categoría concreta.
 pub fn upsert_genre_names(conn: &Connection, kind: &str, genres: &[(i64, String)]) -> Result<()> {
