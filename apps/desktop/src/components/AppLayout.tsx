@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link, useRouterState } from "@tanstack/react-router";
+import { ProfileSwitcher } from "../features/profiles/ProfileSwitcher";
 import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon } from "./icons";
 
 const NAV_ITEMS = [
@@ -31,9 +32,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
         className={`flex shrink-0 flex-col border-r border-neutral-900 bg-neutral-950 py-4 transition-[width] duration-150 ${collapsed ? "w-16" : "w-56"}`}
         aria-label="Navegación principal"
       >
-        <div className={`mb-6 flex items-center gap-2 px-4 ${collapsed ? "justify-center px-0" : ""}`}>
+        <div className={`mb-3 flex items-center gap-2 px-4 ${collapsed ? "justify-center px-0" : ""}`}>
           <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-600" />
           {!collapsed && <span className="text-sm font-semibold tracking-wide">VIBE IPTV</span>}
+        </div>
+
+        <div className="mb-4">
+          <ProfileSwitcher collapsed={collapsed} />
         </div>
 
         <ul className="flex flex-1 flex-col gap-1 px-2">

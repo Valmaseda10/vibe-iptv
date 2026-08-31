@@ -423,6 +423,7 @@ function ProfileSection() {
  * catálogo, las credenciales de proveedor y el streaming en sí nunca pasan por aquí. */
 function AccountSection() {
   const queryClient = useQueryClient();
+  const { setProfileId } = useActiveProfile();
   const [mode, setMode] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -438,6 +439,14 @@ function AccountSection() {
     queryClient.invalidateQueries({ queryKey: ["account-status"] });
   }
 
+  // Cambiar de cuenta (entrar o salir) puede significar que ahora manda otra persona
+  // delante de la pantalla: se vuelve a preguntar el perfil en vez de arrastrar el que
+  // quedó activo, igual que hace `AccountGate` justo después de iniciar sesión.
+  function forgetActiveProfile() {
+    setProfileId(null);
+    queryClient.invalidateQueries({ queryKey: ["profiles"] });
+  }
+
   const authMutation = useMutation({
     mutationFn: () => apiPost<AccountStatusResponse>(mode === "login" ? "/api/account/login" : "/api/account/signup", { email, password }),
     onSuccess: (result) => {
@@ -445,6 +454,7 @@ function AccountSection() {
       setPassword("");
       if (result.logged_in) {
         invalidate();
+        forgetActiveProfile();
       } else {
         // Alta hecha pero pendiente de confirmar el email: no hay sesión todavía.
         setInfo("Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión.");
@@ -455,7 +465,13 @@ function AccountSection() {
 
   const logoutMutation = useMutation({
     mutationFn: () => apiPost("/api/account/logout", {}),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      // Invalidar "account-status" ya basta para que `AccountGate` (que envuelve toda
+      // la app) vuelva a mostrar la pantalla de cuenta — no hace falta ninguna bandera
+      // aparte de recordar/deshacer.
+      invalidate();
+      forgetActiveProfile();
+    },
   });
 
   if (statusQuery.data?.logged_in) {
