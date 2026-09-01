@@ -198,6 +198,7 @@ pub struct MovieListItem {
     pub poster_path: Option<String>,
     pub rating: Option<f64>,
     pub tmdb_state: String,
+    pub added_at: Option<i64>,
 }
 
 /// Cursor de una página: siempre lleva el último `id` visto, y además el valor de la
@@ -228,7 +229,7 @@ pub fn list_movies_page(
     limit: i64,
     include_adult: bool,
 ) -> Result<Vec<MovieListItem>> {
-    let mut sql = String::from("SELECT DISTINCT m.id, m.clean_title, m.year, m.poster_path, m.rating, m.tmdb_state FROM movies m");
+    let mut sql = String::from("SELECT DISTINCT m.id, m.clean_title, m.year, m.poster_path, m.rating, m.tmdb_state, m.added_at FROM movies m");
     if quality.is_some() {
         sql.push_str(" JOIN movie_sources ms ON ms.movie_id = m.id");
     }
@@ -313,6 +314,7 @@ pub fn list_movies_page(
             poster_path: row.get(3)?,
             rating: row.get(4)?,
             tmdb_state: row.get(5)?,
+            added_at: row.get(6)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -1413,10 +1415,18 @@ pub fn get_featured_movie(conn: &Connection) -> Result<Option<FeaturedMovieRow>>
 
 pub fn list_recent_movies(conn: &Connection, limit: i64) -> Result<Vec<MovieListItem>> {
     let mut stmt = conn.prepare(
-        "SELECT id, clean_title, year, poster_path, rating, tmdb_state FROM movies ORDER BY added_at DESC, id DESC LIMIT ?1",
+        "SELECT id, clean_title, year, poster_path, rating, tmdb_state, added_at FROM movies ORDER BY added_at DESC, id DESC LIMIT ?1",
     )?;
     let rows = stmt.query_map(params![limit], |row| {
-        Ok(MovieListItem { id: row.get(0)?, clean_title: row.get(1)?, year: row.get(2)?, poster_path: row.get(3)?, rating: row.get(4)?, tmdb_state: row.get(5)? })
+        Ok(MovieListItem {
+            id: row.get(0)?,
+            clean_title: row.get(1)?,
+            year: row.get(2)?,
+            poster_path: row.get(3)?,
+            rating: row.get(4)?,
+            tmdb_state: row.get(5)?,
+            added_at: row.get(6)?,
+        })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
@@ -1440,7 +1450,7 @@ pub fn list_genre_rows(conn: &Connection, top_genre_count: i64, movies_per_genre
     let genre_ids: Vec<i64> = genre_stmt.query_map(params![top_genre_count], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut movie_stmt = conn.prepare(
-        "SELECT id, clean_title, year, poster_path, rating, tmdb_state FROM movies
+        "SELECT id, clean_title, year, poster_path, rating, tmdb_state, added_at FROM movies
          WHERE tmdb_state = 'matched' AND EXISTS (SELECT 1 FROM json_each(movies.genres) WHERE value = ?1)
          ORDER BY added_at DESC, id DESC LIMIT ?2",
     )?;
@@ -1449,7 +1459,15 @@ pub fn list_genre_rows(conn: &Connection, top_genre_count: i64, movies_per_genre
     for genre_id in genre_ids {
         let movies = movie_stmt
             .query_map(params![genre_id, movies_per_genre], |row| {
-                Ok(MovieListItem { id: row.get(0)?, clean_title: row.get(1)?, year: row.get(2)?, poster_path: row.get(3)?, rating: row.get(4)?, tmdb_state: row.get(5)? })
+                Ok(MovieListItem {
+                    id: row.get(0)?,
+                    clean_title: row.get(1)?,
+                    year: row.get(2)?,
+                    poster_path: row.get(3)?,
+                    rating: row.get(4)?,
+                    tmdb_state: row.get(5)?,
+                    added_at: row.get(6)?,
+                })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         if !movies.is_empty() {

@@ -91,6 +91,7 @@ export function HomeScreen() {
               title={movie.clean_title}
               posterPath={movie.poster_path}
               subtitle={movie.year ? String(movie.year) : undefined}
+              isNew={movie.is_new}
               onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
             />
           ))}
@@ -109,6 +110,7 @@ export function HomeScreen() {
                 title={movie.clean_title}
                 posterPath={movie.poster_path}
                 subtitle={movie.year ? String(movie.year) : undefined}
+                isNew={movie.is_new}
                 onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
               />
             ))}

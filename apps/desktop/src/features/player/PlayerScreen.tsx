@@ -423,6 +423,13 @@ export function PlayerScreen() {
         case "ArrowRight":
           if (kind !== "channel") seekTo(displayCurrentTime + SEEK_STEP_SECONDS);
           break;
+        default:
+          // 0-9 salta directo a ese decil del vídeo (0%, 10%... 90%) — mismo atajo que
+          // YouTube, y que el mando/teclado ya puede pulsar sin necesitar la barra.
+          if (kind !== "channel" && displayDuration && /^[0-9]$/.test(e.key)) {
+            e.preventDefault();
+            seekTo((displayDuration * Number(e.key)) / 10);
+          }
       }
       resetHideTimer();
     }

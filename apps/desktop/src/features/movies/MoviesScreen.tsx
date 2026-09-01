@@ -42,6 +42,7 @@ export function MoviesScreen() {
       title: movie.clean_title,
       posterPath: movie.poster_path,
       subtitle: movie.year ? String(movie.year) : undefined,
+      isNew: movie.is_new,
     })),
   );
 

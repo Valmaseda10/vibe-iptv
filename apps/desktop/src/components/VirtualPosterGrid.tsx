@@ -8,6 +8,7 @@ export type GridItem = {
   title: string;
   posterPath: string | null;
   subtitle?: string;
+  isNew?: boolean;
 };
 
 type VirtualPosterGridProps = {
@@ -146,6 +147,7 @@ export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, o
                       title={item.title}
                       posterPath={item.posterPath}
                       subtitle={item.subtitle}
+                      isNew={item.isNew}
                       onOpen={() => onOpen(item.id)}
                       favorite={
                         favoriteKind

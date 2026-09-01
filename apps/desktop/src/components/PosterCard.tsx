@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useApiBase, imagePath } from "../lib/api-client";
 import { HeartIcon } from "./icons";
 
@@ -18,13 +19,16 @@ type PosterCardProps = {
   /** 0-100: pinta una barra roja al pie de la portada, como en "Seguir viendo" de
    * cualquier plataforma real. Omitido cuando no aplica (no todo tiene progreso). */
   progressPercent?: number;
+  /** Añadida al catálogo hace menos de 7 días (F "premium") — insignia "Nuevo". */
+  isNew?: boolean;
 };
 
 /** Tarjeta de portada 2:3. Reserva el espacio siempre (aspect-ratio fijo) para no saltar
  * el layout mientras carga la imagen; accesible por teclado (Enter abre, foco visible). */
-export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent }: PosterCardProps) {
+export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew }: PosterCardProps) {
   const { data: base } = useApiBase();
   const src = imagePath(base, posterPath, "w342");
+  const [loaded, setLoaded] = useState(false);
 
   return (
     <div className="group relative w-40 shrink-0 sm:w-44">
@@ -42,9 +46,21 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
       >
         <div className="relative aspect-[2/3] w-full overflow-hidden rounded-lg bg-neutral-800 ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] group-focus-visible:scale-[1.03]">
           {src ? (
-            <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" />
+            <img
+              src={src}
+              alt=""
+              loading="lazy"
+              onLoad={() => setLoaded(true)}
+              className={`h-full w-full object-cover transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
+            />
           ) : (
             <div className="flex h-full w-full items-center justify-center p-3 text-center text-xs text-neutral-500">{title}</div>
+          )}
+
+          {isNew && (
+            <span className="absolute left-1.5 top-1.5 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
+              Nuevo
+            </span>
           )}
 
           {progressPercent != null && (

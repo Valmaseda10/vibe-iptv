@@ -111,11 +111,18 @@ pub struct MovieSummary {
     pub poster_path: Option<String>,
     pub rating: Option<f64>,
     pub tmdb_state: String,
+    /// Añadida al catálogo en los últimos 7 días (F "premium") — para la insignia
+    /// "Nuevo" de las tarjetas. Se calcula aquí, no se manda `added_at` en crudo: el
+    /// umbral es cosa del servidor, no algo que cada pantalla del frontend deba repetir.
+    pub is_new: bool,
 }
+
+const NEW_BADGE_WINDOW_SECONDS: i64 = 7 * 24 * 3600;
 
 impl From<reads::MovieListItem> for MovieSummary {
     fn from(row: reads::MovieListItem) -> Self {
-        Self { id: row.id, clean_title: row.clean_title, year: row.year, poster_path: row.poster_path, rating: row.rating, tmdb_state: row.tmdb_state }
+        let is_new = row.added_at.is_some_and(|t| crate::db::now_epoch() - t < NEW_BADGE_WINDOW_SECONDS);
+        Self { id: row.id, clean_title: row.clean_title, year: row.year, poster_path: row.poster_path, rating: row.rating, tmdb_state: row.tmdb_state, is_new }
     }
 }
 
@@ -1110,6 +1117,22 @@ mod tests {
     /// Perfil que usan todos los tests de este módulo — una base de datos de prueba
     /// nueva siempre le da el id 1 (primera fila de una tabla `INTEGER PRIMARY KEY`).
     const TEST_PROFILE_ID: i64 = 1;
+
+    fn movie_list_item(added_at: Option<i64>) -> reads::MovieListItem {
+        reads::MovieListItem { id: 1, clean_title: "T".into(), year: None, poster_path: None, rating: None, tmdb_state: "matched".into(), added_at }
+    }
+
+    #[test]
+    fn movie_summary_is_new_within_the_last_seven_days() {
+        let recent = MovieSummary::from(movie_list_item(Some(crate::db::now_epoch() - 3600)));
+        assert!(recent.is_new);
+
+        let old = MovieSummary::from(movie_list_item(Some(crate::db::now_epoch() - 30 * 24 * 3600)));
+        assert!(!old.is_new);
+
+        let unknown = MovieSummary::from(movie_list_item(None));
+        assert!(!unknown.is_new);
+    }
 
     fn seeded_db() -> PathBuf {
         let path = std::env::temp_dir().join(format!("vibe-iptv-api-test-{}-{}.sqlite3", std::process::id(), rand_suffix()));

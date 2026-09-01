@@ -105,7 +105,13 @@ export type MovieSourceSummary = { id: number, provider_id: number, remote_id: s
  */
 duration_s: number | null, video_codec: string | null, audio_codec: string | null, };
 
-export type MovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, };
+export type MovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, tmdb_state: string, 
+/**
+ * Añadida al catálogo en los últimos 7 días (F "premium") — para la insignia
+ * "Nuevo" de las tarjetas. Se calcula aquí, no se manda `added_at` en crudo: el
+ * umbral es cosa del servidor, no algo que cada pantalla del frontend deba repetir.
+ */
+is_new: boolean, };
 
 export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | null, 
 /**
