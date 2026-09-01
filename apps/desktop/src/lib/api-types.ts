@@ -40,6 +40,8 @@ export type FeaturedItem = { id: number, clean_title: string, year: number | nul
 
 export type ForgotPasswordInput = { email: string, };
 
+export type GenreRowResponse = { name: string, movies: Array<MovieSummary>, };
+
 export type GenreSummary = { id: number, name: string, };
 
 /**
@@ -59,7 +61,13 @@ featured: FeaturedItem | null, continue_watching: Array<ContinueWatchingItem>, n
  * que sirva de semilla, o sin clave de TMDB configurada. Nunca bloquea la
  * respuesta: ver `catalog::recommendations`.
  */
-recommended: Array<RecommendedMovieSummary>, };
+recommended: Array<RecommendedMovieSummary>, 
+/**
+ * Filas por género (F "premium"): los géneros con más películas en el catálogo de
+ * verdad del usuario, no una lista fija. Vacío hasta la primera sincronización con
+ * TMDB (sin nombres de género que enseñar, ver `catalog::tmdb::sync_genre_names`).
+ */
+genre_rows: Array<GenreRowResponse>, };
 
 export type LanStatusResponse = { enabled: boolean, devices: Array<PairedDeviceItem>, 
 /**

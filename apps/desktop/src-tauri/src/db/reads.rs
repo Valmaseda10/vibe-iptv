@@ -1421,6 +1421,44 @@ pub fn list_recent_movies(conn: &Connection, limit: i64) -> Result<Vec<MovieList
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+pub struct GenreRow {
+    pub id: i64,
+    pub movies: Vec<MovieListItem>,
+}
+
+/// Filas por género en Inicio (F "premium"): los géneros con más películas emparejadas
+/// en el catálogo de verdad del usuario, no una lista fija — un proveedor centrado en
+/// anime no debería ver una fila de "Documental" solo porque a alguien le pareció un
+/// género típico. `top_genre_count` decide cuántas filas se intentan; una que resulte
+/// vacía (rarísimo, pero el género pudo perder sus películas entre una sincronización y
+/// otra) simplemente no aparece.
+pub fn list_genre_rows(conn: &Connection, top_genre_count: i64, movies_per_genre: i64) -> Result<Vec<GenreRow>> {
+    let mut genre_stmt = conn.prepare(
+        "SELECT value AS genre_id, COUNT(*) AS n FROM movies, json_each(movies.genres)
+         WHERE tmdb_state = 'matched' GROUP BY value ORDER BY n DESC LIMIT ?1",
+    )?;
+    let genre_ids: Vec<i64> = genre_stmt.query_map(params![top_genre_count], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+
+    let mut movie_stmt = conn.prepare(
+        "SELECT id, clean_title, year, poster_path, rating, tmdb_state FROM movies
+         WHERE tmdb_state = 'matched' AND EXISTS (SELECT 1 FROM json_each(movies.genres) WHERE value = ?1)
+         ORDER BY added_at DESC, id DESC LIMIT ?2",
+    )?;
+
+    let mut rows = Vec::with_capacity(genre_ids.len());
+    for genre_id in genre_ids {
+        let movies = movie_stmt
+            .query_map(params![genre_id, movies_per_genre], |row| {
+                Ok(MovieListItem { id: row.get(0)?, clean_title: row.get(1)?, year: row.get(2)?, poster_path: row.get(3)?, rating: row.get(4)?, tmdb_state: row.get(5)? })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if !movies.is_empty() {
+            rows.push(GenreRow { id: genre_id, movies });
+        }
+    }
+    Ok(rows)
+}
+
 pub struct FavoriteRow {
     pub item_kind: String,
     pub item_id: i64,
@@ -1551,6 +1589,30 @@ mod tests {
             conn.execute("UPDATE movies SET genres = ?1 WHERE id = ?2", params![g, id]).unwrap();
         }
         id
+    }
+
+    #[test]
+    fn list_genre_rows_picks_the_genres_with_the_most_movies_and_never_unmatched_ones() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+
+        // Género 28 (Acción): tres películas emparejadas. Género 18 (Drama): una.
+        for i in 0..3 {
+            let id = seed_movie(&conn, provider_id, &format!("Accion {i}"), Some(2020), Some("[28]"), None);
+            conn.execute("UPDATE movies SET tmdb_state = 'matched' WHERE id = ?1", params![id]).unwrap();
+        }
+        let drama_id = seed_movie(&conn, provider_id, "Drama Uno", Some(2020), Some("[18]"), None);
+        conn.execute("UPDATE movies SET tmdb_state = 'matched' WHERE id = ?1", params![drama_id]).unwrap();
+
+        // Sin emparejar: no debe contar para ningún género, aunque tenga la etiqueta.
+        seed_movie(&conn, provider_id, "Accion Pendiente", Some(2020), Some("[28]"), None);
+
+        let rows = list_genre_rows(&conn, 2, 10).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, 28); // el más numeroso, primero.
+        assert_eq!(rows[0].movies.len(), 3);
+        assert_eq!(rows[1].id, 18);
+        assert_eq!(rows[1].movies.len(), 1);
     }
 
     #[test]

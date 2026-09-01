@@ -400,6 +400,10 @@ pub struct HomeResponse {
     /// que sirva de semilla, o sin clave de TMDB configurada. Nunca bloquea la
     /// respuesta: ver `catalog::recommendations`.
     pub recommended: Vec<RecommendedMovieSummary>,
+    /// Filas por género (F "premium"): los géneros con más películas en el catálogo de
+    /// verdad del usuario, no una lista fija. Vacío hasta la primera sincronización con
+    /// TMDB (sin nombres de género que enseñar, ver `catalog::tmdb::sync_genre_names`).
+    pub genre_rows: Vec<GenreRowResponse>,
 }
 
 #[derive(Serialize, TS)]
@@ -477,14 +481,18 @@ struct ProfileQuery {
 async fn get_home(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<HomeResponse>, ApiError> {
     let db_path = state.db_path.clone();
     let profile_id = query.profile_id;
-    let (featured, continue_watching, next_episodes, recent_movies) = with_db(db_path.clone(), move |conn| {
+    let (featured, continue_watching, next_episodes, recent_movies, genre_rows) = with_db(db_path.clone(), move |conn| {
         let featured = reads::get_featured_movie(conn)?;
         let continue_watching = reads::list_continue_watching(conn, profile_id, 20)?;
         let next_episodes = reads::list_next_episodes(conn, profile_id, 20)?;
         let recent_movies = reads::list_recent_movies(conn, 20)?;
-        Ok((featured, continue_watching, next_episodes, recent_movies))
+        let genre_rows = reads::list_genre_rows(conn, 3, 20)?;
+        let genre_names = reads::list_genre_names(conn, "movie")?;
+        Ok((featured, continue_watching, next_episodes, recent_movies, (genre_rows, genre_names)))
     })
     .await?;
+    let (genre_rows, genre_names) = genre_rows;
+    let genre_name_by_id: std::collections::HashMap<i64, String> = genre_names.into_iter().map(|g| (g.id, g.name)).collect();
 
     // Nunca bloquea la respuesta (puede implicar varias llamadas a TMDB la primera vez):
     // ver el comentario de cabecera de `catalog::recommendations`.
@@ -496,7 +504,23 @@ async fn get_home(State(state): State<CatalogState>, Query(query): Query<Profile
         next_episodes: next_episodes.into_iter().map(Into::into).collect(),
         recent_movies: recent_movies.into_iter().map(Into::into).collect(),
         recommended: recommended.into_iter().map(Into::into).collect(),
+        genre_rows: genre_rows
+            .into_iter()
+            // Sin nombre todavía (no ha corrido nunca el emparejamiento con TMDB): mejor
+            // no enseñar la fila que enseñar "28" como si fuera un título de género.
+            .filter_map(|row| {
+                let name = genre_name_by_id.get(&row.id)?.clone();
+                Some(GenreRowResponse { name, movies: row.movies.into_iter().map(Into::into).collect() })
+            })
+            .collect(),
     }))
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct GenreRowResponse {
+    pub name: String,
+    pub movies: Vec<MovieSummary>,
 }
 
 #[derive(Deserialize)]

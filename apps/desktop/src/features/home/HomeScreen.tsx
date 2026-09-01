@@ -97,6 +97,23 @@ export function HomeScreen() {
           {data && data.recent_movies.length === 0 && <p className="text-neutral-500">Todavía no hay películas sincronizadas.</p>}
         </Row>
       )}
+
+      {/* Los géneros con más películas en el catálogo de verdad, no una lista fija —
+          vacío hasta que corra el emparejamiento con TMDB al menos una vez. */}
+      {!isPending &&
+        data?.genre_rows.map((row) => (
+          <Row key={row.name} title={row.name}>
+            {row.movies.map((movie) => (
+              <PosterCard
+                key={movie.id}
+                title={movie.clean_title}
+                posterPath={movie.poster_path}
+                subtitle={movie.year ? String(movie.year) : undefined}
+                onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
+              />
+            ))}
+          </Row>
+        ))}
     </div>
   );
 }
