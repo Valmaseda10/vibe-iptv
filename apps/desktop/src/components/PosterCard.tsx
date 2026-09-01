@@ -21,11 +21,14 @@ type PosterCardProps = {
   progressPercent?: number;
   /** Añadida al catálogo hace menos de 7 días (F "premium") — insignia "Nuevo". */
   isNew?: boolean;
+  /** Quitar de "Continuar viendo" (F "premium") — nunca junto a `favorite`: comparten la
+   * misma esquina porque ningún sitio usa las dos cosas a la vez. */
+  onRemove?: () => void;
 };
 
 /** Tarjeta de portada 2:3. Reserva el espacio siempre (aspect-ratio fijo) para no saltar
  * el layout mientras carga la imagen; accesible por teclado (Enter abre, foco visible). */
-export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew }: PosterCardProps) {
+export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew, onRemove }: PosterCardProps) {
   const { data: base } = useApiBase();
   const src = imagePath(base, posterPath, "w342");
   const [loaded, setLoaded] = useState(false);
@@ -87,6 +90,20 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
           className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white outline-none hover:bg-black/80 focus-visible:ring-2 focus-visible:ring-red-500"
         >
           <HeartIcon filled={favorite.isFavorite} className={`h-4 w-4 ${favorite.isFavorite ? "text-red-500" : ""}`} />
+        </button>
+      )}
+
+      {onRemove && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove();
+          }}
+          aria-label="Quitar de Continuar viendo"
+          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white opacity-0 outline-none transition-opacity hover:bg-black/80 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-red-500 group-hover:opacity-100"
+        >
+          ✕
         </button>
       )}
     </div>

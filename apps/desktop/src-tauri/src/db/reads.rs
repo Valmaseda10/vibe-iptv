@@ -1526,6 +1526,18 @@ pub fn remove_favorite(conn: &Connection, profile_id: i64, item_kind: &str, item
     Ok(())
 }
 
+/// Quitar algo de "Continuar viendo" a mano (F "premium" — Netflix deja hacer esto,
+/// aquí no había ninguna forma). Borra el progreso entero, no solo lo oculta: si se
+/// vuelve a abrir el mismo título, empieza desde el principio otra vez, que es lo que
+/// se espera al pedir "quitar de continuar viendo", no un simple filtro visual.
+pub fn remove_playback_progress(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM playback_state WHERE profile_id = ?1 AND item_kind = ?2 AND item_id = ?3",
+        params![profile_id, item_kind, item_id],
+    )?;
+    Ok(())
+}
+
 // ─────────────── Ajustes y modo LAN (F10) ───────────────
 
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -1934,6 +1946,17 @@ mod tests {
         upsert_playback_progress(&conn, profile_id, "movie", 1, 95, Some(100)).unwrap();
         let finished: i64 = conn.query_row("SELECT finished FROM playback_state WHERE profile_id=?1", params![profile_id], |r| r.get(0)).unwrap();
         assert_eq!(finished, 1);
+    }
+
+    #[test]
+    fn remove_playback_progress_deletes_the_row_entirely() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        upsert_playback_progress(&conn, profile_id, "movie", 1, 85, Some(100)).unwrap();
+        assert!(get_playback_progress(&conn, profile_id, "movie", 1).unwrap().is_some());
+
+        remove_playback_progress(&conn, profile_id, "movie", 1).unwrap();
+        assert!(get_playback_progress(&conn, profile_id, "movie", 1).unwrap().is_none());
     }
 
     #[test]

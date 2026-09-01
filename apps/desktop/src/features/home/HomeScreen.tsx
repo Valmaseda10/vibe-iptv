@@ -1,6 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { apiGet, imagePath, useApiBase } from "../../lib/api-client";
+import { apiDelete, apiGet, imagePath, useApiBase } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type { FeaturedItem, HomeResponse } from "../../lib/api-types";
 import { Row } from "../../components/Row";
@@ -8,11 +8,30 @@ import { PosterCard, PosterCardSkeleton } from "../../components/PosterCard";
 
 export function HomeScreen() {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { profileId } = useActiveProfile();
   const { data, isPending, isError } = useQuery({
     queryKey: ["home", profileId],
     queryFn: () => apiGet<HomeResponse>(`/api/home?profile_id=${profileId}`),
     enabled: profileId !== null,
+  });
+
+  // Optimista: la fila se siente al instante como Netflix, en vez de esperar la
+  // respuesta del servidor para que el ítem desaparezca.
+  const removeMutation = useMutation({
+    mutationFn: (item: { item_kind: string; item_id: number }) =>
+      apiDelete(`/api/playback/progress?profile_id=${profileId}&item_kind=${item.item_kind}&item_id=${item.item_id}`),
+    onMutate: async (item) => {
+      await queryClient.cancelQueries({ queryKey: ["home", profileId] });
+      const previous = queryClient.getQueryData<HomeResponse>(["home", profileId]);
+      queryClient.setQueryData<HomeResponse>(["home", profileId], (old) =>
+        old ? { ...old, continue_watching: old.continue_watching.filter((c) => !(c.item_kind === item.item_kind && c.item_id === item.item_id)) } : old,
+      );
+      return { previous };
+    },
+    onError: (_err, _item, context) => {
+      if (context?.previous) queryClient.setQueryData(["home", profileId], context.previous);
+    },
   });
 
   function openContinueWatching(itemKind: string, itemId: number) {
@@ -46,6 +65,7 @@ export function HomeScreen() {
               posterPath={item.poster_path}
               progressPercent={progressPercent(item.position_s, item.duration_s)}
               onOpen={() => openContinueWatching(item.item_kind, item.item_id)}
+              onRemove={() => removeMutation.mutate({ item_kind: item.item_kind, item_id: item.item_id })}
             />
           ))}
         </Row>

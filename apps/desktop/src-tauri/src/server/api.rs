@@ -1084,6 +1084,23 @@ async fn delete_favorite(State(state): State<CatalogState>, Query(query): Query<
     Ok(StatusCode::NO_CONTENT)
 }
 
+/// Quitar algo de "Continuar viendo" a mano (F "premium"). Mismo `PlaybackProgressQuery`
+/// que ya usa `GET /api/playback/progress` — profile_id/item_kind/item_id es justo lo
+/// que hace falta para borrar la fila.
+async fn delete_playback_progress(State(state): State<CatalogState>, Query(query): Query<PlaybackProgressQuery>) -> Result<StatusCode, ApiError> {
+    let item_key = with_db(state.db_path.clone(), {
+        let item_kind = query.item_kind.clone();
+        move |conn| reads::item_key_for(conn, &item_kind, query.item_id)
+    })
+    .await?;
+    let item_kind = query.item_kind.clone();
+    with_db(state.db_path.clone(), move |conn| reads::remove_playback_progress(conn, query.profile_id, &query.item_kind, query.item_id)).await?;
+    if let Some(item_key) = item_key {
+        tokio::spawn(crate::sync::engine::push_playback_remove_by_key(state.db_path, query.profile_id, item_kind, item_key));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub fn catalog_router(db_path: PathBuf) -> Router {
     Router::new()
         .route("/api/home", get(get_home))
@@ -1097,7 +1114,7 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/search", get(get_search))
         .route("/api/epg/now", get(get_epg_now))
         .route("/api/epg/grid", get(get_epg_grid))
-        .route("/api/playback/progress", get(get_playback_progress).post(post_playback_progress))
+        .route("/api/playback/progress", get(get_playback_progress).post(post_playback_progress).delete(delete_playback_progress))
         .route("/api/favorites", get(get_favorites).post(post_favorite).delete(delete_favorite))
         .with_state(CatalogState { db_path })
 }
@@ -1362,6 +1379,54 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["position_s"], 42);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// "Quitar de continuar viendo" (F "premium"): borra el progreso entero, no solo lo
+    /// oculta — reabrir el mismo título después debe empezar desde el principio.
+    #[tokio::test]
+    async fn delete_playback_progress_removes_it_entirely() {
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+
+        let body = serde_json::json!({"profile_id": TEST_PROFILE_ID, "item_kind": "movie", "item_id": 1, "position_s": 42, "duration_s": 100});
+        router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/playback/progress")
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let delete_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/playback/progress?profile_id={TEST_PROFILE_ID}&item_kind=movie&item_id=1"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete_response.status(), StatusCode::NO_CONTENT);
+
+        let get_response = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/api/playback/progress?profile_id={TEST_PROFILE_ID}&item_kind=movie&item_id=1"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(get_response.status(), StatusCode::NO_CONTENT);
 
         let _ = std::fs::remove_file(&db_path);
     }

@@ -206,6 +206,23 @@ pub async fn push_playback_progress(db_path: PathBuf, local_profile_id: i64, ite
     }
 }
 
+/// Igual que `push_favorite_remove_by_key`: el `item_key` hace falta ANTES de borrar la
+/// fila local (`server::api::delete_playback_progress` lo hace así). "Quitar de
+/// continuar viendo" (F "premium") debe quitarse también del resto de dispositivos, no
+/// solo de este.
+pub async fn push_playback_remove_by_key(db_path: PathBuf, local_profile_id: i64, item_kind: String, item_key: String) {
+    if item_kind == "channel" {
+        return;
+    }
+    let Some(session) = session::get_valid().await else { return };
+    let Some(remote_profile_id) = remote_profile_id(&db_path, local_profile_id).await else { return };
+    let client = SupabaseClient::new();
+    let filter = format!("profile_id=eq.{remote_profile_id}&item_kind=eq.{item_kind}&item_key=eq.{item_key}");
+    if let Err(err) = client.delete_rows(&session, "playback_state", &filter).await {
+        tracing::warn!(error = %err, "no se pudo borrar el progreso en Supabase");
+    }
+}
+
 // ─────────────── Bajada + fusión al iniciar sesión ───────────────
 
 /// Se llama justo después de un login/registro con éxito. Recorre los perfiles del
