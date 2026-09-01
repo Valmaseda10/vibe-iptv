@@ -22,6 +22,14 @@ export type EpgNowNextResponse = { channel_id: number, current: EpgProgrammeResp
 
 export type EpgProgrammeResponse = { title: string, subtitle: string | null, start_ts: number, stop_ts: number, };
 
+/**
+ * F "premium" (informe de I+D): antes se calculaba y solo se dejaba en el log — un
+ * fallo mudo típico (canales sin guía emparejada) que nadie veía a menos que mirase la
+ * consola. Ahora se manda también al frontend (evento `epg://summary`, ver
+ * `commands::spawn_epg_sync`).
+ */
+export type EpgSyncSummary = { imported: number, channels_without_epg: number, };
+
 export type EpisodeSummary = { id: number, series_source_id: number, season: number, number: number, title: string | null, overview: string | null, still_path: string | null, duration_s: number | null, };
 
 export type FavoriteInput = { profile_id: number, item_kind: string, item_id: number, };

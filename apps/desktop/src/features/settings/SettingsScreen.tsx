@@ -9,6 +9,7 @@ import type {
   AccountStatusResponse,
   AddProviderInput,
   BinariesStatus,
+  EpgSyncSummary,
   LanStatusResponse,
   M3uValidation,
   PairingStartResponse,
@@ -38,6 +39,7 @@ export function SettingsScreen() {
   const [progressByProvider, setProgressByProvider] = useState<Record<number, SyncProgress>>({});
   const [tmdbProgress, setTmdbProgress] = useState<SyncProgress | null>(null);
   const [tmdbApiKey, setTmdbApiKey] = useState("");
+  const [epgSummary, setEpgSummary] = useState<EpgSyncSummary | null>(null);
 
   const providersQuery = useQuery({
     queryKey: ["providers"],
@@ -66,6 +68,13 @@ export function SettingsScreen() {
       unlistenPromise.then((unlisten) => unlisten());
     };
   }, [queryClient]);
+
+  useEffect(() => {
+    const unlistenPromise = listen<EpgSyncSummary>("epg://summary", (event) => setEpgSummary(event.payload));
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
 
   const validateMutation = useMutation({
     mutationFn: async () => {
@@ -352,6 +361,7 @@ export function SettingsScreen() {
                         ? ` · última sincronización: ${new Date(provider.last_sync_at * 1000).toLocaleString()}`
                         : " · sin sincronizar"}
                     </p>
+                    <ExpiryWarning expiresAt={provider.expires_at} />
                   </div>
                   <div className="flex shrink-0 gap-2">
                     <button
@@ -392,6 +402,13 @@ export function SettingsScreen() {
             );
           })}
         </ul>
+        {epgSummary && epgSummary.channels_without_epg > 0 && (
+          <p className="mt-4 text-sm text-amber-400">
+            {epgSummary.channels_without_epg} canal{epgSummary.channels_without_epg === 1 ? "" : "es"} sin guía de programación
+            emparejada tras la última importación — el proveedor no dio un identificador que coincidiera con ninguno de
+            la guía XMLTV.
+          </p>
+        )}
       </section>
     </div>
   );
@@ -725,6 +742,27 @@ function LanSection() {
  * puede pasar en desarrollo o si una instalación se corrompió — lo dice aquí en vez de
  * dejar que el usuario se entere solo al intentar reproducir algo. No se muestra nada
  * mientras todo está bien: es un aviso, no una sección permanente. */
+const EXPIRY_WARNING_DAYS = 7;
+
+/** Aviso de "Estado" (F "premium" — informe de I+D): el dato ya llegaba en
+ * `ProviderSummary.expires_at` desde F2, pero no se mostraba en ningún sitio de forma
+ * continua — solo un instante, al validar el proveedor antes de añadirlo. Una cuenta
+ * IPTV que caduca sin avisar es justo el tipo de fallo mudo que conviene evitar. */
+function ExpiryWarning({ expiresAt }: { expiresAt: number | null }) {
+  if (expiresAt == null) return null;
+  const daysLeft = Math.floor((expiresAt * 1000 - Date.now()) / (24 * 60 * 60 * 1000));
+  if (daysLeft > EXPIRY_WARNING_DAYS) return null;
+
+  const expired = daysLeft < 0;
+  return (
+    <p className={`mt-1 text-sm font-medium ${expired ? "text-red-400" : "text-amber-400"}`}>
+      {expired
+        ? `La cuenta del proveedor caducó el ${new Date(expiresAt * 1000).toLocaleDateString()}.`
+        : `La cuenta del proveedor caduca en ${daysLeft} día${daysLeft === 1 ? "" : "s"} (${new Date(expiresAt * 1000).toLocaleDateString()}).`}
+    </p>
+  );
+}
+
 function BinariesStatusBanner() {
   const { data } = useQuery({
     queryKey: ["binaries-status"],

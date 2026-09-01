@@ -423,6 +423,10 @@ fn spawn_epg_sync(app: AppHandle, source: Arc<dyn Source + Send + Sync>) {
         match epg::run_epg_sync(conn, source, user_agent, std::env::temp_dir()).await {
             Ok((_, Some(summary))) => {
                 tracing::info!(imported = summary.imported, canales_sin_epg = summary.channels_without_epg, "guía EPG importada");
+                // F "premium": antes esto solo se veía en el log — un fallo mudo típico
+                // (canales sin guía emparejada) que nadie notaba a menos que mirase la
+                // consola. Ahora también llega a Ajustes.
+                let _ = app.emit("epg://summary", &summary);
             }
             Ok((_, None)) => tracing::info!("la fuente no ofrece guía XMLTV"),
             Err(err) => tracing::error!(error = %err, "importación de la guía EPG fallida"),

@@ -37,8 +37,16 @@ pub enum EpgError {
     Task(#[from] tokio::task::JoinError),
 }
 
+/// F "premium" (informe de I+D): antes se calculaba y solo se dejaba en el log — un
+/// fallo mudo típico (canales sin guía emparejada) que nadie veía a menos que mirase la
+/// consola. Ahora se manda también al frontend (evento `epg://summary`, ver
+/// `commands::spawn_epg_sync`).
+#[derive(Debug, Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
 pub struct EpgSyncSummary {
+    #[ts(type = "number")]
     pub imported: i64,
+    #[ts(type = "number")]
     pub channels_without_epg: i64,
 }
 
