@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet, useApiBase, imagePath } from "../../lib/api-client";
+import { useActiveProfile } from "../../lib/activeProfile";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { TrailerModal } from "../../components/TrailerModal";
@@ -11,13 +12,15 @@ export function SeriesDetailScreen() {
   const { seriesId } = useParams({ from: "/series/$seriesId" });
   const navigate = useNavigate();
   const { data: base } = useApiBase();
+  const { profileId } = useActiveProfile();
   const { isFavorite, toggleFavorite } = useFavorites();
   const [trailerOpen, setTrailerOpen] = useState(false);
   const { data, isPending, isError } = useQuery({
-    queryKey: ["series", seriesId],
+    queryKey: ["series", seriesId, profileId],
     // series_detail() puede llamarse bajo demanda en el núcleo (primera visita o caché
     // de más de 7 días): esta petición puede tardar más que el resto de la API.
-    queryFn: () => apiGet<SeriesDetailResponse>(`/api/series/${seriesId}`),
+    queryFn: () => apiGet<SeriesDetailResponse>(`/api/series/${seriesId}?profile_id=${profileId}`),
+    enabled: profileId !== null,
   });
 
   const seasons = useMemo(() => groupBySeason(data?.episodes ?? []), [data]);
@@ -122,8 +125,15 @@ export function SeriesDetailScreen() {
                       )}
                     </div>
                     <div className="min-w-0">
-                      <p className="truncate font-medium">
-                        {episode.number}. {episode.title || `Episodio ${episode.number}`}
+                      <p className="flex items-center gap-2 truncate font-medium">
+                        {episode.watched && (
+                          <span className="shrink-0 text-emerald-500" aria-label="Visto" title="Visto">
+                            ✓
+                          </span>
+                        )}
+                        <span className="truncate">
+                          {episode.number}. {episode.title || `Episodio ${episode.number}`}
+                        </span>
                       </p>
                       {episode.duration_s && <p className="text-xs text-neutral-500">{Math.round(episode.duration_s / 60)} min</p>}
                       {episode.overview && <p className="mt-1 line-clamp-2 text-sm text-neutral-400">{episode.overview}</p>}

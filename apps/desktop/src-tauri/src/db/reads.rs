@@ -1526,6 +1526,20 @@ pub fn remove_favorite(conn: &Connection, profile_id: i64, item_kind: &str, item
     Ok(())
 }
 
+/// Ids de episodio ya vistos del todo (F "premium" — checkmark en la ficha de serie),
+/// para un perfil y una serie concretos. `finished` ya lo calcula
+/// `upsert_playback_progress` (90% o más), no hay que repetir el umbral aquí.
+pub fn list_watched_episode_ids(conn: &Connection, profile_id: i64, series_id: i64) -> Result<std::collections::HashSet<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT ps.item_id FROM playback_state ps
+         JOIN episodes e ON e.id = ps.item_id
+         JOIN series_sources ss ON ss.id = e.series_source_id
+         WHERE ps.profile_id = ?1 AND ps.item_kind = 'episode' AND ps.finished = 1 AND ss.series_id = ?2",
+    )?;
+    let rows = stmt.query_map(params![profile_id, series_id], |row| row.get::<_, i64>(0))?;
+    rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>().map_err(Into::into)
+}
+
 /// Quitar algo de "Continuar viendo" a mano (F "premium" — Netflix deja hacer esto,
 /// aquí no había ninguna forma). Borra el progreso entero, no solo lo oculta: si se
 /// vuelve a abrir el mismo título, empieza desde el principio otra vez, que es lo que
@@ -1946,6 +1960,34 @@ mod tests {
         upsert_playback_progress(&conn, profile_id, "movie", 1, 95, Some(100)).unwrap();
         let finished: i64 = conn.query_row("SELECT finished FROM playback_state WHERE profile_id=?1", params![profile_id], |r| r.get(0)).unwrap();
         assert_eq!(finished, 1);
+    }
+
+    #[test]
+    fn list_watched_episode_ids_only_counts_finished_episodes_of_that_series() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let fields = TitleFields { clean_title: "Serie", year: None, match_key: "serie-0000", quality: None, language: None };
+        queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
+        let series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = 'serie-0000'", [], |r| r.get(0)).unwrap();
+        let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources WHERE series_id = ?1", params![series_id], |r| r.get(0)).unwrap();
+
+        let episodes = vec![
+            crate::sources::model::RawEpisode { remote_id: "e1".into(), season: 1, number: 1, title: None, container_extension: None, duration_s: Some(1200), still_url: None },
+            crate::sources::model::RawEpisode { remote_id: "e2".into(), season: 1, number: 2, title: None, container_extension: None, duration_s: Some(1200), still_url: None },
+        ];
+        upsert_episodes(&conn, series_source_id, &episodes).unwrap();
+        let ep1: i64 = conn.query_row("SELECT id FROM episodes WHERE remote_id = 'e1'", [], |r| r.get(0)).unwrap();
+        let ep2: i64 = conn.query_row("SELECT id FROM episodes WHERE remote_id = 'e2'", [], |r| r.get(0)).unwrap();
+
+        upsert_playback_progress(&conn, profile_id, "episode", ep1, 1150, Some(1200)).unwrap(); // >90%: visto.
+        upsert_playback_progress(&conn, profile_id, "episode", ep2, 60, Some(1200)).unwrap(); // recién empezado: no.
+
+        let watched = list_watched_episode_ids(&conn, profile_id, series_id).unwrap();
+        assert!(watched.contains(&ep1));
+        assert!(!watched.contains(&ep2));
     }
 
     #[test]

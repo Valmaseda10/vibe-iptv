@@ -85,9 +85,9 @@ export function PlayerScreen() {
     enabled: kind === "movie",
   });
   const seriesQuery = useQuery({
-    queryKey: ["player-series", search.seriesId],
-    queryFn: () => apiGetOrNull<SeriesDetailResponse>(`/api/series/${search.seriesId}`),
-    enabled: kind === "episode" && Boolean(search.seriesId),
+    queryKey: ["player-series", search.seriesId, profileId],
+    queryFn: () => apiGetOrNull<SeriesDetailResponse>(`/api/series/${search.seriesId}?profile_id=${profileId}`),
+    enabled: kind === "episode" && Boolean(search.seriesId) && profileId !== null,
   });
   const channelEpgQuery = useQuery({
     queryKey: ["player-epg-now", itemId],

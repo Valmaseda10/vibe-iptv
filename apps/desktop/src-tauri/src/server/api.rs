@@ -260,11 +260,14 @@ pub struct EpisodeSummary {
     pub still_path: Option<String>,
     #[ts(type = "number | null")]
     pub duration_s: Option<i64>,
+    /// Checkmark de "visto" (F "premium") — se rellena aparte en `get_series_detail`, no
+    /// aquí: este `From` no conoce el perfil que está pidiendo la ficha.
+    pub watched: bool,
 }
 
 impl From<reads::EpisodeItem> for EpisodeSummary {
     fn from(row: reads::EpisodeItem) -> Self {
-        Self { id: row.id, series_source_id: row.series_source_id, season: row.season, number: row.number, title: row.title, overview: row.overview, still_path: row.still_path, duration_s: row.duration_s }
+        Self { id: row.id, series_source_id: row.series_source_id, season: row.season, number: row.number, title: row.title, overview: row.overview, still_path: row.still_path, duration_s: row.duration_s, watched: false }
     }
 }
 
@@ -811,7 +814,16 @@ async fn get_series_list(State(state): State<CatalogState>, Query(query): Query<
 /// Si el detalle de la serie no se ha pedido nunca o hace más de 7 días (ver
 /// `docs/DATA-MODEL.md`, `series_sources.detail_synced_at`), llama a `series_detail()`
 /// del proveedor antes de responder. Por eso esta ruta puede tardar más que las demás.
-async fn get_series_detail(State(state): State<CatalogState>, AxumPath(id): AxumPath<i64>) -> Result<Json<SeriesDetailResponse>, ApiError> {
+#[derive(Deserialize)]
+struct SeriesDetailQuery {
+    profile_id: i64,
+}
+
+async fn get_series_detail(
+    State(state): State<CatalogState>,
+    AxumPath(id): AxumPath<i64>,
+    Query(query): Query<SeriesDetailQuery>,
+) -> Result<Json<SeriesDetailResponse>, ApiError> {
     const SEVEN_DAYS_SECONDS: i64 = 7 * 24 * 3600;
 
     let db_path = state.db_path.clone();
@@ -830,7 +842,7 @@ async fn get_series_detail(State(state): State<CatalogState>, AxumPath(id): Axum
 
     if series.trailer_checked_at.is_none() {
         if let Some(tmdb_id) = series.tmdb_id {
-            match fetch_and_store_series_extras(db_path, id, tmdb_id).await {
+            match fetch_and_store_series_extras(db_path.clone(), id, tmdb_id).await {
                 Ok(extras) => {
                     series.youtube_trailer_key = extras.trailer_key;
                     series.age_rating = extras.age_rating;
@@ -838,6 +850,16 @@ async fn get_series_detail(State(state): State<CatalogState>, AxumPath(id): Axum
                 Err(err) => tracing::warn!(series_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
             }
         }
+    }
+
+    // Checkmark de "visto" por episodio (F "premium") — nunca rompe la ficha si falla:
+    // sin marcas es como estaba la ficha antes de que existiera esta función.
+    let profile_id = query.profile_id;
+    let watched = with_db(db_path, move |conn| reads::list_watched_episode_ids(conn, profile_id, id)).await.unwrap_or_default();
+
+    let mut episodes: Vec<EpisodeSummary> = series.episodes.into_iter().map(Into::into).collect();
+    for episode in &mut episodes {
+        episode.watched = watched.contains(&episode.id);
     }
 
     Ok(Json(SeriesDetailResponse {
@@ -852,7 +874,7 @@ async fn get_series_detail(State(state): State<CatalogState>, AxumPath(id): Axum
         tmdb_state: series.tmdb_state,
         trailer_key: series.youtube_trailer_key,
         age_rating: series.age_rating,
-        episodes: series.episodes.into_iter().map(Into::into).collect(),
+        episodes,
     }))
 }
 

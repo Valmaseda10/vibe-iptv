@@ -30,7 +30,12 @@ export type EpgProgrammeResponse = { title: string, subtitle: string | null, sta
  */
 export type EpgSyncSummary = { imported: number, channels_without_epg: number, };
 
-export type EpisodeSummary = { id: number, series_source_id: number, season: number, number: number, title: string | null, overview: string | null, still_path: string | null, duration_s: number | null, };
+export type EpisodeSummary = { id: number, series_source_id: number, season: number, number: number, title: string | null, overview: string | null, still_path: string | null, duration_s: number | null, 
+/**
+ * Checkmark de "visto" (F "premium") — se rellena aparte en `get_series_detail`, no
+ * aquí: este `From` no conoce el perfil que está pidiendo la ficha.
+ */
+watched: boolean, };
 
 export type FavoriteInput = { profile_id: number, item_kind: string, item_id: number, };
 
