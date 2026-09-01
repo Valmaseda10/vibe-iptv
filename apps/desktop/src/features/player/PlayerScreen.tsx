@@ -107,8 +107,8 @@ export function PlayerScreen() {
   // TMDB, que es un dato editorial y a menudo ni siquiera está. En directo no hace
   // falta: no hay duración que mostrar.
   const tierQuery = useQuery({
-    queryKey: ["player-tier", kind, itemId],
-    queryFn: () => apiGetOrNull<PlaybackTierResponse>(`/api/playback/tier/${kind}/${itemId}`),
+    queryKey: ["player-tier", kind, itemId, search.source],
+    queryFn: () => apiGetOrNull<PlaybackTierResponse>(`/api/playback/tier/${kind}/${itemId}${search.source ? `?source=${search.source}` : ""}`),
     enabled: kind !== "channel",
     // La primera petición puede llegar antes de que el propio /stream/* termine de
     // sondear (van en paralelo al montar) y encontrar la caché todavía vacía. En vez de
@@ -193,7 +193,7 @@ export function PlayerScreen() {
     ? `/stream/catchup/${itemId}?profile_id=${profileId}&start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}`
     : kind === "channel"
       ? `/stream/channel/${itemId}?profile_id=${profileId}`
-      : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}`;
+      : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}${search.source ? `&source=${search.source}` : ""}`;
   const streamUrl = base && profileId !== null ? `${base}${streamPath}` : undefined;
 
   // Cambiar de stream de verdad (zapping, o abrir otro título) es un intento nuevo:
@@ -252,7 +252,10 @@ export function PlayerScreen() {
     if (!base || profileId === null) return;
     setMpvLaunching(true);
     try {
-      const response = await fetch(`${base}/stream/mpv/${kind}/${itemId}?profile_id=${profileId}`, { method: "POST" });
+      const response = await fetch(
+        `${base}/stream/mpv/${kind}/${itemId}?profile_id=${profileId}${search.source ? `&source=${search.source}` : ""}`,
+        { method: "POST" },
+      );
       if (response.ok) {
         setErrorMessage(null);
         setNeedsMpv(false);
@@ -264,7 +267,7 @@ export function PlayerScreen() {
     } finally {
       setMpvLaunching(false);
     }
-  }, [base, kind, itemId, profileId]);
+  }, [base, kind, itemId, profileId, search.source]);
 
   // `saveProgress` necesita ser estable de verdad: si cambiara en cada `timeupdate` (como
   // pasaría si dependiera directamente de `displayCurrentTime`), el intervalo de guardado

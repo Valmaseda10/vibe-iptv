@@ -92,9 +92,21 @@ pub struct PlaybackTierResponse {
 /// Panel de estadísticas del reproductor (Ctrl+Shift+D, F6): lee `probe_cache`, nunca
 /// abre una conexión — resolver la URL del ítem y calcular su hash es puro cálculo local,
 /// sin red, así que no cuenta como el prefetch que prohíbe R1.
-async fn get_playback_tier(State(state): State<StreamState>, AxumPath((kind, id)): AxumPath<(String, i64)>) -> Result<axum::Json<PlaybackTierResponse>, StreamError> {
+#[derive(Deserialize)]
+struct TierQuery {
+    /// Igual que en `StreamQuery`: sin esto, la ficha de una película con selector de
+    /// fuente (F "premium") vería siempre el nivel/códecs de la fuente por defecto,
+    /// aunque se estuviera reproduciendo otra distinta.
+    source: Option<i64>,
+}
+
+async fn get_playback_tier(
+    State(state): State<StreamState>,
+    AxumPath((kind, id)): AxumPath<(String, i64)>,
+    Query(query): Query<TierQuery>,
+) -> Result<axum::Json<PlaybackTierResponse>, StreamError> {
     let media_kind = parse_kind(&kind)?;
-    let (provider_id, remote_id, container_extension) = resolve_stream_target(&state.db_path, media_kind, id, None).await?;
+    let (provider_id, remote_id, container_extension) = resolve_stream_target(&state.db_path, media_kind, id, query.source).await?;
     let provider_row = with_db(state.db_path.clone(), move |conn| queries::get_provider(conn, provider_id))
         .await?
         .ok_or(StreamError::ProviderNotFound)?;

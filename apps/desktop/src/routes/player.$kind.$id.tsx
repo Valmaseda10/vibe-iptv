@@ -10,6 +10,10 @@ type PlayerSearch = {
   catchupStart?: number;
   /** Minutos a pedir desde `catchupStart`. Si falta, el backend usa un valor por defecto. */
   catchupDuration?: number;
+  /** Id de `movie_sources` elegido en la ficha (F "premium": selector de calidad/fuente)
+   * cuando la película tiene más de una — el backend ya lo aceptaba desde F6, sin
+   * ningún selector todavía en la interfaz que lo mandara. */
+  source?: number;
 };
 
 export const playerRoute = createRoute({
@@ -20,6 +24,7 @@ export const playerRoute = createRoute({
     categoryId: typeof search.categoryId === "string" ? search.categoryId : undefined,
     catchupStart: typeof search.catchupStart === "number" ? search.catchupStart : undefined,
     catchupDuration: typeof search.catchupDuration === "number" ? search.catchupDuration : undefined,
+    source: typeof search.source === "number" ? search.source : undefined,
   }),
   component: PlayerScreen,
 });

@@ -13,6 +13,7 @@ export function MovieDetailScreen() {
   const { data: base } = useApiBase();
   const { isFavorite, toggleFavorite } = useFavorites();
   const [trailerOpen, setTrailerOpen] = useState(false);
+  const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   const { data, isPending, isError } = useQuery({
     queryKey: ["movie", movieId],
     queryFn: () => apiGet<MovieDetailResponse>(`/api/movies/${movieId}`),
@@ -38,6 +39,10 @@ export function MovieDetailScreen() {
   // respaldo cuando falta.
   const technicalDurationMin = data.sources.find((s) => s.duration_s)?.duration_s;
   const durationMin = data.runtime_min || (technicalDurationMin ? Math.round(technicalDurationMin / 60) : null);
+  // Distintas calidades del mismo título pueden ser ficheros/proveedores distintos de
+  // verdad (F "premium" — el backend acepta `?source=` desde F6, sin selector todavía
+  // en la interfaz que lo usara). Sin elegir nada, el backend sigue usando la primera.
+  const activeSourceId = selectedSourceId ?? data.sources[0]?.id ?? null;
 
   return (
     <div className="relative min-h-full">
@@ -61,10 +66,38 @@ export function MovieDetailScreen() {
         </div>
         {data.overview && <p className="max-w-2xl text-neutral-300">{data.overview}</p>}
 
+        {data.sources.length > 1 && (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-sm text-neutral-500">Fuente:</span>
+            {data.sources.map((source, i) => (
+              <button
+                key={source.id}
+                type="button"
+                aria-pressed={activeSourceId === source.id}
+                onClick={() => setSelectedSourceId(source.id)}
+                className={`rounded-full border px-3 py-1 text-xs outline-none ${
+                  activeSourceId === source.id
+                    ? "border-red-600 bg-red-600/20 text-white"
+                    : "border-neutral-700 text-neutral-400 hover:border-neutral-500"
+                }`}
+              >
+                {source.quality ?? `Fuente ${i + 1}`}
+                {source.language ? ` · ${source.language}` : ""}
+              </button>
+            ))}
+          </div>
+        )}
+
         <div className="flex items-center gap-3 pt-2">
           <button
             type="button"
-            onClick={() => navigate({ to: "/player/$kind/$id", params: { kind: "movie", id: movieId } })}
+            onClick={() =>
+              navigate({
+                to: "/player/$kind/$id",
+                params: { kind: "movie", id: movieId },
+                search: activeSourceId ? { source: activeSourceId } : {},
+              })
+            }
             className="rounded-lg bg-red-600 px-6 py-3 font-medium text-white outline-none hover:bg-red-500"
           >
             ▶ Reproducir
@@ -93,11 +126,8 @@ export function MovieDetailScreen() {
           <TrailerModal youtubeKey={data.trailer_key} title={data.clean_title} onClose={() => setTrailerOpen(false)} />
         )}
 
-        {data.sources.length > 0 && (
-          <p className="pt-6 text-sm text-neutral-500">
-            {data.sources.length} fuente{data.sources.length === 1 ? "" : "s"} disponible{data.sources.length === 1 ? "" : "s"}
-            {qualities.length > 0 ? ` (${qualities.join(", ")})` : ""}
-          </p>
+        {data.sources.length === 1 && (
+          <p className="pt-6 text-sm text-neutral-500">1 fuente disponible{qualities.length > 0 ? ` (${qualities.join(", ")})` : ""}</p>
         )}
       </div>
     </div>
