@@ -733,8 +733,13 @@ pub struct SearchHit {
     pub item_kind: String,
     pub item_id: i64,
     pub title: String,
+    pub poster_path: Option<String>,
 }
 
+/// `search_index` (FTS5) solo guarda título — sin portada, la búsqueda era una lista de
+/// texto plano (F "premium"). Se busca aparte, tabla por tabla, en vez de meter la
+/// portada en el propio índice: así no hay que reconstruir el FTS5 entero cada vez que
+/// cambia una portada por un reemparejamiento de TMDB.
 pub fn search(conn: &Connection, query: &str, limit_per_kind: i64) -> Result<Vec<SearchHit>> {
     let mut stmt = conn.prepare(
         "SELECT item_kind, item_id, title FROM search_index WHERE search_index MATCH ?1
@@ -745,14 +750,36 @@ pub fn search(conn: &Connection, query: &str, limit_per_kind: i64) -> Result<Vec
     let fts_query = format!("{}*", fts_escape(query));
     let rows = stmt
         .query_map(params![fts_query, limit_per_kind * 3], |row| {
-            Ok(SearchHit { item_kind: row.get(0)?, item_id: row.get(1)?, title: row.get(2)? })
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?, row.get::<_, String>(2)?))
         })
         .and_then(|rows| rows.collect::<rusqlite::Result<Vec<_>>>());
 
-    match rows {
-        Ok(hits) => Ok(hits),
-        Err(_) => Ok(Vec::new()), // consulta FTS5 mal formada (p. ej. solo símbolos): sin resultados, no error 500
-    }
+    let raw_hits: Vec<(String, i64, String)> = match rows {
+        Ok(hits) => hits,
+        Err(_) => return Ok(Vec::new()), // consulta FTS5 mal formada (p. ej. solo símbolos): sin resultados, no error 500
+    };
+
+    Ok(raw_hits
+        .into_iter()
+        .map(|(item_kind, item_id, title)| {
+            let poster_path = match item_kind.as_str() {
+                "movie" => query_optional_string(conn, "SELECT poster_path FROM movies WHERE id = ?1", item_id),
+                "series" => query_optional_string(conn, "SELECT poster_path FROM series WHERE id = ?1", item_id),
+                // El logo de canal es una URL del proveedor: se redacta antes de salir de
+                // la capa de datos, igual que en `list_channels_page` (regla R5).
+                "channel" => query_optional_string(conn, "SELECT logo_url FROM channels WHERE id = ?1", item_id).map(|url| redact(&url)),
+                _ => None,
+            };
+            SearchHit { item_kind, item_id, title, poster_path }
+        })
+        .collect())
+}
+
+/// `SELECT <columna nullable> FROM t WHERE id = ?1` → `Option<String>`, aplanando el
+/// "no hay fila" (`query_row` + `.optional()`) y el "hay fila pero la columna es NULL"
+/// (la propia columna) en un único `None` — el llamador no necesita distinguirlos.
+fn query_optional_string(conn: &Connection, sql: &str, id: i64) -> Option<String> {
+    conn.query_row(sql, params![id], |r| r.get::<_, Option<String>>(0)).optional().ok().flatten().flatten()
 }
 
 fn fts_escape(query: &str) -> String {
@@ -1790,6 +1817,21 @@ mod tests {
         assert_eq!(hits.len(), 2);
         assert!(hits.iter().any(|h| h.item_kind == "movie"));
         assert!(hits.iter().any(|h| h.item_kind == "series"));
+    }
+
+    /// Sin esto, la búsqueda era una lista de texto plano (F "premium"): la portada no
+    /// vive en el propio índice FTS5, se busca aparte tabla por tabla.
+    #[test]
+    fn search_includes_poster_path_from_the_matching_table() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let movie_id = seed_movie(&conn, provider_id, "Con Portada", Some(2020), None, None);
+        conn.execute("UPDATE movies SET poster_path = '/poster.jpg' WHERE id = ?1", params![movie_id]).unwrap();
+        queries::rebuild_search_index(&conn).unwrap();
+
+        let hits = search(&conn, "Portada", 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].poster_path.as_deref(), Some("/poster.jpg"));
     }
 
     #[test]

@@ -167,7 +167,7 @@ export type ResetPasswordInput = { email: string,
  */
 token_or_link: string, new_password: string, };
 
-export type SearchHitResponse = { item_kind: string, item_id: number, title: string, };
+export type SearchHitResponse = { item_kind: string, item_id: number, title: string, poster_path: string | null, };
 
 export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, };
 

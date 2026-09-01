@@ -287,6 +287,7 @@ pub struct SearchHitResponse {
     #[ts(type = "number")]
     pub item_id: i64,
     pub title: String,
+    pub poster_path: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -862,7 +863,7 @@ async fn get_search(State(state): State<CatalogState>, Query(query): Query<Searc
     let mut movies = Vec::new();
     let mut series = Vec::new();
     for hit in hits {
-        let item = SearchHitResponse { item_kind: hit.item_kind.clone(), item_id: hit.item_id, title: hit.title };
+        let item = SearchHitResponse { item_kind: hit.item_kind.clone(), item_id: hit.item_id, title: hit.title, poster_path: hit.poster_path };
         match hit.item_kind.as_str() {
             "channel" => channels.push(item),
             "movie" => movies.push(item),
