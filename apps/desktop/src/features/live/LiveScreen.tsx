@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -8,6 +8,34 @@ import type { CategorySummary, ChannelsPage, EpgNowNextResponse } from "../../li
 
 const ROW_HEIGHT = 60;
 const EPG_REFRESH_MS = 60_000;
+
+type ChannelItem = ChannelsPage["items"][number];
+
+/** Varios paneles Xtream listan el mismo canal varias veces como feeds de respaldo
+ * distintos (mismo nombre, `remote_id` distinto — visto de verdad contra un proveedor
+ * real, no un caso hipotético). Sin esto, "La 1" aparecía tres veces seguidas sin
+ * explicación. Se agrupan por nombre exacto conservando el orden de aparición, no se
+ * toca la paginación del backend (agrupar en SQL entre páginas es mucho más frágil que
+ * agrupar aquí sobre todo lo ya cargado). */
+type ChannelGroup = {
+  displayName: string;
+  channels: ChannelItem[];
+};
+
+function groupChannelsByName(items: ChannelItem[]): ChannelGroup[] {
+  const byName = new Map<string, ChannelGroup>();
+  const order: ChannelGroup[] = [];
+  for (const channel of items) {
+    let group = byName.get(channel.display_name);
+    if (!group) {
+      group = { displayName: channel.display_name, channels: [] };
+      byName.set(channel.display_name, group);
+      order.push(group);
+    }
+    group.channels.push(channel);
+  }
+  return order;
+}
 
 export function LiveScreen() {
   const navigate = useNavigate();
@@ -33,6 +61,18 @@ export function LiveScreen() {
 
   const items = (channelsQuery.data?.pages ?? []).flatMap((page) => page.items);
   const hasMore = channelsQuery.hasNextPage ?? false;
+  const groups = useMemo(() => groupChannelsByName(items), [items]);
+
+  // Fuente elegida a mano por grupo (nombre de canal), si el usuario cambió del feed por
+  // defecto (el primero). Por nombre y no por índice de grupo: así sobrevive a que
+  // lleguen más páginas y el grupo se mueva de posición.
+  const [selectedFeed, setSelectedFeed] = useState<Record<string, number>>({});
+  function activeChannelFor(group: ChannelGroup): ChannelItem {
+    const chosenId = selectedFeed[group.displayName];
+    // `group.channels` nunca está vacío (groupChannelsByName solo crea un grupo al
+    // meter el primer canal dentro): el `!` es seguro, no un valor real que pueda faltar.
+    return group.channels.find((c) => c.id === chosenId) ?? group.channels[0]!;
+  }
 
   // "Qué están dando" por canal (F7): se pide para los ya cargados, no para todo el
   // catálogo. Se refresca cada minuto para que el programa "actual" no se quede
@@ -48,7 +88,7 @@ export function LiveScreen() {
 
   const parentRef = useRef<HTMLDivElement>(null);
   const virtualizer = useVirtualizer({
-    count: items.length + (hasMore ? 1 : 0),
+    count: groups.length + (hasMore ? 1 : 0),
     getScrollElement: () => parentRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 8,
@@ -57,11 +97,11 @@ export function LiveScreen() {
 
   useEffect(() => {
     const last = virtualRows.at(-1);
-    if (last && hasMore && !channelsQuery.isFetchingNextPage && last.index >= items.length - 1) {
+    if (last && hasMore && !channelsQuery.isFetchingNextPage && last.index >= groups.length - 1) {
       channelsQuery.fetchNextPage();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [virtualRows.at(-1)?.index, hasMore, channelsQuery.isFetchingNextPage, items.length]);
+  }, [virtualRows.at(-1)?.index, hasMore, channelsQuery.isFetchingNextPage, groups.length]);
 
   // Igual que en VirtualPosterGrid: la fila destino puede no existir aún en el DOM al
   // pulsar la flecha (está virtualizada), así que se reintenta unos frames.
@@ -86,7 +126,7 @@ export function LiveScreen() {
     if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
     const currentAttr = (document.activeElement as HTMLElement | null)?.dataset.rowIndex;
     const current = focusedIndex ?? (currentAttr ? Number(currentAttr) : 0);
-    const next = Math.max(0, Math.min(items.length - 1, current + (e.key === "ArrowDown" ? 1 : -1)));
+    const next = Math.max(0, Math.min(groups.length - 1, current + (e.key === "ArrowDown" ? 1 : -1)));
     if (next === current) return;
     e.preventDefault();
     setFocusedIndex(next);
@@ -118,39 +158,58 @@ export function LiveScreen() {
               <div key={i} className="h-10 animate-pulse rounded bg-neutral-800" />
             ))}
           </div>
-        ) : items.length === 0 && !hasMore ? (
+        ) : groups.length === 0 && !hasMore ? (
           <p className="py-10 text-neutral-500">Sin canales en esta categoría.</p>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
             {virtualRows.map((row) => {
-              const channel = items[row.index];
+              const group = groups[row.index];
+              const channel = group ? activeChannelFor(group) : undefined;
               return (
                 <div
                   key={row.key}
                   style={{ position: "absolute", top: 0, left: 0, width: "100%", height: row.size, transform: `translateY(${row.start}px)` }}
                 >
-                  {channel ? (
-                    <button
-                      type="button"
-                      data-row-index={row.index}
-                      onClick={() =>
-                        navigate({
-                          to: "/player/$kind/$id",
-                          params: { kind: "channel", id: String(channel.id) },
-                          search: channel.category_id ? { categoryId: String(channel.category_id) } : {},
-                        })
-                      }
-                      className="flex h-full w-full items-center gap-4 rounded-lg px-3 text-left outline-none hover:bg-neutral-900"
-                    >
-                      <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500">
-                        {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <span className="block truncate text-sm">{channel.display_name}</span>
-                        <NowPlaying epg={epgByChannel.get(channel.id)} />
-                      </div>
-                      {channel.has_catchup && <span className="ml-auto shrink-0 rounded bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400">catch-up</span>}
-                    </button>
+                  {group && channel ? (
+                    <div className="flex h-full w-full items-center gap-2">
+                      <button
+                        type="button"
+                        data-row-index={row.index}
+                        onClick={() =>
+                          navigate({
+                            to: "/player/$kind/$id",
+                            params: { kind: "channel", id: String(channel.id) },
+                            search: channel.category_id ? { categoryId: String(channel.category_id) } : {},
+                          })
+                        }
+                        className="flex h-full flex-1 items-center gap-4 rounded-lg px-3 text-left outline-none hover:bg-neutral-900"
+                      >
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500">
+                          {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <span className="block truncate text-sm">{group.displayName}</span>
+                          <NowPlaying epg={epgByChannel.get(channel.id)} />
+                        </div>
+                        {channel.has_catchup && <span className="ml-auto shrink-0 rounded bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400">catch-up</span>}
+                      </button>
+                      {group.channels.length > 1 && (
+                        <select
+                          value={channel.id}
+                          onClick={(e) => e.stopPropagation()}
+                          onChange={(e) => setSelectedFeed((prev) => ({ ...prev, [group.displayName]: Number(e.target.value) }))}
+                          className="shrink-0 rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 outline-none"
+                          aria-label={`Elegir fuente para ${group.displayName}`}
+                          title={`${group.channels.length} fuentes disponibles para este canal`}
+                        >
+                          {group.channels.map((c, i) => (
+                            <option key={c.id} value={c.id}>
+                              Fuente {i + 1}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
                   ) : (
                     <div className="mx-3 h-10 animate-pulse rounded bg-neutral-800" />
                   )}

@@ -1056,11 +1056,12 @@ sincronización — no se tocó, deduplicar por nombre escondería alternativas 
   una cuenta de Supabase distinta en el mismo PC ve los mismos perfiles locales. Correcto
   para "una familia, un PC", pero si algún día se comparte un PC entre cuentas sin
   relación, haría falta reconsiderarlo.
-- **Catálogo del proveedor con duplicados reales.** No es un bug de esta app, pero de
-  cara al usuario final una lista con "La 1" tres veces sin explicación puede leerse como
-  un fallo. Una posible mejora futura (no pedida, no construida): agrupar visualmente por
-  nombre con un selector de "fuente" como ya existe para películas, en vez de mostrar
-  cada `remote_id` como una fila suelta.
+- ~~**Catálogo del proveedor con duplicados reales.**~~ Resuelto después de cerrar esta
+  ronda: `LiveScreen` agrupa los canales por nombre exacto sobre todo lo ya cargado
+  (`groupChannelsByName`, sin tocar la paginación del backend — agrupar en SQL entre
+  páginas era mucho más frágil) y muestra un selector "Fuente N" solo cuando el grupo
+  tiene más de un `remote_id`. Verificado en vivo: "24 Horas"/"La 1"/"La 2" pasan a
+  aparecer una sola vez, con el selector; "Al Jazeera" (sin duplicados) no lo enseña.
 - **Navegación espacial por teclado incompleta a propósito.** Cubre Inicio y las filas de
   ficha; no cubre transiciones entre el borde de una rejilla virtualizada (Películas/
   Series) y la barra de filtros o la barra lateral.
