@@ -108,7 +108,13 @@ age_rating: string | null, sources: Array<MovieSourceSummary>,
  * proveedor no tiene) — se rellena aparte en el handler, no aquí, porque hace
  * falta una consulta a la base de datos que este `From` no puede hacer.
  */
-similar: Array<SimilarTitleSummary>, };
+similar: Array<SimilarTitleSummary>, 
+/**
+ * Marcado como visto a mano o de verdad (F "premium", paridad con el checkmark de
+ * episodio) — `false` si la petición no llevaba `profile_id` (no hay de quién
+ * consultarlo), igual que `EpisodeSummary.watched` en `From<EpisodeItem>`.
+ */
+watched: boolean, };
 
 export type MovieSourceSummary = { id: number, provider_id: number, remote_id: string, quality: string | null, language: string | null, container: string | null, 
 /**

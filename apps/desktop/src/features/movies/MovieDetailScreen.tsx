@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet, useApiBase, imagePath } from "../../lib/api-client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiPost, useApiBase, imagePath } from "../../lib/api-client";
+import { useActiveProfile } from "../../lib/activeProfile";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { TrailerModal } from "../../components/TrailerModal";
@@ -13,12 +14,21 @@ export function MovieDetailScreen() {
   const { movieId } = useParams({ from: "/movies/$movieId" });
   const navigate = useNavigate();
   const { data: base } = useApiBase();
+  const { profileId } = useActiveProfile();
   const { isFavorite, toggleFavorite } = useFavorites();
+  const queryClient = useQueryClient();
   const [trailerOpen, setTrailerOpen] = useState(false);
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
   const { data, isPending, isError } = useQuery({
-    queryKey: ["movie", movieId],
-    queryFn: () => apiGet<MovieDetailResponse>(`/api/movies/${movieId}`),
+    queryKey: ["movie", movieId, profileId],
+    queryFn: () => apiGet<MovieDetailResponse>(`/api/movies/${movieId}${profileId != null ? `?profile_id=${profileId}` : ""}`),
+  });
+
+  // Marcar como vista sin reproducir (F "premium", como Plex/Emby) — paridad con el
+  // checkmark de episodio en la ficha de serie.
+  const watchedMutation = useMutation({
+    mutationFn: (nextWatched: boolean) => apiPost("/api/playback/movie-watched", { profile_id: profileId, movie_id: Number(movieId), watched: nextWatched }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["movie", movieId, profileId] }),
   });
 
   useEffect(() => {
@@ -112,6 +122,16 @@ export function MovieDetailScreen() {
           >
             <HeartIcon filled={isFavorite("movie", data.id)} className={`h-5 w-5 ${isFavorite("movie", data.id) ? "text-red-500" : ""}`} />
             {isFavorite("movie", data.id) ? "En favoritos" : "Añadir a favoritos"}
+          </button>
+          <button
+            type="button"
+            onClick={() => watchedMutation.mutate(!data.watched)}
+            aria-pressed={data.watched}
+            className={`flex items-center gap-2 rounded-lg border px-4 py-3 text-sm outline-none ${
+              data.watched ? "border-emerald-700 text-emerald-500 hover:bg-emerald-950/40" : "border-neutral-700 hover:bg-neutral-900"
+            }`}
+          >
+            {data.watched ? "✓ Vista" : "Marcar como vista"}
           </button>
           {data.trailer_key && (
             <button

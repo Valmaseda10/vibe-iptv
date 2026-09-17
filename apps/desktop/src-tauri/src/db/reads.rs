@@ -1661,6 +1661,28 @@ pub fn set_episode_watched(conn: &Connection, profile_id: i64, episode_id: i64, 
     upsert_playback_progress(conn, profile_id, "episode", episode_id, duration_s, Some(duration_s))
 }
 
+/// Igual que `set_episode_watched`, para una película entera (F "premium" — paridad con
+/// el marcado de episodios). La duración de TMDB (`movies.runtime_min`) es el dato más
+/// fiable cuando existe; si no, se usa la de la primera fuente con `vod_info` ya
+/// comprobado (F "premium" anterior); si ninguna de las dos existe todavía, 1/1 como en
+/// episodios.
+pub fn set_movie_watched(conn: &Connection, profile_id: i64, movie_id: i64, watched: bool) -> Result<()> {
+    if !watched {
+        return remove_playback_progress(conn, profile_id, "movie", movie_id);
+    }
+    let runtime_min: Option<i32> =
+        conn.query_row("SELECT runtime_min FROM movies WHERE id = ?1", params![movie_id], |row| row.get(0)).optional()?.flatten();
+    let source_duration: Option<i64> = conn
+        .query_row(
+            "SELECT duration_s FROM movie_sources WHERE movie_id = ?1 AND duration_s IS NOT NULL LIMIT 1",
+            params![movie_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let duration_s = runtime_min.filter(|m| *m > 0).map(|m| m as i64 * 60).or(source_duration).filter(|d| *d > 0).unwrap_or(1);
+    upsert_playback_progress(conn, profile_id, "movie", movie_id, duration_s, Some(duration_s))
+}
+
 /// Todos los episodios de una temporada, marcados o desmarcados de golpe. Devuelve los
 /// ids afectados para que `server::api` encole la sincronización de cada uno igual que
 /// hace el marcado individual (no existe un endpoint de sincronización en lote).
@@ -2219,6 +2241,36 @@ mod tests {
 
         set_episode_watched(&conn, profile_id, episode_id, false).unwrap();
         assert!(get_playback_progress(&conn, profile_id, "episode", episode_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn set_movie_watched_uses_tmdb_runtime_when_available() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let movie_id = seed_movie(&conn, provider_id, "Peli", Some(2020), None, None);
+        conn.execute("UPDATE movies SET runtime_min = 100 WHERE id = ?1", params![movie_id]).unwrap();
+
+        set_movie_watched(&conn, profile_id, movie_id, true).unwrap();
+        let saved = get_playback_progress(&conn, profile_id, "movie", movie_id).unwrap().unwrap();
+        assert!(saved.finished);
+        assert_eq!(saved.duration_s, Some(6000)); // 100 min * 60.
+
+        set_movie_watched(&conn, profile_id, movie_id, false).unwrap();
+        assert!(get_playback_progress(&conn, profile_id, "movie", movie_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn set_movie_watched_falls_back_to_1_1_without_any_known_duration() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let movie_id = seed_movie(&conn, provider_id, "Peli Sin Duracion", Some(2020), None, None);
+
+        set_movie_watched(&conn, profile_id, movie_id, true).unwrap();
+        let saved = get_playback_progress(&conn, profile_id, "movie", movie_id).unwrap().unwrap();
+        assert!(saved.finished);
+        assert_eq!(saved.duration_s, Some(1));
     }
 
     #[test]

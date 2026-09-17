@@ -200,6 +200,10 @@ pub struct MovieDetailResponse {
     /// proveedor no tiene) — se rellena aparte en el handler, no aquí, porque hace
     /// falta una consulta a la base de datos que este `From` no puede hacer.
     pub similar: Vec<SimilarTitleSummary>,
+    /// Marcado como visto a mano o de verdad (F "premium", paridad con el checkmark de
+    /// episodio) — `false` si la petición no llevaba `profile_id` (no hay de quién
+    /// consultarlo), igual que `EpisodeSummary.watched` en `From<EpisodeItem>`.
+    pub watched: bool,
 }
 
 impl From<reads::MovieDetail> for MovieDetailResponse {
@@ -218,6 +222,7 @@ impl From<reads::MovieDetail> for MovieDetailResponse {
             trailer_key: row.youtube_trailer_key,
             age_rating: row.age_rating,
             sources: row.sources.into_iter().map(Into::into).collect(),
+            watched: false,
             similar: Vec::new(),
         }
     }
@@ -695,7 +700,17 @@ async fn get_movies(State(state): State<CatalogState>, Query(query): Query<Movie
 /// toda su vida (regla R4: con hasta 100.000 títulos, nunca durante la sincronización
 /// masiva). Sin clave de TMDB configurada, o si la comprobación falla, se responde igual
 /// con lo que ya hubiera en caché: no es motivo para romper la ficha entera.
-async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumPath<i64>) -> Result<Json<MovieDetailResponse>, ApiError> {
+#[derive(Deserialize)]
+struct MovieDetailQuery {
+    #[serde(default)]
+    profile_id: Option<i64>,
+}
+
+async fn get_movie_detail(
+    State(state): State<CatalogState>,
+    AxumPath(id): AxumPath<i64>,
+    Query(query): Query<MovieDetailQuery>,
+) -> Result<Json<MovieDetailResponse>, ApiError> {
     let db_path = state.db_path.clone();
     let movie = with_db(db_path.clone(), move |conn| reads::get_movie(conn, id)).await?;
     let mut movie = movie.ok_or(ApiError::NotFound)?;
@@ -730,6 +745,17 @@ async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumP
         }
     }
 
+    // Marcado como visto (F "premium") — sin profile_id no hay de quién consultarlo,
+    // igual de opcional que en el propio checkmark de episodio.
+    let watched = if let Some(profile_id) = query.profile_id {
+        with_db(db_path.clone(), move |conn| reads::get_playback_progress(conn, profile_id, "movie", id))
+            .await?
+            .map(|p| p.finished)
+            .unwrap_or(false)
+    } else {
+        false
+    };
+
     // "Títulos similares" (F "premium"): siempre se resuelve contra el catálogo local
     // actual, nunca contra lo que TMDB tenía guardado cuando se comprobó el tráiler —
     // así un título añadido después de esa comprobación puede aparecer sin pedir nada
@@ -743,6 +769,7 @@ async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumP
 
     let mut response: MovieDetailResponse = movie.into();
     response.similar = similar.into_iter().map(Into::into).collect();
+    response.watched = watched;
     Ok(Json(response))
 }
 
@@ -1212,6 +1239,36 @@ async fn post_episode_watched(State(state): State<CatalogState>, Json(input): Js
 }
 
 #[derive(Deserialize)]
+struct MovieWatchedInput {
+    profile_id: i64,
+    movie_id: i64,
+    watched: bool,
+}
+
+/// Igual que `post_episode_watched`, para una película (F "premium" — paridad con el
+/// marcado de episodios).
+async fn post_movie_watched(State(state): State<CatalogState>, Json(input): Json<MovieWatchedInput>) -> Result<StatusCode, ApiError> {
+    let item_key = with_db(state.db_path.clone(), move |conn| reads::item_key_for(conn, "movie", input.movie_id)).await?;
+    with_db(state.db_path.clone(), move |conn| reads::set_movie_watched(conn, input.profile_id, input.movie_id, input.watched)).await?;
+    if input.watched {
+        let saved = with_db(state.db_path.clone(), move |conn| reads::get_playback_progress(conn, input.profile_id, "movie", input.movie_id)).await?;
+        if let Some(p) = saved {
+            tokio::spawn(crate::sync::engine::push_playback_progress(
+                state.db_path,
+                input.profile_id,
+                "movie".to_string(),
+                input.movie_id,
+                p.position_s,
+                p.duration_s,
+            ));
+        }
+    } else if let Some(item_key) = item_key {
+        tokio::spawn(crate::sync::engine::push_playback_remove_by_key(state.db_path, input.profile_id, "movie".to_string(), item_key));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
 struct SeasonWatchedInput {
     profile_id: i64,
     series_id: i64,
@@ -1277,6 +1334,7 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/epg/grid", get(get_epg_grid))
         .route("/api/playback/progress", get(get_playback_progress).post(post_playback_progress).delete(delete_playback_progress))
         .route("/api/playback/episode-watched", post(post_episode_watched))
+        .route("/api/playback/movie-watched", post(post_movie_watched))
         .route("/api/playback/season-watched", post(post_season_watched))
         .route("/api/favorites", get(get_favorites).post(post_favorite).delete(delete_favorite))
         .with_state(CatalogState { db_path })
@@ -1440,6 +1498,47 @@ mod tests {
         let similar = json["similar"].as_array().unwrap();
         assert_eq!(similar.len(), 1);
         assert_eq!(similar[0]["clean_title"], "Parecida");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Marcar (y desmarcar) una película como vista a mano — paridad con el episodio.
+    /// Sin `profile_id` en la petición, `watched` sale `false` sin romper la ficha
+    /// (mismo criterio que `trailer_key`/`similar` cuando no hay nada que comprobar).
+    #[tokio::test]
+    async fn post_movie_watched_marks_and_unmarks_over_http() {
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+
+        let no_profile = router.clone().oneshot(Request::builder().uri("/api/movies/1").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(body_json(no_profile).await["watched"], false);
+
+        let body = serde_json::json!({"profile_id": TEST_PROFILE_ID, "movie_id": 1, "watched": true});
+        let response = router
+            .clone()
+            .oneshot(Request::builder().method("POST").uri("/api/playback/movie-watched").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let detail = router
+            .clone()
+            .oneshot(Request::builder().uri(format!("/api/movies/1?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(body_json(detail).await["watched"], true);
+
+        let unmark = serde_json::json!({"profile_id": TEST_PROFILE_ID, "movie_id": 1, "watched": false});
+        router
+            .clone()
+            .oneshot(Request::builder().method("POST").uri("/api/playback/movie-watched").header("content-type", "application/json").body(Body::from(unmark.to_string())).unwrap())
+            .await
+            .unwrap();
+        let detail_after = router
+            .oneshot(Request::builder().uri(format!("/api/movies/1?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(body_json(detail_after).await["watched"], false);
 
         let _ = std::fs::remove_file(&db_path);
     }
