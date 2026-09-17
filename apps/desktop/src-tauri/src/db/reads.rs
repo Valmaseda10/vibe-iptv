@@ -110,6 +110,62 @@ pub fn resolve_recommendations(
     Ok(results)
 }
 
+pub struct SimilarTitleRow {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+}
+
+/// "Títulos similares" en la ficha de una película (F "premium"): mismo cruce contra el
+/// catálogo local que `resolve_recommendations` (nunca sugerir algo que el proveedor no
+/// tiene), pero a partir de un solo título en vez de varias semillas ponderadas, así que
+/// no hace falta el "porque te gustó X" ni las exclusiones múltiples.
+pub fn resolve_similar_movies(conn: &Connection, tmdb_ids: &[i64], exclude_movie_id: i64, limit: i64) -> Result<Vec<SimilarTitleRow>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut results = Vec::new();
+    for tmdb_id in tmdb_ids {
+        if results.len() as i64 >= limit {
+            break;
+        }
+        let row: Option<(i64, String, Option<i32>, Option<String>)> = conn
+            .query_row("SELECT id, clean_title, year, poster_path FROM movies WHERE tmdb_id = ?1", params![tmdb_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .optional()?;
+        if let Some((id, clean_title, year, poster_path)) = row {
+            if id == exclude_movie_id || !seen.insert(id) {
+                continue;
+            }
+            results.push(SimilarTitleRow { id, clean_title, year, poster_path });
+        }
+    }
+    Ok(results)
+}
+
+/// Igual que `resolve_similar_movies`, para la ficha de serie.
+pub fn resolve_similar_series(conn: &Connection, tmdb_ids: &[i64], exclude_series_id: i64, limit: i64) -> Result<Vec<SimilarTitleRow>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut results = Vec::new();
+    for tmdb_id in tmdb_ids {
+        if results.len() as i64 >= limit {
+            break;
+        }
+        let row: Option<(i64, String, Option<i32>, Option<String>)> = conn
+            .query_row("SELECT id, clean_title, year, poster_path FROM series WHERE tmdb_id = ?1", params![tmdb_id], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })
+            .optional()?;
+        if let Some((id, clean_title, year, poster_path)) = row {
+            if id == exclude_series_id || !seen.insert(id) {
+                continue;
+            }
+            results.push(SimilarTitleRow { id, clean_title, year, poster_path });
+        }
+    }
+    Ok(results)
+}
+
 pub fn list_genre_names(conn: &Connection, kind: &str) -> Result<Vec<GenreNameRow>> {
     let mut stmt = conn.prepare("SELECT tmdb_genre_id, name FROM genre_names WHERE kind = ?1 ORDER BY name")?;
     let rows = stmt.query_map(params![kind], |row| Ok(GenreNameRow { id: row.get(0)?, name: row.get(1)? }))?;
@@ -365,14 +421,23 @@ pub struct MovieDetail {
     pub youtube_trailer_key: Option<String>,
     pub trailer_checked_at: Option<i64>,
     pub age_rating: Option<String>,
+    pub similar_tmdb_ids: Vec<i64>,
     pub sources: Vec<MovieSourceItem>,
+}
+
+/// Deshace `queries::join_tmdb_ids` (migración 009: texto separado por comas, no una
+/// tabla propia). Entradas que no sean un número entero se descartan en vez de romper
+/// la ficha entera — no debería pasar nunca, pero un dato así de accesorio no merece un
+/// error si algún día lo hace.
+fn parse_tmdb_ids(raw: Option<String>) -> Vec<i64> {
+    raw.map(|s| s.split(',').filter_map(|part| part.trim().parse().ok()).collect()).unwrap_or_default()
 }
 
 pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
     let base = conn
         .query_row(
             "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres, tmdb_state,
-                    tmdb_id, youtube_trailer_key, trailer_checked_at, age_rating
+                    tmdb_id, youtube_trailer_key, trailer_checked_at, age_rating, similar_tmdb_ids
              FROM movies WHERE id = ?1",
             params![id],
             |row| {
@@ -392,6 +457,7 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
                     row.get::<_, Option<String>>(11)?,
                     row.get::<_, Option<i64>>(12)?,
                     row.get::<_, Option<String>>(13)?,
+                    row.get::<_, Option<String>>(14)?,
                 ))
             },
         )
@@ -412,12 +478,14 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
         youtube_trailer_key,
         trailer_checked_at,
         age_rating,
+        similar_tmdb_ids_raw,
     )) = base
     else {
         return Ok(None);
     };
 
     let genres: Vec<i64> = genres_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    let similar_tmdb_ids = parse_tmdb_ids(similar_tmdb_ids_raw);
 
     let mut stmt = conn.prepare(
         "SELECT id, provider_id, remote_id, quality, language, container, duration_s, video_codec, audio_codec, vod_info_checked_at
@@ -455,6 +523,7 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
         youtube_trailer_key,
         trailer_checked_at,
         age_rating,
+        similar_tmdb_ids,
         sources,
     }))
 }
@@ -600,6 +669,7 @@ pub struct SeriesDetail {
     pub youtube_trailer_key: Option<String>,
     pub trailer_checked_at: Option<i64>,
     pub age_rating: Option<String>,
+    pub similar_tmdb_ids: Vec<i64>,
     pub sources: Vec<SeriesSourceItem>,
     pub episodes: Vec<EpisodeItem>,
 }
@@ -608,7 +678,7 @@ pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
     let base = conn
         .query_row(
             "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, genres, tmdb_state,
-                    tmdb_id, youtube_trailer_key, trailer_checked_at, age_rating
+                    tmdb_id, youtube_trailer_key, trailer_checked_at, age_rating, similar_tmdb_ids
              FROM series WHERE id = ?1",
             params![id],
             |row| {
@@ -626,6 +696,7 @@ pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
                     row.get::<_, Option<String>>(10)?,
                     row.get::<_, Option<i64>>(11)?,
                     row.get::<_, Option<String>>(12)?,
+                    row.get::<_, Option<String>>(13)?,
                 ))
             },
         )
@@ -645,11 +716,13 @@ pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
         youtube_trailer_key,
         trailer_checked_at,
         age_rating,
+        similar_tmdb_ids_raw,
     )) = base
     else {
         return Ok(None);
     };
     let genres: Vec<i64> = genres_json.and_then(|j| serde_json::from_str(&j).ok()).unwrap_or_default();
+    let similar_tmdb_ids = parse_tmdb_ids(similar_tmdb_ids_raw);
 
     let mut source_stmt = conn.prepare("SELECT id, provider_id, remote_id, detail_synced_at FROM series_sources WHERE series_id = ?1")?;
     let sources = source_stmt
@@ -693,6 +766,7 @@ pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
         youtube_trailer_key,
         trailer_checked_at,
         age_rating,
+        similar_tmdb_ids,
         sources,
         episodes,
     }))
@@ -1811,6 +1885,38 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].clean_title, "Nueva Sugerencia");
         assert_eq!(results[0].because_of, "Semilla");
+    }
+
+    #[test]
+    fn resolve_similar_movies_excludes_the_title_itself_and_deduplicates() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+
+        let origin = seed_movie(&conn, provider_id, "Origen", Some(2020), None, None);
+        conn.execute("UPDATE movies SET tmdb_id = 100 WHERE id = ?1", params![origin]).unwrap();
+        let similar = seed_movie(&conn, provider_id, "Parecida", Some(2021), None, None);
+        conn.execute("UPDATE movies SET tmdb_id = 200 WHERE id = ?1", params![similar]).unwrap();
+
+        // TMDB puede sugerir la propia película entre sus "similares" (le pasa de
+        // verdad, no es un caso de laboratorio) — 200 repetido debe contar una vez, 100
+        // (la propia ficha) y 999 (fuera del catálogo local) deben descartarse.
+        let results = resolve_similar_movies(&conn, &[100, 200, 200, 999], origin, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].clean_title, "Parecida");
+    }
+
+    #[test]
+    fn resolve_similar_series_excludes_the_title_itself() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let (origin_id, _) = seed_series_with_episodes(&conn, provider_id, "Origen", &[(1, 1)]);
+        conn.execute("UPDATE series SET tmdb_id = 100 WHERE id = ?1", params![origin_id]).unwrap();
+        let (similar_id, _) = seed_series_with_episodes(&conn, provider_id, "Parecida", &[(1, 1)]);
+        conn.execute("UPDATE series SET tmdb_id = 200 WHERE id = ?1", params![similar_id]).unwrap();
+
+        let results = resolve_similar_series(&conn, &[100, 200], origin_id, 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].clean_title, "Parecida");
     }
 
     #[test]

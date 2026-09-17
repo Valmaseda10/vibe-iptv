@@ -5,6 +5,8 @@ import { apiGet, useApiBase, imagePath } from "../../lib/api-client";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { TrailerModal } from "../../components/TrailerModal";
+import { Row } from "../../components/Row";
+import { PosterCard } from "../../components/PosterCard";
 import type { MovieDetailResponse } from "../../lib/api-types";
 
 export function MovieDetailScreen() {
@@ -130,6 +132,22 @@ export function MovieDetailScreen() {
           <p className="pt-6 text-sm text-neutral-500">1 fuente disponible{qualities.length > 0 ? ` (${qualities.join(", ")})` : ""}</p>
         )}
       </div>
+
+      {data.similar.length > 0 && (
+        <div className="relative pb-10">
+          <Row title="Más como esto">
+            {data.similar.map((title) => (
+              <PosterCard
+                key={title.id}
+                title={title.clean_title}
+                posterPath={title.poster_path}
+                subtitle={title.year ? String(title.year) : undefined}
+                onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(title.id) } })}
+              />
+            ))}
+          </Row>
+        </div>
+      )}
     </div>
   );
 }

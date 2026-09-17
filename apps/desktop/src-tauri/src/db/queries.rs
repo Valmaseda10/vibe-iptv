@@ -462,18 +462,27 @@ pub fn update_series_tmdb_result(conn: &Connection, series_id: i64, outcome: &Tm
 /// TMDB (`TmdbClient::movie_extras`), así que también se guardan juntos.
 /// "premium") en la misma pasada — ambos se piden juntos en una sola llamada a TMDB
 /// (`TmdbClient::movie_extras`), así que también se guardan juntos.
-pub fn set_movie_extras(conn: &Connection, movie_id: i64, trailer_key: Option<&str>, age_rating: Option<&str>) -> Result<()> {
+/// Ids de TMDB como texto separado por comas — ver migración 009: es una lista pequeña
+/// y de solo lectura, no hace falta una tabla ni una columna JSON de verdad para esto.
+fn join_tmdb_ids(ids: &[i64]) -> Option<String> {
+    if ids.is_empty() {
+        return None;
+    }
+    Some(ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","))
+}
+
+pub fn set_movie_extras(conn: &Connection, movie_id: i64, trailer_key: Option<&str>, age_rating: Option<&str>, similar_tmdb_ids: &[i64]) -> Result<()> {
     conn.execute(
-        "UPDATE movies SET youtube_trailer_key = ?1, age_rating = ?2, trailer_checked_at = ?3 WHERE id = ?4",
-        params![trailer_key, age_rating, now_epoch(), movie_id],
+        "UPDATE movies SET youtube_trailer_key = ?1, age_rating = ?2, similar_tmdb_ids = ?3, trailer_checked_at = ?4 WHERE id = ?5",
+        params![trailer_key, age_rating, join_tmdb_ids(similar_tmdb_ids), now_epoch(), movie_id],
     )?;
     Ok(())
 }
 
-pub fn set_series_extras(conn: &Connection, series_id: i64, trailer_key: Option<&str>, age_rating: Option<&str>) -> Result<()> {
+pub fn set_series_extras(conn: &Connection, series_id: i64, trailer_key: Option<&str>, age_rating: Option<&str>, similar_tmdb_ids: &[i64]) -> Result<()> {
     conn.execute(
-        "UPDATE series SET youtube_trailer_key = ?1, age_rating = ?2, trailer_checked_at = ?3 WHERE id = ?4",
-        params![trailer_key, age_rating, now_epoch(), series_id],
+        "UPDATE series SET youtube_trailer_key = ?1, age_rating = ?2, similar_tmdb_ids = ?3, trailer_checked_at = ?4 WHERE id = ?5",
+        params![trailer_key, age_rating, join_tmdb_ids(similar_tmdb_ids), now_epoch(), series_id],
     )?;
     Ok(())
 }

@@ -195,6 +195,11 @@ pub struct MovieDetailResponse {
     /// clasificación para esto, o si todavía no se ha comprobado. Nunca del proveedor.
     pub age_rating: Option<String>,
     pub sources: Vec<MovieSourceSummary>,
+    /// "Más como esto" (F "premium"): recomendaciones de TMDB para este título en
+    /// concreto, cruzadas contra el catálogo local (nunca sugerir algo que el
+    /// proveedor no tiene) — se rellena aparte en el handler, no aquí, porque hace
+    /// falta una consulta a la base de datos que este `From` no puede hacer.
+    pub similar: Vec<SimilarTitleSummary>,
 }
 
 impl From<reads::MovieDetail> for MovieDetailResponse {
@@ -213,7 +218,24 @@ impl From<reads::MovieDetail> for MovieDetailResponse {
             trailer_key: row.youtube_trailer_key,
             age_rating: row.age_rating,
             sources: row.sources.into_iter().map(Into::into).collect(),
+            similar: Vec::new(),
         }
+    }
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct SimilarTitleSummary {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+}
+
+impl From<reads::SimilarTitleRow> for SimilarTitleSummary {
+    fn from(row: reads::SimilarTitleRow) -> Self {
+        Self { id: row.id, clean_title: row.clean_title, year: row.year, poster_path: row.poster_path }
     }
 }
 
@@ -287,6 +309,7 @@ pub struct SeriesDetailResponse {
     pub tmdb_state: String,
     pub trailer_key: Option<String>,
     pub age_rating: Option<String>,
+    pub similar: Vec<SimilarTitleSummary>,
     pub episodes: Vec<EpisodeSummary>,
 }
 
@@ -478,6 +501,9 @@ pub struct FavoriteInput {
 
 const DEFAULT_PAGE_SIZE: i64 = 50;
 const MAX_PAGE_SIZE: i64 = 200;
+/// Cuántos "títulos similares" enseñar en una ficha — de sobra para llenar una fila sin
+/// pedir de más al catálogo local por cada visita.
+const SIMILAR_TITLES_LIMIT: i64 = 12;
 
 fn clamp_limit(limit: Option<i64>) -> i64 {
     limit.unwrap_or(DEFAULT_PAGE_SIZE).clamp(1, MAX_PAGE_SIZE)
@@ -680,6 +706,7 @@ async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumP
                 Ok(extras) => {
                     movie.youtube_trailer_key = extras.trailer_key;
                     movie.age_rating = extras.age_rating;
+                    movie.similar_tmdb_ids = extras.similar_tmdb_ids;
                 }
                 Err(err) => tracing::warn!(movie_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
             }
@@ -691,7 +718,7 @@ async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumP
     // proveedor por cada fuente disponible de la misma película a la vez.
     if let Some(source) = movie.sources.iter().find(|s| s.vod_info_checked_at.is_none()) {
         let (source_id, provider_id, remote_id) = (source.id, source.provider_id, source.remote_id.clone());
-        match fetch_and_store_vod_info(db_path, source_id, provider_id, remote_id).await {
+        match fetch_and_store_vod_info(db_path.clone(), source_id, provider_id, remote_id).await {
             Ok(info) => {
                 if let Some(s) = movie.sources.iter_mut().find(|s| s.id == source_id) {
                     s.duration_s = info.duration_seconds;
@@ -703,7 +730,20 @@ async fn get_movie_detail(State(state): State<CatalogState>, AxumPath(id): AxumP
         }
     }
 
-    Ok(Json(movie.into()))
+    // "Títulos similares" (F "premium"): siempre se resuelve contra el catálogo local
+    // actual, nunca contra lo que TMDB tenía guardado cuando se comprobó el tráiler —
+    // así un título añadido después de esa comprobación puede aparecer sin pedir nada
+    // nuevo a TMDB (ver migración 009).
+    let similar = if movie.similar_tmdb_ids.is_empty() {
+        Vec::new()
+    } else {
+        let ids = movie.similar_tmdb_ids.clone();
+        with_db(db_path, move |conn| reads::resolve_similar_movies(conn, &ids, id, SIMILAR_TITLES_LIMIT)).await?
+    };
+
+    let mut response: MovieDetailResponse = movie.into();
+    response.similar = similar.into_iter().map(Into::into).collect();
+    Ok(Json(response))
 }
 
 /// Lee la clave de TMDB del keychain (si no hay ninguna configurada, falla rápido y sin
@@ -713,9 +753,11 @@ async fn fetch_and_store_movie_extras(db_path: PathBuf, movie_id: i64, tmdb_id: 
     let api_key = keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).map_err(|err| err.to_string())?;
     let extras = TmdbClient::new(api_key).movie_extras(tmdb_id).await.map_err(|err| err.to_string())?;
     let stored = extras.clone();
-    with_db(db_path, move |conn| queries::set_movie_extras(conn, movie_id, stored.trailer_key.as_deref(), stored.age_rating.as_deref()))
-        .await
-        .map_err(|err| err.to_string())?;
+    with_db(db_path, move |conn| {
+        queries::set_movie_extras(conn, movie_id, stored.trailer_key.as_deref(), stored.age_rating.as_deref(), &stored.similar_tmdb_ids)
+    })
+    .await
+    .map_err(|err| err.to_string())?;
     Ok(extras)
 }
 
@@ -724,9 +766,11 @@ async fn fetch_and_store_series_extras(db_path: PathBuf, series_id: i64, tmdb_id
     let api_key = keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).map_err(|err| err.to_string())?;
     let extras = TmdbClient::new(api_key).tv_extras(tmdb_id).await.map_err(|err| err.to_string())?;
     let stored = extras.clone();
-    with_db(db_path, move |conn| queries::set_series_extras(conn, series_id, stored.trailer_key.as_deref(), stored.age_rating.as_deref()))
-        .await
-        .map_err(|err| err.to_string())?;
+    with_db(db_path, move |conn| {
+        queries::set_series_extras(conn, series_id, stored.trailer_key.as_deref(), stored.age_rating.as_deref(), &stored.similar_tmdb_ids)
+    })
+    .await
+    .map_err(|err| err.to_string())?;
     Ok(extras)
 }
 
@@ -846,6 +890,7 @@ async fn get_series_detail(
                 Ok(extras) => {
                     series.youtube_trailer_key = extras.trailer_key;
                     series.age_rating = extras.age_rating;
+                    series.similar_tmdb_ids = extras.similar_tmdb_ids;
                 }
                 Err(err) => tracing::warn!(series_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
             }
@@ -855,7 +900,17 @@ async fn get_series_detail(
     // Checkmark de "visto" por episodio (F "premium") — nunca rompe la ficha si falla:
     // sin marcas es como estaba la ficha antes de que existiera esta función.
     let profile_id = query.profile_id;
-    let watched = with_db(db_path, move |conn| reads::list_watched_episode_ids(conn, profile_id, id)).await.unwrap_or_default();
+    let watched = with_db(db_path.clone(), move |conn| reads::list_watched_episode_ids(conn, profile_id, id)).await.unwrap_or_default();
+
+    // "Títulos similares" (F "premium") — mismo criterio que en la ficha de película:
+    // se resuelve contra el catálogo local actual, no contra lo que había cuando se
+    // comprobó el tráiler.
+    let similar = if series.similar_tmdb_ids.is_empty() {
+        Vec::new()
+    } else {
+        let ids = series.similar_tmdb_ids.clone();
+        with_db(db_path, move |conn| reads::resolve_similar_series(conn, &ids, id, SIMILAR_TITLES_LIMIT)).await?
+    };
 
     let mut episodes: Vec<EpisodeSummary> = series.episodes.into_iter().map(Into::into).collect();
     for episode in &mut episodes {
@@ -874,6 +929,7 @@ async fn get_series_detail(
         tmdb_state: series.tmdb_state,
         trailer_key: series.youtube_trailer_key,
         age_rating: series.age_rating,
+        similar: similar.into_iter().map(Into::into).collect(),
         episodes,
     }))
 }
@@ -1337,7 +1393,7 @@ mod tests {
         {
             let conn = open_connection_at(&db_path).unwrap();
             conn.execute("UPDATE movies SET tmdb_state = 'matched', tmdb_id = 603 WHERE id = 1", []).unwrap();
-            write_queries::set_movie_extras(&conn, 1, Some("ya-en-cache"), Some("16")).unwrap();
+            write_queries::set_movie_extras(&conn, 1, Some("ya-en-cache"), Some("16"), &[]).unwrap();
         }
         let router = catalog_router(db_path.clone());
 
@@ -1346,6 +1402,79 @@ mod tests {
         let json = body_json(response).await;
         assert_eq!(json["trailer_key"], "ya-en-cache");
         assert_eq!(json["age_rating"], "16");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// "Más como esto": el id de TMDB recomendado y guardado en caché se resuelve
+    /// contra el catálogo local en cada visita, no solo en el momento en que se
+    /// comprobó el tráiler — una segunda película añadida después también debe salir.
+    #[tokio::test]
+    async fn get_movie_detail_resolves_similar_titles_against_the_current_local_catalog() {
+        let db_path = seeded_db();
+        {
+            let conn = open_connection_at(&db_path).unwrap();
+            conn.execute("UPDATE movies SET tmdb_state = 'matched', tmdb_id = 603 WHERE id = 1", []).unwrap();
+            write_queries::set_movie_extras(&conn, 1, None, None, &[604, 999]).unwrap();
+            // 604 llegó al catálogo local DESPUÉS de que se guardara la recomendación
+            // (999 nunca llega: no hay ninguna película con ese tmdb_id).
+            let raw = RawMovie {
+                remote_id: "2".into(),
+                category_remote_id: None,
+                raw_title: "Parecida".into(),
+                container_extension: None,
+                logo_url: None,
+                added_at: Some(1_700_000_000),
+                rating: None,
+                tmdb_id: Some(604),
+            };
+            let fields = TitleFields { clean_title: "Parecida", year: Some(2022), match_key: "parecida-2022", quality: None, language: None };
+            let provider2 = write_queries::insert_provider(&conn, ProviderKind::Xtream, "P2", "http://y", None, 1, None).unwrap();
+            write_queries::upsert_movie(&conn, provider2, &HashMap::new(), &raw, &fields).unwrap();
+        }
+        let router = catalog_router(db_path.clone());
+
+        let response = router.oneshot(Request::builder().uri("/api/movies/1").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let similar = json["similar"].as_array().unwrap();
+        assert_eq!(similar.len(), 1);
+        assert_eq!(similar[0]["clean_title"], "Parecida");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Igual que el test de película, para `GET /api/series/:id` — también confirma que
+    /// una serie recomendada no se cuela como "similar" de sí misma (999 es su propio
+    /// tmdb_id, por si TMDB alguna vez se sugiere a sí mismo entre sus recomendaciones).
+    #[tokio::test]
+    async fn get_series_detail_resolves_similar_titles_against_the_current_local_catalog() {
+        let db_path = seeded_db();
+        let (series_id, other_series_id) = {
+            let conn = open_connection_at(&db_path).unwrap();
+            let series_id = seed_series_with_two_seasons(&conn);
+            conn.execute("UPDATE series SET tmdb_state = 'matched', tmdb_id = 999 WHERE id = ?1", rusqlite::params![series_id]).unwrap();
+            write_queries::set_series_extras(&conn, series_id, None, None, &[999, 1396]).unwrap();
+
+            let series_raw = crate::sources::model::RawSeries { remote_id: "s2".into(), raw_title: "Otra Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+            let fields = TitleFields { clean_title: "Otra Serie", year: None, match_key: "otra-serie-0000", quality: None, language: None };
+            write_queries::upsert_series(&conn, write_queries::insert_provider(&conn, ProviderKind::Xtream, "P3", "http://z", None, 1, None).unwrap(), &HashMap::new(), &series_raw, &fields).unwrap();
+            let other_series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = 'otra-serie-0000'", [], |r| r.get(0)).unwrap();
+            conn.execute("UPDATE series SET tmdb_id = 1396 WHERE id = ?1", rusqlite::params![other_series_id]).unwrap();
+            (series_id, other_series_id)
+        };
+        let router = catalog_router(db_path.clone());
+
+        let response = router
+            .oneshot(Request::builder().uri(format!("/api/series/{series_id}?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        let similar = json["similar"].as_array().unwrap();
+        assert_eq!(similar.len(), 1);
+        assert_eq!(similar[0]["id"], other_series_id);
+        assert_eq!(similar[0]["clean_title"], "Otra Serie");
 
         let _ = std::fs::remove_file(&db_path);
     }

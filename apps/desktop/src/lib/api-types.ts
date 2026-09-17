@@ -101,7 +101,14 @@ trailer_key: string | null,
  * Certificación por edad de TMDB (p. ej. "16", "PG-13") — `None` si TMDB no tiene
  * clasificación para esto, o si todavía no se ha comprobado. Nunca del proveedor.
  */
-age_rating: string | null, sources: Array<MovieSourceSummary>, };
+age_rating: string | null, sources: Array<MovieSourceSummary>, 
+/**
+ * "Más como esto" (F "premium"): recomendaciones de TMDB para este título en
+ * concreto, cruzadas contra el catálogo local (nunca sugerir algo que el
+ * proveedor no tiene) — se rellena aparte en el handler, no aquí, porque hace
+ * falta una consulta a la base de datos que este `From` no puede hacer.
+ */
+similar: Array<SimilarTitleSummary>, };
 
 export type MovieSourceSummary = { id: number, provider_id: number, remote_id: string, quality: string | null, language: string | null, container: string | null, 
 /**
@@ -192,7 +199,7 @@ export type SearchHitResponse = { item_kind: string, item_id: number, title: str
 
 export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, };
 
-export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, trailer_key: string | null, age_rating: string | null, episodes: Array<EpisodeSummary>, };
+export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, trailer_key: string | null, age_rating: string | null, similar: Array<SimilarTitleSummary>, episodes: Array<EpisodeSummary>, };
 
 export type SeriesPage = { items: Array<SeriesSummary>, next_cursor: number | null, next_cursor_key: string | null, };
 
@@ -203,6 +210,8 @@ export type SetProfilePinInput = {
  * `None` quita el PIN de este perfil (vuelve a entrarse sin pedir nada).
  */
 pin: string | null, };
+
+export type SimilarTitleSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, };
 
 /**
  * Progreso emitido al frontend por eventos de Tauri (`sync://progress`).

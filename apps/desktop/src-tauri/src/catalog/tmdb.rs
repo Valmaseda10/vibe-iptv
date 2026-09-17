@@ -194,23 +194,25 @@ impl TmdbClient {
     /// hay dato: TMDB simplemente no siempre tiene tráiler o certificación para todo.
     pub async fn movie_extras(&self, tmdb_id: i64) -> Result<TmdbExtras> {
         let response: MovieExtrasResponse = self
-            .get_json(&format!("/movie/{tmdb_id}"), &[("language", "es-ES"), ("append_to_response", "videos,release_dates")])
+            .get_json(&format!("/movie/{tmdb_id}"), &[("language", "es-ES"), ("append_to_response", "videos,release_dates,recommendations")])
             .await?;
         Ok(TmdbExtras {
             trailer_key: pick_trailer(&response.videos.results),
             age_rating: pick_certification(response.release_dates.results.iter().map(|c| {
                 (c.iso_3166_1.as_str(), c.release_dates.iter().find_map(|r| non_empty(&r.certification)))
             })),
+            similar_tmdb_ids: response.recommendations.results.into_iter().map(|r| r.id).collect(),
         })
     }
 
     pub async fn tv_extras(&self, tmdb_id: i64) -> Result<TmdbExtras> {
         let response: TvExtrasResponse = self
-            .get_json(&format!("/tv/{tmdb_id}"), &[("language", "es-ES"), ("append_to_response", "videos,content_ratings")])
+            .get_json(&format!("/tv/{tmdb_id}"), &[("language", "es-ES"), ("append_to_response", "videos,content_ratings,recommendations")])
             .await?;
         Ok(TmdbExtras {
             trailer_key: pick_trailer(&response.videos.results),
             age_rating: pick_certification(response.content_ratings.results.iter().map(|c| (c.iso_3166_1.as_str(), non_empty(&c.rating)))),
+            similar_tmdb_ids: response.recommendations.results.into_iter().map(|r| r.id).collect(),
         })
     }
 
@@ -221,6 +223,14 @@ impl TmdbClient {
     pub async fn movie_recommendations(&self, tmdb_id: i64) -> Result<Vec<i64>> {
         let response: RecommendationsResponse =
             self.get_json(&format!("/movie/{tmdb_id}/recommendations"), &[("language", "es-ES")]).await?;
+        Ok(response.results.into_iter().map(|r| r.id).collect())
+    }
+
+    /// Igual que `movie_recommendations`, para "Títulos similares" en la ficha de serie
+    /// (F "premium" — hasta ahora esa fila solo existía en Inicio, no en la ficha).
+    pub async fn tv_recommendations(&self, tmdb_id: i64) -> Result<Vec<i64>> {
+        let response: RecommendationsResponse =
+            self.get_json(&format!("/tv/{tmdb_id}/recommendations"), &[("language", "es-ES")]).await?;
         Ok(response.results.into_iter().map(|r| r.id).collect())
     }
 
@@ -242,6 +252,7 @@ impl TmdbClient {
 pub struct TmdbExtras {
     pub trailer_key: Option<String>,
     pub age_rating: Option<String>,
+    pub similar_tmdb_ids: Vec<i64>,
 }
 
 fn non_empty(s: &str) -> Option<&str> {
@@ -663,6 +674,8 @@ struct MovieExtrasResponse {
     videos: VideosResponse,
     #[serde(default)]
     release_dates: ReleaseDatesResponse,
+    #[serde(default)]
+    recommendations: RecommendationsResponse,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -690,6 +703,8 @@ struct TvExtrasResponse {
     videos: VideosResponse,
     #[serde(default)]
     content_ratings: ContentRatingsResponse,
+    #[serde(default)]
+    recommendations: RecommendationsResponse,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -943,7 +958,8 @@ mod tests {
             200,
             r#"{"id":603,"videos":{"results":[{"key":"abc123","site":"YouTube","type":"Trailer","official":true}]},
                 "release_dates":{"results":[{"iso_3166_1":"US","release_dates":[{"certification":"R"}]},
-                                             {"iso_3166_1":"ES","release_dates":[{"certification":"16"}]}]}}"#,
+                                             {"iso_3166_1":"ES","release_dates":[{"certification":"16"}]}]},
+                "recommendations":{"results":[{"id":604},{"id":605}]}}"#,
         );
         let base_url = spawn_mock_server(state).await;
         let client = TmdbClient::with_base_url("key", base_url);
@@ -951,7 +967,8 @@ mod tests {
         let extras = client.movie_extras(603).await.unwrap();
         assert_eq!(extras.trailer_key, Some("abc123".to_string()));
         assert_eq!(extras.age_rating, Some("16".to_string()));
-        assert_eq!(call_count.load(Ordering::SeqCst), 1); // una sola llamada, no dos.
+        assert_eq!(extras.similar_tmdb_ids, vec![604, 605]);
+        assert_eq!(call_count.load(Ordering::SeqCst), 1); // una sola llamada, no dos: trailer + certificación + similares juntos.
     }
 
     #[tokio::test]
@@ -960,7 +977,8 @@ mod tests {
         queue(
             &state,
             200,
-            r#"{"id":1399,"videos":{"results":[]},"content_ratings":{"results":[{"iso_3166_1":"ES","rating":"16"}]}}"#,
+            r#"{"id":1399,"videos":{"results":[]},"content_ratings":{"results":[{"iso_3166_1":"ES","rating":"16"}]},
+                "recommendations":{"results":[{"id":1396}]}}"#,
         );
         let base_url = spawn_mock_server(state).await;
         let client = TmdbClient::with_base_url("key", base_url);
@@ -968,6 +986,7 @@ mod tests {
         let extras = client.tv_extras(1399).await.unwrap();
         assert_eq!(extras.trailer_key, None);
         assert_eq!(extras.age_rating, Some("16".to_string()));
+        assert_eq!(extras.similar_tmdb_ids, vec![1396]);
     }
 
     #[tokio::test]
@@ -989,6 +1008,16 @@ mod tests {
         let client = TmdbClient::with_base_url("key", base_url);
 
         assert_eq!(client.movie_recommendations(1).await.unwrap(), vec![603, 604, 605]);
+    }
+
+    #[tokio::test]
+    async fn tv_recommendations_returns_just_the_ids() {
+        let state = MockState::default();
+        queue(&state, 200, r#"{"results":[{"id":1396},{"id":1398}]}"#);
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        assert_eq!(client.tv_recommendations(1).await.unwrap(), vec![1396, 1398]);
     }
 
     #[tokio::test]

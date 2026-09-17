@@ -6,6 +6,8 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { TrailerModal } from "../../components/TrailerModal";
+import { Row } from "../../components/Row";
+import { PosterCard } from "../../components/PosterCard";
 import type { EpisodeSummary, SeriesDetailResponse } from "../../lib/api-types";
 
 export function SeriesDetailScreen() {
@@ -193,6 +195,22 @@ export function SeriesDetailScreen() {
           </div>
         )}
       </div>
+
+      {data.similar.length > 0 && (
+        <div className="relative pb-10">
+          <Row title="Más como esto">
+            {data.similar.map((title) => (
+              <PosterCard
+                key={title.id}
+                title={title.clean_title}
+                posterPath={title.poster_path}
+                subtitle={title.year ? String(title.year) : undefined}
+                onOpen={() => navigate({ to: "/series/$seriesId", params: { seriesId: String(title.id) } })}
+              />
+            ))}
+          </Row>
+        </div>
+      )}
     </div>
   );
 }
