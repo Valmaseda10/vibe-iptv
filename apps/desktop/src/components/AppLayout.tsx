@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { ProfileSwitcher } from "../features/profiles/ProfileSwitcher";
 import { SyncStatusBanner } from "./SyncStatusBanner";
@@ -17,13 +17,38 @@ const NAV_ITEMS = [
   { to: "/settings", label: "Ajustes", icon: SettingsIcon },
 ] as const;
 
-/** Cascarón de F5: barra lateral colapsable + contenido. Navegación con Tab/flechas
- * nativa de los enlaces; el foco siempre es visible (ver globals.css). */
+/** Cascarón de F5: barra lateral colapsable + contenido. Tab funciona como siempre;
+ * arriba/abajo/derecha además mueven el foco a mano (ver `onNavKeyDown`, pensado para
+ * mando a distancia). El foco siempre es visible (ver globals.css). */
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [surprising, setSurprising] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
+  const navRef = useRef<HTMLElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+
+  // Arriba/abajo mueve el foco entre los enlaces y botones de la barra lateral, y
+  // derecha entra al contenido (F "premium": pensado para mando a distancia, que no
+  // tiene Tab — ver también Row.tsx para el resto de la navegación por flechas).
+  function onNavKeyDown(e: React.KeyboardEvent<HTMLElement>) {
+    const nav = navRef.current;
+    if (!nav) return;
+    const focusable = Array.from(nav.querySelectorAll<HTMLElement>("a, button"));
+    const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
+    if (currentIndex === -1) return;
+
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const nextIndex = e.key === "ArrowDown" ? Math.min(currentIndex + 1, focusable.length - 1) : Math.max(currentIndex - 1, 0);
+      focusable[nextIndex]?.focus();
+    } else if (e.key === "ArrowRight") {
+      const target = mainRef.current?.querySelector<HTMLElement>("a, button, input, select, textarea, [tabindex]");
+      if (!target) return;
+      e.preventDefault();
+      target.focus();
+    }
+  }
 
   // "Sorpréndeme" (F "premium"): lleva directo a la ficha de un título al azar, nunca
   // abre el reproductor solo — sigue siendo el usuario quien decide reproducir (R1).
@@ -49,6 +74,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-full bg-neutral-950 text-neutral-100">
       <nav
+        ref={navRef}
+        onKeyDown={onNavKeyDown}
         className={`flex shrink-0 flex-col border-r border-neutral-900 bg-neutral-950 py-4 transition-[width] duration-150 ${collapsed ? "w-16" : "w-56"}`}
         aria-label="Navegación principal"
       >
@@ -105,7 +132,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </button>
       </nav>
 
-      <main className="min-w-0 flex-1 overflow-y-auto">{children}</main>
+      <main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto">{children}</main>
       <SyncStatusBanner />
     </div>
   );
