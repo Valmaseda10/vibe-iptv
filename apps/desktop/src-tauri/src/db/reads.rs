@@ -1598,6 +1598,62 @@ pub fn set_season_watched(conn: &Connection, profile_id: i64, series_id: i64, se
     Ok(episode_ids)
 }
 
+pub struct RandomPick {
+    pub kind: String,
+    pub id: i64,
+}
+
+/// Título al azar del catálogo entero (película o serie), para el botón "Sorpréndeme"
+/// (F "premium"). Cuenta filas y salta a un desplazamiento al azar con `LIMIT 1 OFFSET`
+/// en vez de `ORDER BY RANDOM()` (que forzaría ordenar las ~100.000 filas del catálogo,
+/// ver R4) — esto es una única búsqueda puntual, no paginación, así que el `OFFSET` no
+/// entra en conflicto con la regla de "cursor, nunca offset" del resto de este fichero:
+/// esa regla es sobre recorrer el catálogo página a página, no sobre pedir una fila.
+/// Prioriza contenido ya emparejado con TMDB (con póster y sinopsis de verdad); si el
+/// catálogo todavía no tiene nada emparejado, cae a cualquier título.
+pub fn random_title(conn: &Connection) -> Result<Option<RandomPick>> {
+    if let Some(pick) = random_title_matched_only(conn, true)? {
+        return Ok(Some(pick));
+    }
+    random_title_matched_only(conn, false)
+}
+
+fn random_title_matched_only(conn: &Connection, matched_only: bool) -> Result<Option<RandomPick>> {
+    use rand::RngExt;
+    let (movie_count, series_count): (i64, i64) = if matched_only {
+        (
+            conn.query_row("SELECT COUNT(*) FROM movies WHERE tmdb_state = 'matched'", [], |row| row.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM series WHERE tmdb_state = 'matched'", [], |row| row.get(0))?,
+        )
+    } else {
+        (
+            conn.query_row("SELECT COUNT(*) FROM movies", [], |row| row.get(0))?,
+            conn.query_row("SELECT COUNT(*) FROM series", [], |row| row.get(0))?,
+        )
+    };
+    let total = movie_count + series_count;
+    if total == 0 {
+        return Ok(None);
+    }
+    let roll = rand::rng().random_range(0..total);
+    if roll < movie_count {
+        let id: i64 = if matched_only {
+            conn.query_row("SELECT id FROM movies WHERE tmdb_state = 'matched' LIMIT 1 OFFSET ?1", params![roll], |row| row.get(0))?
+        } else {
+            conn.query_row("SELECT id FROM movies LIMIT 1 OFFSET ?1", params![roll], |row| row.get(0))?
+        };
+        Ok(Some(RandomPick { kind: "movie".to_string(), id }))
+    } else {
+        let offset = roll - movie_count;
+        let id: i64 = if matched_only {
+            conn.query_row("SELECT id FROM series WHERE tmdb_state = 'matched' LIMIT 1 OFFSET ?1", params![offset], |row| row.get(0))?
+        } else {
+            conn.query_row("SELECT id FROM series LIMIT 1 OFFSET ?1", params![offset], |row| row.get(0))?
+        };
+        Ok(Some(RandomPick { kind: "series".to_string(), id }))
+    }
+}
+
 // ─────────────── Ajustes y modo LAN (F10) ───────────────
 
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -2090,6 +2146,46 @@ mod tests {
 
         set_season_watched(&conn, profile_id, series_id, 1, false).unwrap();
         assert!(list_watched_episode_ids(&conn, profile_id, series_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn random_title_returns_none_for_an_empty_catalog() {
+        let conn = memory_conn();
+        assert!(random_title(&conn).unwrap().is_none());
+    }
+
+    #[test]
+    fn random_title_never_picks_an_unmatched_title_while_a_matched_one_exists() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        seed_movie(&conn, provider_id, "Sin Emparejar", Some(2020), None, None);
+        let matched = seed_movie(&conn, provider_id, "Emparejada", Some(2021), None, None);
+        conn.execute("UPDATE movies SET tmdb_state = 'matched' WHERE id = ?1", params![matched]).unwrap();
+
+        for _ in 0..20 {
+            let pick = random_title(&conn).unwrap().unwrap();
+            assert_eq!((pick.kind.as_str(), pick.id), ("movie", matched));
+        }
+    }
+
+    #[test]
+    fn random_title_falls_back_to_any_state_when_nothing_is_matched_yet() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let movie_id = seed_movie(&conn, provider_id, "Recien Sincronizada", Some(2020), None, None);
+
+        let pick = random_title(&conn).unwrap().unwrap();
+        assert_eq!((pick.kind.as_str(), pick.id), ("movie", movie_id));
+    }
+
+    #[test]
+    fn random_title_can_land_on_a_series() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let (series_id, _) = seed_series_with_episodes(&conn, provider_id, "Serie Unica", &[(1, 1)]);
+
+        let pick = random_title(&conn).unwrap().unwrap();
+        assert_eq!((pick.kind.as_str(), pick.id), ("series", series_id));
     }
 
     #[test]

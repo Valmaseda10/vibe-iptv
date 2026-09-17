@@ -177,6 +177,8 @@ export type ProviderKind = "xtream" | "m3u";
  */
 export type ProviderSummary = { id: number, name: string, kind: ProviderKind, base_url_display: string, username: string | null, max_connections: number, expires_at: number | null, enabled: boolean, last_sync_at: number | null, };
 
+export type RandomTitleResponse = { kind: string, id: number, };
+
 export type RecommendedMovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, because_of: string, };
 
 export type ResetPasswordInput = { email: string, 

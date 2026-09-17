@@ -1,8 +1,10 @@
 import { useState, type ReactNode } from "react";
-import { Link, useRouterState } from "@tanstack/react-router";
+import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { ProfileSwitcher } from "../features/profiles/ProfileSwitcher";
 import { SyncStatusBanner } from "./SyncStatusBanner";
-import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon } from "./icons";
+import { apiGetOrNull } from "../lib/api-client";
+import type { RandomTitleResponse } from "../lib/api-types";
+import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon, DiceIcon } from "./icons";
 
 const NAV_ITEMS = [
   { to: "/", label: "Inicio", icon: HomeIcon },
@@ -19,7 +21,24 @@ const NAV_ITEMS = [
  * nativa de los enlaces; el foco siempre es visible (ver globals.css). */
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
+  const [surprising, setSurprising] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const navigate = useNavigate();
+
+  // "Sorpréndeme" (F "premium"): lleva directo a la ficha de un título al azar, nunca
+  // abre el reproductor solo — sigue siendo el usuario quien decide reproducir (R1).
+  async function surpriseMe() {
+    if (surprising) return;
+    setSurprising(true);
+    try {
+      const pick = await apiGetOrNull<RandomTitleResponse>("/api/random");
+      if (!pick) return;
+      if (pick.kind === "series") navigate({ to: "/series/$seriesId", params: { seriesId: String(pick.id) } });
+      else navigate({ to: "/movies/$movieId", params: { movieId: String(pick.id) } });
+    } finally {
+      setSurprising(false);
+    }
+  }
 
   // El reproductor va a pantalla completa, sin barra lateral ni cromo alrededor: es la
   // única pantalla de toda la app que no vive dentro de este layout de navegación.
@@ -62,6 +81,19 @@ export function AppLayout({ children }: { children: ReactNode }) {
             );
           })}
         </ul>
+
+        <button
+          type="button"
+          onClick={surpriseMe}
+          disabled={surprising}
+          className={`mx-2 mb-2 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-neutral-100 disabled:opacity-50 ${
+            collapsed ? "justify-center px-0" : ""
+          }`}
+          title={collapsed ? "Sorpréndeme" : undefined}
+        >
+          <DiceIcon className={`h-5 w-5 shrink-0 ${surprising ? "animate-spin" : ""}`} />
+          {!collapsed && <span>Sorpréndeme</span>}
+        </button>
 
         <button
           type="button"

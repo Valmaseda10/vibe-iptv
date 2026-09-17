@@ -1185,6 +1185,26 @@ async fn post_season_watched(State(state): State<CatalogState>, Json(input): Jso
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct RandomTitleResponse {
+    pub kind: String,
+    #[ts(type = "number")]
+    pub id: i64,
+}
+
+/// "Sorpréndeme" (F "premium"): un título al azar de todo el catálogo, para el botón de
+/// la barra lateral. `204` si el catálogo está vacío (sin proveedor sincronizado
+/// todavía) — igual que `get_playback_progress`, más claro para el cliente que un
+/// cuerpo vacío o un error.
+async fn get_random_title(State(state): State<CatalogState>) -> Result<Response, ApiError> {
+    let pick = with_db(state.db_path, |conn| reads::random_title(conn)).await?;
+    Ok(match pick {
+        Some(p) => Json(RandomTitleResponse { kind: p.kind, id: p.id }).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
+    })
+}
+
 pub fn catalog_router(db_path: PathBuf) -> Router {
     Router::new()
         .route("/api/home", get(get_home))
@@ -1195,6 +1215,7 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/series", get(get_series_list))
         .route("/api/series/:id", get(get_series_detail))
         .route("/api/genres", get(get_genres))
+        .route("/api/random", get(get_random_title))
         .route("/api/search", get(get_search))
         .route("/api/epg/now", get(get_epg_now))
         .route("/api/epg/grid", get(get_epg_grid))
@@ -1612,6 +1633,32 @@ mod tests {
         }
 
         let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn get_random_title_returns_the_only_seeded_movie() {
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+
+        let response = router.oneshot(Request::builder().uri("/api/random").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let json = body_json(response).await;
+        assert_eq!(json["kind"], "movie");
+        assert_eq!(json["id"], 1);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    #[tokio::test]
+    async fn get_random_title_is_204_for_an_empty_catalog() {
+        let path = std::env::temp_dir().join(format!("vibe-iptv-api-test-empty-{}-{}.sqlite3", std::process::id(), rand_suffix()));
+        open_connection_at(&path).unwrap();
+        let router = catalog_router(path.clone());
+
+        let response = router.oneshot(Request::builder().uri("/api/random").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
