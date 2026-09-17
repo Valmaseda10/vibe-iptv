@@ -939,6 +939,134 @@ config de `externalBin` rompía `cargo check` — ver más abajo).
 
 ---
 
+## 2026-09-17 — Ronda de I+D post-F10: funciones "premium"
+
+Con las diez fases del plan original cerradas, se pidió pensar como plataforma de
+streaming real y añadir lo que la hiciera sentir menos como un cliente IPTV genérico y
+más como Netflix/Plex — sin una fase de `PROMPTS.md` que lo enmarque, así que queda
+documentado aquí de una vez en lugar de trocearlo. Todo lo de esta sección se construyó
+y verificó de forma autónoma, incluyendo verificación en vivo contra la app real (cuenta
+de prueba `claude-qa-test@vibeiptv.test`, perfil "QA Claude" — ver más abajo) una vez
+resuelto un corte temporal del proyecto de Supabase (pausado por inactividad del plan
+gratuito; el usuario lo reactivó desde su panel).
+
+**Cuenta y perfiles.**
+- Corregida una condición de carrera en `sync::session::get_valid()`: dos llamadas
+  concurrentes a refrescar el token (Supabase rota el refresh token en cada uso) podían
+  hacer que la perdedora borrase una sesión que la ganadora acababa de renovar
+  legítimamente. Serializado con un `Mutex` y doble comprobación tras adquirirlo.
+- `AccountGate` deja de tener un botón "Continuar sin cuenta": la única forma de
+  saltárselo es un error de red genuino. Cerrar sesión ahora limpia también el perfil
+  activo e invalida la caché de perfiles, así que un login nuevo siempre vuelve a
+  preguntar "¿quién eres?" en vez de reutilizar el último perfil elegido.
+- Los perfiles viven dentro de la cuenta conceptualmente (para eso es la sincronización),
+  pero la tabla local `profiles` sigue siendo del PC, no de la cuenta activa — iniciar
+  sesión con una cuenta de Supabase distinta en la misma máquina ve los mismos perfiles
+  locales. Documentado como comportamiento esperado (ver "Deuda técnica" más abajo, no es
+  un descuido).
+- `ProfilesScreen` distingue "cuenta recién creada" (invita a crear el primer perfil
+  directamente) de la rejilla habitual con "Administrar perfiles".
+
+**Catálogo enriquecido con TMDB (bajo demanda, nunca en la sincronización masiva).**
+- Tráiler de YouTube y clasificación por edad (`youtube_trailer_key`, `age_rating`,
+  migración 006/007): se comprueban una sola vez por título, la primera vez que se abre
+  su ficha, en una única llamada combinada a TMDB (`append_to_response`).
+- Nombres de género reales (`genre_names`, poblada durante el emparejamiento TMDB) en vez
+  de enseñar ids numéricos sueltos.
+- Filas por género en Inicio, con los géneros que de verdad tienen más películas en el
+  catálogo del usuario, no una lista fija.
+- "Recomendado para ti" en Inicio: semillas = favoritos y películas vistas más del 70%,
+  se le pregunta a TMDB por recomendaciones de cada semilla y el resultado se cruza
+  contra el catálogo local (regla de oro: nunca sugerir algo que el proveedor no tiene).
+  Caché en memoria de una hora con refresco en segundo plano (`catalog::recommendations`,
+  sin tabla en SQLite a propósito: es barato de recalcular).
+- "Más como esto" en la ficha de película y serie: mismo mecanismo pero a partir de un
+  único título — se aprovechó el mismo `append_to_response` que ya pedía tráiler y
+  clasificación (`recommendations` añadido a la misma llamada, cero peticiones nuevas a
+  TMDB). Los ids recomendados se guardan una vez (migración 009,
+  `similar_tmdb_ids`, texto separado por comas) pero el cruce contra el catálogo local se
+  recalcula en cada visita, así un título añadido después también puede aparecer.
+- `get_vod_info` de Xtream (duración y códecs reales del fichero, sin abrir el stream):
+  parseo deliberadamente tolerante (`serde_json::Value`) porque no existe una muestra
+  fiable de este endpoint en paneles reales — ver "Deuda técnica".
+- Insignia "Nuevo" en cualquier tarjeta cuyo `added_at` sea de los últimos 7 días.
+
+**Paginación, filtros y orden reales en Películas/Series.**
+- Cursor compuesto `(columna_de_orden, id)` en vez de solo `id` para poder ordenar por
+  título, año o nota y seguir paginando de forma exacta — antes solo funcionaba bien con
+  el orden por defecto. Se encontró y arregló un bug real donde el cursor de continuación
+  no se rellenaba para los órdenes por año/nota (probado con un test HTTP de extremo a
+  extremo, no solo unitario).
+- `CatalogFilterBar`: género, año, calidad y orden, con selects nativos y botón "Quitar
+  filtros". El backend ya aceptaba estos parámetros desde F4 pero no había interfaz.
+- Selector de fuente/calidad en la ficha de película cuando hay más de una disponible.
+
+**Interacción con lo ya visto.**
+- Quitar un título de "Continuar viendo" a mano (borra el progreso entero, no lo oculta).
+- Checkmark de episodio visto en la ficha de serie, ahora también clicable para marcar o
+  desmarcar sin reproducir (como Plex/Emby) — antes solo reflejaba lo ya visto de
+  verdad. "Marcar temporada como (no) vista" junto a las pestañas de temporada. Ambos
+  reutilizan `playback_state`/`upsert_playback_progress`: marcar a mano no es un mecanismo
+  aparte, solo posición = duración.
+
+**Descubrimiento.**
+- Botón "Sorpréndeme" en la barra lateral: título al azar de todo el catálogo (`LIMIT 1
+  OFFSET` a un desplazamiento al azar, nunca `ORDER BY RANDOM()` sobre un catálogo de
+  hasta 100.000 filas), con preferencia por títulos ya emparejados con TMDB.
+- Búsqueda con portadas reales en vez de una lista de texto, con navegación por flechas
+  desde el campo de texto al primer resultado.
+
+**Navegación por teclado pensando en mando a distancia.**
+- Cada `Row` ya sabía moverse en horizontal; ahora arriba/abajo salta a la fila anterior/
+  siguiente de toda la pantalla (marcando cada pista con `data-row-track`), manteniendo
+  la misma columna cuando puede. La barra lateral gana su propia navegación vertical y
+  una flecha derecha que entra al primer elemento enfocable del contenido. Directo y
+  Guía ya tenían navegación completa por flechas desde F7, no hizo falta tocarlos.
+  Alcance deliberado: no se intentó un sistema de navegación espacial 2D genérico entre
+  regiones arbitrarias de cualquier pantalla — más grande y arriesgado de acertar sin
+  hardware de mando real para probarlo.
+- Recordar el scroll y los filtros de Películas/Series al volver de una ficha (se
+  desmontan al navegar fuera): `lib/screenMemory.ts`, un `Map` en memoria de sesión, no
+  `localStorage` — es estado de UI efímero, no algo que deba sobrevivir a un reinicio.
+
+**Coherencia visual.** Repaso acotado a propósito: los botones "Reproducir"/"Más
+información" del banner de Inicio usaban un radio de esquina distinto al mismo par de
+botones en las fichas — corregido. Los formularios (cuenta, ajustes, perfiles) y los
+controles compactos de filtro/guía tienen su propio registro visual consistente puertas
+adentro y se dejaron tal cual: normalizarlos habría sido mucho más arriesgado para un
+beneficio dudoso.
+
+**Verificación en vivo (no solo tests).** Se creó una cuenta de Supabase de prueba
+(`claude-qa-test@vibeiptv.test`) y un perfil "QA Claude" para poder entrar de verdad a la
+aplicación (antes de esto, `AppLayout` vive detrás de `AccountGate`/`ActiveProfileGate` y
+no había credenciales disponibles). Con acceso real se confirmó en pantalla: navegación
+por flechas entre filas, "Sorpréndeme", "Más como esto", marcar episodio/temporada como
+visto, favoritos (añadir y quitar), búsqueda, Ajustes, Directo y Guía — todo funcionando
+sin fallos. Se detectaron canales y alguna película duplicados en el catálogo del
+proveedor de pruebas (mismo nombre, `remote_id` distinto); comprobado contra la base de
+datos que son feeds de respaldo reales del propio proveedor, no un fallo de
+sincronización — no se tocó, deduplicar por nombre escondería alternativas legítimas.
+
+**Deuda técnica que deja esta ronda.**
+- **`get_vod_info` sin fixture de un panel real.** El parseo tolerante nunca se ha
+  probado contra la respuesta real de un proveedor de producción, solo contra una
+  muestra sintética anonimizada. Si un panel real da una forma distinta, fallará en
+  silencio (vuelve a `VodInfo::default()`), no con un error visible.
+- **Perfiles locales no aislados por cuenta remota.** Ver más arriba — iniciar sesión con
+  una cuenta de Supabase distinta en el mismo PC ve los mismos perfiles locales. Correcto
+  para "una familia, un PC", pero si algún día se comparte un PC entre cuentas sin
+  relación, haría falta reconsiderarlo.
+- **Catálogo del proveedor con duplicados reales.** No es un bug de esta app, pero de
+  cara al usuario final una lista con "La 1" tres veces sin explicación puede leerse como
+  un fallo. Una posible mejora futura (no pedida, no construida): agrupar visualmente por
+  nombre con un selector de "fuente" como ya existe para películas, en vez de mostrar
+  cada `remote_id` como una fila suelta.
+- **Navegación espacial por teclado incompleta a propósito.** Cubre Inicio y las filas de
+  ficha; no cubre transiciones entre el borde de una rejilla virtualizada (Películas/
+  Series) y la barra de filtros o la barra lateral.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la
