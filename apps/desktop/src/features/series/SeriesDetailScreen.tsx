@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useNavigate } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { apiGet, useApiBase, imagePath } from "../../lib/api-client";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { apiGet, apiPost, useApiBase, imagePath } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
@@ -14,6 +14,7 @@ export function SeriesDetailScreen() {
   const { data: base } = useApiBase();
   const { profileId } = useActiveProfile();
   const { isFavorite, toggleFavorite } = useFavorites();
+  const queryClient = useQueryClient();
   const [trailerOpen, setTrailerOpen] = useState(false);
   const { data, isPending, isError } = useQuery({
     queryKey: ["series", seriesId, profileId],
@@ -21,6 +22,23 @@ export function SeriesDetailScreen() {
     // de más de 7 días): esta petición puede tardar más que el resto de la API.
     queryFn: () => apiGet<SeriesDetailResponse>(`/api/series/${seriesId}?profile_id=${profileId}`),
     enabled: profileId !== null,
+  });
+
+  function invalidateSeries() {
+    queryClient.invalidateQueries({ queryKey: ["series", seriesId, profileId] });
+  }
+
+  // Marcar/desmarcar sin reproducir (F "premium", como Plex/Emby) — antes el checkmark
+  // era de solo lectura, solo reflejaba lo que se había visto de verdad.
+  const episodeWatchedMutation = useMutation({
+    mutationFn: (input: { episodeId: number; watched: boolean }) =>
+      apiPost("/api/playback/episode-watched", { profile_id: profileId, episode_id: input.episodeId, watched: input.watched }),
+    onSuccess: invalidateSeries,
+  });
+  const seasonWatchedMutation = useMutation({
+    mutationFn: (input: { season: number; watched: boolean }) =>
+      apiPost("/api/playback/season-watched", { profile_id: profileId, series_id: Number(seriesId), season: input.season, watched: input.watched }),
+    onSuccess: invalidateSeries,
   });
 
   const seasons = useMemo(() => groupBySeason(data?.episodes ?? []), [data]);
@@ -91,20 +109,33 @@ export function SeriesDetailScreen() {
           </p>
         ) : (
           <div className="pt-6">
-            <div className="mb-4 flex gap-2 overflow-x-auto" role="tablist" aria-label="Temporadas">
-              {seasons.map((s) => (
+            <div className="mb-4 flex items-center justify-between gap-4">
+              <div className="flex gap-2 overflow-x-auto" role="tablist" aria-label="Temporadas">
+                {seasons.map((s) => (
+                  <button
+                    key={s.season}
+                    role="tab"
+                    aria-selected={s.season === activeSeason}
+                    onClick={() => setSelectedSeason(s.season)}
+                    className={`shrink-0 rounded-full px-4 py-2 text-sm outline-none ${
+                      s.season === activeSeason ? "bg-red-600 text-white" : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
+                    }`}
+                  >
+                    Temporada {s.season}
+                  </button>
+                ))}
+              </div>
+              {activeSeason !== null && (
                 <button
-                  key={s.season}
-                  role="tab"
-                  aria-selected={s.season === activeSeason}
-                  onClick={() => setSelectedSeason(s.season)}
-                  className={`shrink-0 rounded-full px-4 py-2 text-sm outline-none ${
-                    s.season === activeSeason ? "bg-red-600 text-white" : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700"
-                  }`}
+                  type="button"
+                  onClick={() =>
+                    seasonWatchedMutation.mutate({ season: activeSeason, watched: !episodesOfSeason.every((e) => e.watched) })
+                  }
+                  className="shrink-0 whitespace-nowrap text-sm text-neutral-400 outline-none hover:text-neutral-200"
                 >
-                  Temporada {s.season}
+                  {episodesOfSeason.every((e) => e.watched) ? "Marcar temporada como no vista" : "Marcar temporada como vista"}
                 </button>
-              ))}
+              )}
             </div>
 
             <ul className="flex flex-col gap-3">
@@ -124,13 +155,30 @@ export function SeriesDetailScreen() {
                         episode.number
                       )}
                     </div>
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="flex items-center gap-2 truncate font-medium">
-                        {episode.watched && (
-                          <span className="shrink-0 text-emerald-500" aria-label="Visto" title="Visto">
-                            ✓
-                          </span>
-                        )}
+                        <span
+                          role="button"
+                          tabIndex={0}
+                          aria-pressed={episode.watched}
+                          aria-label={episode.watched ? "Marcar como no visto" : "Marcar como visto"}
+                          title={episode.watched ? "Marcar como no visto" : "Marcar como visto"}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            episodeWatchedMutation.mutate({ episodeId: episode.id, watched: !episode.watched });
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key !== "Enter" && e.key !== " ") return;
+                            e.stopPropagation();
+                            e.preventDefault();
+                            episodeWatchedMutation.mutate({ episodeId: episode.id, watched: !episode.watched });
+                          }}
+                          className={`shrink-0 rounded-full text-lg outline-none ${
+                            episode.watched ? "text-emerald-500 hover:text-emerald-400" : "text-neutral-600 hover:text-neutral-400"
+                          }`}
+                        >
+                          ✓
+                        </span>
                         <span className="truncate">
                           {episode.number}. {episode.title || `Episodio ${episode.number}`}
                         </span>

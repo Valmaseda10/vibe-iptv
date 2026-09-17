@@ -1552,6 +1552,52 @@ pub fn remove_playback_progress(conn: &Connection, profile_id: i64, item_kind: &
     Ok(())
 }
 
+/// Ids de episodio de una temporada de una serie, en orden — usado por "marcar
+/// temporada como vista" (F "premium": Plex/Emby dejan marcar sin reproducir, esta
+/// app solo tenía el checkmark de lectura, ver `list_watched_episode_ids`).
+pub fn episode_ids_for_season(conn: &Connection, series_id: i64, season: i64) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT e.id FROM episodes e
+         JOIN series_sources ss ON ss.id = e.series_source_id
+         WHERE ss.series_id = ?1 AND e.season = ?2
+         ORDER BY e.number",
+    )?;
+    let rows = stmt.query_map(params![series_id, season], |row| row.get::<_, i64>(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Marcar (o desmarcar) un episodio como visto a mano, sin haberlo reproducido de
+/// verdad. Usa el mismo mecanismo que el progreso real (`playback_state.finished`),
+/// para que "Continuar viendo" y el checkmark de la ficha no tengan que distinguir el
+/// origen del dato. Al desmarcar, borra la fila entera — igual que
+/// `remove_playback_progress`: no tiene sentido guardar "visto: no" de algo que nunca
+/// se ha reproducido y podría no tener ni duración conocida.
+pub fn set_episode_watched(conn: &Connection, profile_id: i64, episode_id: i64, watched: bool) -> Result<()> {
+    if !watched {
+        return remove_playback_progress(conn, profile_id, "episode", episode_id);
+    }
+    let duration_s: Option<i64> = conn
+        .query_row("SELECT duration_s FROM episodes WHERE id = ?1", params![episode_id], |row| row.get(0))
+        .optional()?
+        .flatten();
+    // Sin duración conocida (proveedor no la da), 1/1 sigue dando finished=true en
+    // upsert_playback_progress (ratio 1.0) sin fingir una duración real que "Continuar
+    // viendo" pudiera mostrar como progreso a medias.
+    let duration_s = duration_s.filter(|d| *d > 0).unwrap_or(1);
+    upsert_playback_progress(conn, profile_id, "episode", episode_id, duration_s, Some(duration_s))
+}
+
+/// Todos los episodios de una temporada, marcados o desmarcados de golpe. Devuelve los
+/// ids afectados para que `server::api` encole la sincronización de cada uno igual que
+/// hace el marcado individual (no existe un endpoint de sincronización en lote).
+pub fn set_season_watched(conn: &Connection, profile_id: i64, series_id: i64, season: i64, watched: bool) -> Result<Vec<i64>> {
+    let episode_ids = episode_ids_for_season(conn, series_id, season)?;
+    for &id in &episode_ids {
+        set_episode_watched(conn, profile_id, id, watched)?;
+    }
+    Ok(episode_ids)
+}
+
 // ─────────────── Ajustes y modo LAN (F10) ───────────────
 
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>> {
@@ -1988,6 +2034,62 @@ mod tests {
         let watched = list_watched_episode_ids(&conn, profile_id, series_id).unwrap();
         assert!(watched.contains(&ep1));
         assert!(!watched.contains(&ep2));
+    }
+
+    #[test]
+    fn set_episode_watched_marks_and_unmarks_without_having_played_it() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let fields = TitleFields { clean_title: "Serie", year: None, match_key: "serie-0000", quality: None, language: None };
+        queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
+        let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources WHERE remote_id = '1'", [], |r| r.get(0)).unwrap();
+        upsert_episodes(&conn, series_source_id, &[crate::sources::model::RawEpisode { remote_id: "e1".into(), season: 1, number: 1, title: None, container_extension: None, duration_s: Some(1500), still_url: None }]).unwrap();
+        let episode_id: i64 = conn.query_row("SELECT id FROM episodes WHERE remote_id = 'e1'", [], |r| r.get(0)).unwrap();
+
+        assert!(get_playback_progress(&conn, profile_id, "episode", episode_id).unwrap().is_none());
+
+        set_episode_watched(&conn, profile_id, episode_id, true).unwrap();
+        let saved = get_playback_progress(&conn, profile_id, "episode", episode_id).unwrap().unwrap();
+        assert!(saved.finished);
+        assert_eq!(saved.duration_s, Some(1500));
+
+        set_episode_watched(&conn, profile_id, episode_id, false).unwrap();
+        assert!(get_playback_progress(&conn, profile_id, "episode", episode_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn set_season_watched_marks_every_episode_of_that_season_and_no_other() {
+        let conn = memory_conn();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let fields = TitleFields { clean_title: "Serie", year: None, match_key: "serie-0000", quality: None, language: None };
+        queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
+        let series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = 'serie-0000'", [], |r| r.get(0)).unwrap();
+        let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources WHERE series_id = ?1", params![series_id], |r| r.get(0)).unwrap();
+        upsert_episodes(
+            &conn,
+            series_source_id,
+            &[
+                crate::sources::model::RawEpisode { remote_id: "s1e1".into(), season: 1, number: 1, title: None, container_extension: None, duration_s: Some(1200), still_url: None },
+                crate::sources::model::RawEpisode { remote_id: "s1e2".into(), season: 1, number: 2, title: None, container_extension: None, duration_s: Some(1200), still_url: None },
+                crate::sources::model::RawEpisode { remote_id: "s2e1".into(), season: 2, number: 1, title: None, container_extension: None, duration_s: Some(1200), still_url: None },
+            ],
+        )
+        .unwrap();
+
+        let affected = set_season_watched(&conn, profile_id, series_id, 1, true).unwrap();
+        assert_eq!(affected.len(), 2);
+
+        let watched = list_watched_episode_ids(&conn, profile_id, series_id).unwrap();
+        assert_eq!(watched.len(), 2, "solo la temporada 1 debe quedar marcada");
+        let s2e1: i64 = conn.query_row("SELECT id FROM episodes WHERE remote_id = 's2e1'", [], |r| r.get(0)).unwrap();
+        assert!(!watched.contains(&s2e1));
+
+        set_season_watched(&conn, profile_id, series_id, 1, false).unwrap();
+        assert!(list_watched_episode_ids(&conn, profile_id, series_id).unwrap().is_empty());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use axum::extract::{Path as AxumPath, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::{routing::get, Json, Router};
+use axum::{routing::get, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -1123,6 +1123,68 @@ async fn delete_playback_progress(State(state): State<CatalogState>, Query(query
     Ok(StatusCode::NO_CONTENT)
 }
 
+#[derive(Deserialize)]
+struct EpisodeWatchedInput {
+    profile_id: i64,
+    episode_id: i64,
+    watched: bool,
+}
+
+/// Marcar (o desmarcar) un episodio como visto a mano, sin reproducirlo (F "premium",
+/// como Plex/Emby) — hasta ahora el checkmark de la ficha de serie era de solo lectura.
+async fn post_episode_watched(State(state): State<CatalogState>, Json(input): Json<EpisodeWatchedInput>) -> Result<StatusCode, ApiError> {
+    let item_key = with_db(state.db_path.clone(), move |conn| reads::item_key_for(conn, "episode", input.episode_id)).await?;
+    with_db(state.db_path.clone(), move |conn| reads::set_episode_watched(conn, input.profile_id, input.episode_id, input.watched)).await?;
+    if input.watched {
+        // Sincroniza el mismo par posición/duración que se acaba de guardar en local
+        // (ver reads::set_episode_watched), en vez de inventar otro en el handler.
+        let saved = with_db(state.db_path.clone(), move |conn| reads::get_playback_progress(conn, input.profile_id, "episode", input.episode_id)).await?;
+        if let Some(p) = saved {
+            tokio::spawn(crate::sync::engine::push_playback_progress(
+                state.db_path,
+                input.profile_id,
+                "episode".to_string(),
+                input.episode_id,
+                p.position_s,
+                p.duration_s,
+            ));
+        }
+    } else if let Some(item_key) = item_key {
+        tokio::spawn(crate::sync::engine::push_playback_remove_by_key(state.db_path, input.profile_id, "episode".to_string(), item_key));
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct SeasonWatchedInput {
+    profile_id: i64,
+    series_id: i64,
+    season: i64,
+    watched: bool,
+}
+
+/// Igual que `post_episode_watched` pero para toda una temporada de golpe. No existe un
+/// endpoint de sincronización en lote: cada episodio se encola por separado con el
+/// mismo mecanismo que el marcado individual.
+async fn post_season_watched(State(state): State<CatalogState>, Json(input): Json<SeasonWatchedInput>) -> Result<StatusCode, ApiError> {
+    let SeasonWatchedInput { profile_id, series_id, season, watched } = input;
+    let episode_ids =
+        with_db(state.db_path.clone(), move |conn| reads::set_season_watched(conn, profile_id, series_id, season, watched)).await?;
+    for episode_id in episode_ids {
+        let db_path = state.db_path.clone();
+        tokio::spawn(async move {
+            if watched {
+                if let Ok(Some(p)) = with_db(db_path.clone(), move |conn| reads::get_playback_progress(conn, profile_id, "episode", episode_id)).await {
+                    crate::sync::engine::push_playback_progress(db_path, profile_id, "episode".to_string(), episode_id, p.position_s, p.duration_s).await;
+                }
+            } else if let Ok(Some(item_key)) = with_db(db_path.clone(), move |conn| reads::item_key_for(conn, "episode", episode_id)).await {
+                crate::sync::engine::push_playback_remove_by_key(db_path, profile_id, "episode".to_string(), item_key).await;
+            }
+        });
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub fn catalog_router(db_path: PathBuf) -> Router {
     Router::new()
         .route("/api/home", get(get_home))
@@ -1137,6 +1199,8 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/epg/now", get(get_epg_now))
         .route("/api/epg/grid", get(get_epg_grid))
         .route("/api/playback/progress", get(get_playback_progress).post(post_playback_progress).delete(delete_playback_progress))
+        .route("/api/playback/episode-watched", post(post_episode_watched))
+        .route("/api/playback/season-watched", post(post_season_watched))
         .route("/api/favorites", get(get_favorites).post(post_favorite).delete(delete_favorite))
         .with_state(CatalogState { db_path })
 }
@@ -1449,6 +1513,103 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(get_response.status(), StatusCode::NO_CONTENT);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Siembra una serie con dos temporadas para los tests de marcado manual de
+    /// episodios/temporadas — `seeded_db()` no incluye series, solo la película.
+    fn seed_series_with_two_seasons(conn: &rusqlite::Connection) -> i64 {
+        use crate::sources::model::{RawEpisode, RawSeries};
+        let provider_id = write_queries::insert_provider(conn, ProviderKind::Xtream, "P2", "http://y", None, 1, None).unwrap();
+        let series_raw = RawSeries { remote_id: "s1".into(), raw_title: "Serie de Prueba".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let fields = TitleFields { clean_title: "Serie de Prueba", year: None, match_key: "serie-de-prueba-0000", quality: None, language: None };
+        write_queries::upsert_series(conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
+        let series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = 'serie-de-prueba-0000'", [], |r| r.get(0)).unwrap();
+        let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources WHERE series_id = ?1", rusqlite::params![series_id], |r| r.get(0)).unwrap();
+        reads::upsert_episodes(
+            conn,
+            series_source_id,
+            &[
+                RawEpisode { remote_id: "s1e1".into(), season: 1, number: 1, title: None, container_extension: None, duration_s: Some(1200), still_url: None },
+                RawEpisode { remote_id: "s1e2".into(), season: 1, number: 2, title: None, container_extension: None, duration_s: Some(1200), still_url: None },
+                RawEpisode { remote_id: "s2e1".into(), season: 2, number: 1, title: None, container_extension: None, duration_s: Some(1200), still_url: None },
+            ],
+        )
+        .unwrap();
+        series_id
+    }
+
+    /// Marcar (y desmarcar) un episodio como visto a mano, sin haberlo reproducido —
+    /// confirma que `GET /api/series/:id` refleja el checkmark después.
+    #[tokio::test]
+    async fn post_episode_watched_marks_and_unmarks_over_http() {
+        let db_path = seeded_db();
+        let series_id = { let conn = open_connection_at(&db_path).unwrap(); seed_series_with_two_seasons(&conn) };
+        let episode_id: i64 = {
+            let conn = open_connection_at(&db_path).unwrap();
+            conn.query_row("SELECT id FROM episodes WHERE remote_id = 's1e1'", [], |r| r.get(0)).unwrap()
+        };
+        let router = catalog_router(db_path.clone());
+
+        let body = serde_json::json!({"profile_id": TEST_PROFILE_ID, "episode_id": episode_id, "watched": true});
+        let response = router
+            .clone()
+            .oneshot(Request::builder().method("POST").uri("/api/playback/episode-watched").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let detail = router
+            .clone()
+            .oneshot(Request::builder().uri(format!("/api/series/{series_id}?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let json = body_json(detail).await;
+        let episode = json["episodes"].as_array().unwrap().iter().find(|e| e["id"] == episode_id).unwrap();
+        assert_eq!(episode["watched"], true);
+
+        let unmark = serde_json::json!({"profile_id": TEST_PROFILE_ID, "episode_id": episode_id, "watched": false});
+        router
+            .clone()
+            .oneshot(Request::builder().method("POST").uri("/api/playback/episode-watched").header("content-type", "application/json").body(Body::from(unmark.to_string())).unwrap())
+            .await
+            .unwrap();
+        let detail_after = router
+            .oneshot(Request::builder().uri(format!("/api/series/{series_id}?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let json_after = body_json(detail_after).await;
+        let episode_after = json_after["episodes"].as_array().unwrap().iter().find(|e| e["id"] == episode_id).unwrap();
+        assert_eq!(episode_after["watched"], false);
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Marcar toda la temporada 1 no debe tocar la temporada 2.
+    #[tokio::test]
+    async fn post_season_watched_marks_only_that_season_over_http() {
+        let db_path = seeded_db();
+        let series_id = { let conn = open_connection_at(&db_path).unwrap(); seed_series_with_two_seasons(&conn) };
+        let router = catalog_router(db_path.clone());
+
+        let body = serde_json::json!({"profile_id": TEST_PROFILE_ID, "series_id": series_id, "season": 1, "watched": true});
+        let response = router
+            .clone()
+            .oneshot(Request::builder().method("POST").uri("/api/playback/season-watched").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+
+        let detail = router
+            .oneshot(Request::builder().uri(format!("/api/series/{series_id}?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let json = body_json(detail).await;
+        for episode in json["episodes"].as_array().unwrap() {
+            let expected_watched = episode["season"] == 1;
+            assert_eq!(episode["watched"], expected_watched, "episodio {:?}", episode);
+        }
 
         let _ = std::fs::remove_file(&db_path);
     }
