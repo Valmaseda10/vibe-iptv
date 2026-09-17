@@ -161,14 +161,14 @@ function HeroBanner({ featured }: { featured: FeaturedItem }) {
           <button
             type="button"
             onClick={() => navigate({ to: "/player/$kind/$id", params: { kind: "movie", id: String(featured.id) } })}
-            className="flex items-center gap-2 rounded bg-white px-6 py-2.5 font-semibold text-black outline-none transition hover:bg-neutral-200 focus-visible:ring-2 focus-visible:ring-red-600"
+            className="flex items-center gap-2 rounded-lg bg-white px-6 py-2.5 font-semibold text-black outline-none transition hover:bg-neutral-200 focus-visible:ring-2 focus-visible:ring-red-600"
           >
             ▶ Reproducir
           </button>
           <button
             type="button"
             onClick={() => navigate({ to: "/movies/$movieId", params: { movieId: String(featured.id) } })}
-            className="flex items-center gap-2 rounded bg-neutral-700/80 px-6 py-2.5 font-semibold text-white outline-none transition hover:bg-neutral-600/80 focus-visible:ring-2 focus-visible:ring-red-600"
+            className="flex items-center gap-2 rounded-lg bg-neutral-700/80 px-6 py-2.5 font-semibold text-white outline-none transition hover:bg-neutral-600/80 focus-visible:ring-2 focus-visible:ring-red-600"
           >
             Más información
           </button>
