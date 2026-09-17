@@ -244,6 +244,14 @@ impl From<reads::SimilarTitleRow> for SimilarTitleSummary {
     }
 }
 
+/// Misma forma que `SimilarTitleRow` (id, título, año, póster) — "tendencias ahora"
+/// reutiliza este mismo tipo de respuesta en vez de inventar uno idéntico.
+impl From<crate::catalog::trending::TrendingTitle> for SimilarTitleSummary {
+    fn from(t: crate::catalog::trending::TrendingTitle) -> Self {
+        Self { id: t.id, clean_title: t.clean_title, year: t.year, poster_path: t.poster_path }
+    }
+}
+
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "api-types.ts")]
 pub struct SeriesSummary {
@@ -438,6 +446,13 @@ pub struct HomeResponse {
     /// que sirva de semilla, o sin clave de TMDB configurada. Nunca bloquea la
     /// respuesta: ver `catalog::recommendations`.
     pub recommended: Vec<RecommendedMovieSummary>,
+    /// Igual que `recommended`, para series.
+    pub recommended_series: Vec<RecommendedSeriesSummary>,
+    /// "Tendencias ahora" (F "premium"): lo más visto/comentado de TMDB esta semana,
+    /// igual para cualquier perfil — ver `catalog::trending`. Vacío sin clave de TMDB, o
+    /// si ningún título de esa lista está todavía en el catálogo local.
+    pub trending_movies: Vec<SimilarTitleSummary>,
+    pub trending_series: Vec<SimilarTitleSummary>,
     /// Filas por género (F "premium"): los géneros con más películas en el catálogo de
     /// verdad del usuario, no una lista fija. Vacío hasta la primera sincronización con
     /// TMDB (sin nombres de género que enseñar, ver `catalog::tmdb::sync_genre_names`).
@@ -459,6 +474,25 @@ pub struct RecommendedMovieSummary {
 impl From<crate::catalog::recommendations::RecommendedMovie> for RecommendedMovieSummary {
     fn from(m: crate::catalog::recommendations::RecommendedMovie) -> Self {
         Self { id: m.id, clean_title: m.clean_title, year: m.year, poster_path: m.poster_path, rating: m.rating, because_of: m.because_of }
+    }
+}
+
+/// Igual que `RecommendedMovieSummary`, para series.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct RecommendedSeriesSummary {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+    pub rating: Option<f64>,
+    pub because_of: String,
+}
+
+impl From<crate::catalog::recommendations::RecommendedSeries> for RecommendedSeriesSummary {
+    fn from(s: crate::catalog::recommendations::RecommendedSeries) -> Self {
+        Self { id: s.id, clean_title: s.clean_title, year: s.year, poster_path: s.poster_path, rating: s.rating, because_of: s.because_of }
     }
 }
 
@@ -535,9 +569,11 @@ async fn get_home(State(state): State<CatalogState>, Query(query): Query<Profile
     let (genre_rows, genre_names) = genre_rows;
     let genre_name_by_id: std::collections::HashMap<i64, String> = genre_names.into_iter().map(|g| (g.id, g.name)).collect();
 
-    // Nunca bloquea la respuesta (puede implicar varias llamadas a TMDB la primera vez):
-    // ver el comentario de cabecera de `catalog::recommendations`.
-    let recommended = crate::catalog::recommendations::get_cached_or_refresh(db_path, profile_id).await;
+    // Ninguna de las dos bloquea la respuesta (pueden implicar varias llamadas a TMDB la
+    // primera vez): ver los comentarios de cabecera de `catalog::recommendations` y
+    // `catalog::trending`.
+    let (recommended, recommended_series) = crate::catalog::recommendations::get_cached_or_refresh(db_path.clone(), profile_id).await;
+    let (trending_movies, trending_series) = crate::catalog::trending::get_cached_or_refresh(db_path).await;
 
     Ok(Json(HomeResponse {
         featured: featured.map(Into::into),
@@ -545,6 +581,9 @@ async fn get_home(State(state): State<CatalogState>, Query(query): Query<Profile
         next_episodes: next_episodes.into_iter().map(Into::into).collect(),
         recent_movies: recent_movies.into_iter().map(Into::into).collect(),
         recommended: recommended.into_iter().map(Into::into).collect(),
+        recommended_series: recommended_series.into_iter().map(Into::into).collect(),
+        trending_movies: trending_movies.into_iter().map(Into::into).collect(),
+        trending_series: trending_series.into_iter().map(Into::into).collect(),
         genre_rows: genre_rows
             .into_iter()
             // Sin nombre todavía (no ha corrido nunca el emparejamiento con TMDB): mejor
@@ -1631,7 +1670,9 @@ mod tests {
     #[tokio::test]
     async fn get_home_recommended_is_empty_without_any_favorite_or_watched_movie() {
         // Sin ninguna semilla (favorito, o visto pasado el 70%), no hay nada que
-        // preguntarle a TMDB — la fila sale vacía, no un error ni un `null`.
+        // preguntarle a TMDB — la fila sale vacía, no un error ni un `null`. Sin clave de
+        // TMDB configurada (este test no la pone), "tendencias" tampoco tiene con qué
+        // trabajar — mismo criterio para las cuatro filas nuevas.
         let db_path = seeded_db();
         let router = catalog_router(db_path.clone());
 
@@ -1639,6 +1680,9 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["recommended"], serde_json::json!([]));
+        assert_eq!(json["recommended_series"], serde_json::json!([]));
+        assert_eq!(json["trending_movies"], serde_json::json!([]));
+        assert_eq!(json["trending_series"], serde_json::json!([]));
 
         let _ = std::fs::remove_file(&db_path);
     }

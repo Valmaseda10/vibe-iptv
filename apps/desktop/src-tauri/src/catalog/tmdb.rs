@@ -234,6 +234,21 @@ impl TmdbClient {
         Ok(response.results.into_iter().map(|r| r.id).collect())
     }
 
+    /// Lo más visto/comentado esta semana en TMDB (F "premium" — "tendencias"), igual
+    /// para cualquier usuario: no depende de ningún perfil ni de nada que se haya visto
+    /// en esta app. `/week` en vez de `/day` porque cambia más despacio — encaja mejor
+    /// con la caché de varias horas de `catalog::trending` que con un refresco a cada
+    /// rato.
+    pub async fn trending_movies(&self) -> Result<Vec<i64>> {
+        let response: RecommendationsResponse = self.get_json("/trending/movie/week", &[("language", "es-ES")]).await?;
+        Ok(response.results.into_iter().map(|r| r.id).collect())
+    }
+
+    pub async fn trending_series(&self) -> Result<Vec<i64>> {
+        let response: RecommendationsResponse = self.get_json("/trending/tv/week", &[("language", "es-ES")]).await?;
+        Ok(response.results.into_iter().map(|r| r.id).collect())
+    }
+
     /// Los ~19 géneros de película y ~16 de serie de TMDB, casi estáticos — se piden una
     /// vez por sincronización con clave de TMDB (`commands::spawn_tmdb_matching`), nunca
     /// por título: es la misma llamada sirva para 10 películas o para 100.000.
@@ -1018,6 +1033,26 @@ mod tests {
         let client = TmdbClient::with_base_url("key", base_url);
 
         assert_eq!(client.tv_recommendations(1).await.unwrap(), vec![1396, 1398]);
+    }
+
+    #[tokio::test]
+    async fn trending_movies_returns_just_the_ids() {
+        let state = MockState::default();
+        queue(&state, 200, r#"{"results":[{"id":11},{"id":22}]}"#);
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        assert_eq!(client.trending_movies().await.unwrap(), vec![11, 22]);
+    }
+
+    #[tokio::test]
+    async fn trending_series_returns_just_the_ids() {
+        let state = MockState::default();
+        queue(&state, 200, r#"{"results":[{"id":33}]}"#);
+        let base_url = spawn_mock_server(state).await;
+        let client = TmdbClient::with_base_url("key", base_url);
+
+        assert_eq!(client.trending_series().await.unwrap(), vec![33]);
     }
 
     #[tokio::test]

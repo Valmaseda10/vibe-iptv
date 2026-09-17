@@ -110,6 +110,79 @@ pub fn resolve_recommendations(
     Ok(results)
 }
 
+pub struct SeedSeriesRow {
+    pub id: i64,
+    pub clean_title: String,
+    pub tmdb_id: i64,
+}
+
+/// Igual que `list_recommendation_seed_movies`, para series: favoritas, o con al menos
+/// un episodio terminado (`playback_state.finished`, ya calculado por
+/// `upsert_playback_progress`/`set_episode_watched` al 90% o al marcarlo a mano — no hay
+/// una única "posición/duración" de la serie entera como sí la hay en una película).
+pub fn list_recommendation_seed_series(conn: &Connection, profile_id: i64, limit: i64) -> Result<Vec<SeedSeriesRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT s.id, s.clean_title, s.tmdb_id FROM (
+            SELECT item_id AS series_id, added_at AS seed_time FROM favorites WHERE profile_id = ?1 AND item_kind = 'series'
+            UNION ALL
+            SELECT ss.series_id AS series_id, MAX(ps.played_at) AS seed_time
+            FROM playback_state ps
+            JOIN episodes e ON e.id = ps.item_id
+            JOIN series_sources ss ON ss.id = e.series_source_id
+            WHERE ps.profile_id = ?1 AND ps.item_kind = 'episode' AND ps.finished = 1
+            GROUP BY ss.series_id
+         ) seeds
+         JOIN series s ON s.id = seeds.series_id
+         WHERE s.tmdb_id IS NOT NULL
+         GROUP BY s.id
+         ORDER BY MAX(seeds.seed_time) DESC
+         LIMIT ?2",
+    )?;
+    let rows = stmt.query_map(params![profile_id, limit], |row| {
+        Ok(SeedSeriesRow { id: row.get(0)?, clean_title: row.get(1)?, tmdb_id: row.get(2)? })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub struct RecommendedSeriesRow {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+    pub rating: Option<f64>,
+    pub because_of: String,
+}
+
+/// Igual que `resolve_recommendations`, para series.
+pub fn resolve_series_recommendations(
+    conn: &Connection,
+    candidates: &[(i64, String)],
+    exclude_series_ids: &[i64],
+    limit: i64,
+) -> Result<Vec<RecommendedSeriesRow>> {
+    let mut seen = std::collections::HashSet::new();
+    let mut results = Vec::new();
+    for (tmdb_id, because_of) in candidates {
+        if results.len() as i64 >= limit {
+            break;
+        }
+        let row: Option<(i64, String, Option<i32>, Option<String>, Option<f64>)> = conn
+            .query_row(
+                "SELECT id, clean_title, year, poster_path, rating FROM series WHERE tmdb_id = ?1",
+                params![tmdb_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()?;
+        if let Some((id, clean_title, year, poster_path, rating)) = row {
+            if exclude_series_ids.contains(&id) || !seen.insert(id) {
+                continue;
+            }
+            results.push(RecommendedSeriesRow { id, clean_title, year, poster_path, rating, because_of: because_of.clone() });
+        }
+    }
+    Ok(results)
+}
+
 pub struct SimilarTitleRow {
     pub id: i64,
     pub clean_title: String,
@@ -1884,6 +1957,58 @@ mod tests {
         assert!(titles.contains(&"Casi Terminada"));
         assert!(!titles.contains(&"Recién Empezada")); // menos del 70%, no cuenta como "le gustó".
         assert!(!titles.contains(&"Sin TMDB")); // sin tmdb_id no hay nada que preguntarle a TMDB.
+    }
+
+    #[test]
+    fn list_recommendation_seed_series_includes_favorites_and_series_with_a_finished_episode() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+
+        let (favorited_id, _) = seed_series_with_episodes(&conn, provider_id, "Favorita", &[(1, 1)]);
+        conn.execute("UPDATE series SET tmdb_id = 1 WHERE id = ?1", params![favorited_id]).unwrap();
+        add_favorite(&conn, profile_id, "series", favorited_id).unwrap();
+
+        let (finished_id, finished_episodes) = seed_series_with_episodes(&conn, provider_id, "Con Episodio Visto", &[(1, 1)]);
+        conn.execute("UPDATE series SET tmdb_id = 2 WHERE id = ?1", params![finished_id]).unwrap();
+        upsert_playback_progress(&conn, profile_id, "episode", finished_episodes[0], 1150, Some(1200)).unwrap(); // >90%.
+
+        let (barely_started_id, barely_started_episodes) = seed_series_with_episodes(&conn, provider_id, "Recién Empezada", &[(1, 1)]);
+        conn.execute("UPDATE series SET tmdb_id = 3 WHERE id = ?1", params![barely_started_id]).unwrap();
+        upsert_playback_progress(&conn, profile_id, "episode", barely_started_episodes[0], 60, Some(1200)).unwrap(); // 5%.
+
+        let (no_tmdb_id, _) = seed_series_with_episodes(&conn, provider_id, "Sin TMDB", &[(1, 1)]);
+        add_favorite(&conn, profile_id, "series", no_tmdb_id).unwrap();
+
+        let seeds = list_recommendation_seed_series(&conn, profile_id, 10).unwrap();
+        let titles: Vec<&str> = seeds.iter().map(|s| s.clean_title.as_str()).collect();
+        assert!(titles.contains(&"Favorita"));
+        assert!(titles.contains(&"Con Episodio Visto"));
+        assert!(!titles.contains(&"Recién Empezada")); // el único episodio no llega al 90%.
+        assert!(!titles.contains(&"Sin TMDB"));
+    }
+
+    #[test]
+    fn resolve_series_recommendations_excludes_seeds_and_deduplicates() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+
+        let (already_seen, _) = seed_series_with_episodes(&conn, provider_id, "Ya Vista", &[(1, 1)]);
+        conn.execute("UPDATE series SET tmdb_id = 100 WHERE id = ?1", params![already_seen]).unwrap();
+        let (recommended, _) = seed_series_with_episodes(&conn, provider_id, "Nueva Sugerencia", &[(1, 1)]);
+        conn.execute("UPDATE series SET tmdb_id = 200 WHERE id = ?1", params![recommended]).unwrap();
+
+        let candidates = vec![
+            (100, "Semilla".to_string()), // ya vista: se excluye aunque TMDB la sugiera.
+            (200, "Semilla".to_string()), // sí está en el catálogo local.
+            (200, "Semilla".to_string()), // duplicada: solo debe contar una vez.
+            (999, "Semilla".to_string()), // no está en el catálogo local: se descarta sola.
+        ];
+
+        let results = resolve_series_recommendations(&conn, &candidates, &[already_seen], 10).unwrap();
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].clean_title, "Nueva Sugerencia");
+        assert_eq!(results[0].because_of, "Semilla");
     }
 
     #[test]

@@ -1,9 +1,10 @@
-//! "Recomendado para ti" (F "premium", informe de I+D): a partir de lo que el perfil
-//! marcó como favorito o vio hasta pasado el 70%, se piden sugerencias a TMDB y se
-//! cruzan con el catálogo local — recomendar algo que el proveedor no tiene sería el
-//! error clásico que señala el informe. Sin clave de TMDB configurada, o sin ninguna
-//! película semilla todavía, la lista sale vacía: no es un error, solo no hay con qué
-//! trabajar todavía.
+//! "Recomendado para ti" (F "premium", informe de I+D), películas y series: a partir de
+//! lo que el perfil marcó como favorito o terminó de ver (90% en película, un episodio
+//! terminado en serie — no hay una única "posición/duración" de la serie entera), se
+//! piden sugerencias a TMDB y se cruzan con el catálogo local — recomendar algo que el
+//! proveedor no tiene sería el error clásico que señala el informe. Sin clave de TMDB
+//! configurada, o sin ninguna semilla todavía, la lista sale vacía: no es un error, solo
+//! no hay con qué trabajar todavía.
 //!
 //! Cacheado en memoria por perfil (no en SQLite: es un resultado derivado, fácil de
 //! recalcular, y así una reinstalación o un perfil borrado no deja basura que limpiar).
@@ -45,9 +46,27 @@ impl From<reads::RecommendedMovieRow> for RecommendedMovie {
     }
 }
 
+/// Igual que `RecommendedMovie`, para series.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecommendedSeries {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+    pub rating: Option<f64>,
+    pub because_of: String,
+}
+
+impl From<reads::RecommendedSeriesRow> for RecommendedSeries {
+    fn from(row: reads::RecommendedSeriesRow) -> Self {
+        Self { id: row.id, clean_title: row.clean_title, year: row.year, poster_path: row.poster_path, rating: row.rating, because_of: row.because_of }
+    }
+}
+
 struct CacheEntry {
     computed_at: Instant,
     movies: Vec<RecommendedMovie>,
+    series: Vec<RecommendedSeries>,
     /// Evita disparar dos cálculos en segundo plano a la vez para el mismo perfil si
     /// llegan varias peticiones de Inicio casi juntas mientras el primero aún corre.
     refreshing: bool,
@@ -57,42 +76,53 @@ static CACHE: LazyLock<AsyncMutex<HashMap<i64, CacheEntry>>> = LazyLock::new(|| 
 
 /// Nunca bloquea: devuelve lo que haya en caché al instante (vacío si todavía no hay
 /// nada) y, si hace falta, deja un cálculo nuevo corriendo por detrás para la próxima
-/// visita a Inicio.
-pub async fn get_cached_or_refresh(db_path: PathBuf, profile_id: i64) -> Vec<RecommendedMovie> {
+/// visita a Inicio. Películas y series comparten una sola entrada de caché por perfil
+/// (mismo origen: lo que ese perfil ha visto/marcado), un solo refresco de fondo calcula
+/// las dos en vez de mantener dos cachés y dos disparadores por separado.
+pub async fn get_cached_or_refresh(db_path: PathBuf, profile_id: i64) -> (Vec<RecommendedMovie>, Vec<RecommendedSeries>) {
     let mut cache = CACHE.lock().await;
     let entry = cache.get_mut(&profile_id);
 
-    let (movies, should_refresh) = match entry {
+    let (movies, series, should_refresh) = match entry {
         Some(entry) => {
             let stale = entry.computed_at.elapsed() >= CACHE_TTL;
             let should_refresh = stale && !entry.refreshing;
             if should_refresh {
                 entry.refreshing = true;
             }
-            (entry.movies.clone(), should_refresh)
+            (entry.movies.clone(), entry.series.clone(), should_refresh)
         }
         None => {
-            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), movies: Vec::new(), refreshing: true });
-            (Vec::new(), true)
+            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), movies: Vec::new(), series: Vec::new(), refreshing: true });
+            (Vec::new(), Vec::new(), true)
         }
     };
     drop(cache); // el cálculo en sí puede tardar (varias llamadas a TMDB): no reteniendo el lock.
 
     if should_refresh {
         tokio::spawn(async move {
-            let computed = compute(db_path, profile_id).await.unwrap_or_default();
+            let (movies, series) = compute(db_path, profile_id).await.unwrap_or_default();
             let mut cache = CACHE.lock().await;
-            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), movies: computed, refreshing: false });
+            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), movies, series, refreshing: false });
         });
     }
 
-    movies
+    (movies, series)
 }
 
-async fn compute(db_path: PathBuf, profile_id: i64) -> Option<Vec<RecommendedMovie>> {
+async fn compute(db_path: PathBuf, profile_id: i64) -> Option<(Vec<RecommendedMovie>, Vec<RecommendedSeries>)> {
     let api_key = keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).ok()?;
     let client = TmdbClient::new(api_key);
 
+    let movies = compute_movies(&client, &db_path, profile_id).await.unwrap_or_default();
+    let series = compute_series(&client, &db_path, profile_id).await.unwrap_or_default();
+    if movies.is_empty() && series.is_empty() {
+        return None;
+    }
+    Some((movies, series))
+}
+
+async fn compute_movies(client: &TmdbClient, db_path: &PathBuf, profile_id: i64) -> Option<Vec<RecommendedMovie>> {
     let seeds = {
         let db_path = db_path.clone();
         tokio::task::spawn_blocking(move || {
@@ -120,9 +150,49 @@ async fn compute(db_path: PathBuf, profile_id: i64) -> Option<Vec<RecommendedMov
     }
 
     let exclude: Vec<i64> = seeds.iter().map(|s| s.id).collect();
+    let db_path = db_path.clone();
     tokio::task::spawn_blocking(move || {
         let conn = schema::open_readonly_at(&db_path).ok()?;
         reads::resolve_recommendations(&conn, &candidates, &exclude, MAX_RESULTS).ok()
+    })
+    .await
+    .ok()?
+    .map(|rows| rows.into_iter().map(Into::into).collect())
+}
+
+/// Igual que `compute_movies`, para series.
+async fn compute_series(client: &TmdbClient, db_path: &PathBuf, profile_id: i64) -> Option<Vec<RecommendedSeries>> {
+    let seeds = {
+        let db_path = db_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = schema::open_readonly_at(&db_path)?;
+            reads::list_recommendation_seed_series(&conn, profile_id, MAX_SEEDS)
+        })
+        .await
+        .ok()?
+        .ok()?
+    };
+    if seeds.is_empty() {
+        return None;
+    }
+
+    let mut candidates: Vec<(i64, String)> = Vec::new();
+    for seed in &seeds {
+        if let Ok(hits) = client.tv_recommendations(seed.tmdb_id).await {
+            for tmdb_id in hits.into_iter().take(MAX_RECOMMENDATIONS_PER_SEED) {
+                candidates.push((tmdb_id, seed.clean_title.clone()));
+            }
+        }
+    }
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let exclude: Vec<i64> = seeds.iter().map(|s| s.id).collect();
+    let db_path = db_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let conn = schema::open_readonly_at(&db_path).ok()?;
+        reads::resolve_series_recommendations(&conn, &candidates, &exclude, MAX_RESULTS).ok()
     })
     .await
     .ok()?

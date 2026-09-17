@@ -101,6 +101,51 @@ export function HomeScreen() {
         </Row>
       )}
 
+      {!isPending && data && data.recommended_series.length > 0 && (
+        <Row title="Series recomendadas para ti">
+          {data.recommended_series.map((series) => (
+            <PosterCard
+              key={`rec-series-${series.id}`}
+              title={series.clean_title}
+              posterPath={series.poster_path}
+              subtitle={`Porque te gustó ${series.because_of}`}
+              onOpen={() => navigate({ to: "/series/$seriesId", params: { seriesId: String(series.id) } })}
+            />
+          ))}
+        </Row>
+      )}
+
+      {/* "Tendencias ahora" (F "premium"): lista externa de TMDB, no depende de nada
+          visto en esta app — a diferencia de "Recomendado para ti". Vacía sin clave de
+          TMDB o si ningún título de la lista está todavía en el catálogo local. */}
+      {!isPending && data && data.trending_movies.length > 0 && (
+        <Row title="Tendencias ahora">
+          {data.trending_movies.map((movie) => (
+            <PosterCard
+              key={`trend-movie-${movie.id}`}
+              title={movie.clean_title}
+              posterPath={movie.poster_path}
+              subtitle={movie.year ? String(movie.year) : undefined}
+              onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
+            />
+          ))}
+        </Row>
+      )}
+
+      {!isPending && data && data.trending_series.length > 0 && (
+        <Row title="Series en tendencia">
+          {data.trending_series.map((series) => (
+            <PosterCard
+              key={`trend-series-${series.id}`}
+              title={series.clean_title}
+              posterPath={series.poster_path}
+              subtitle={series.year ? String(series.year) : undefined}
+              onOpen={() => navigate({ to: "/series/$seriesId", params: { seriesId: String(series.id) } })}
+            />
+          ))}
+        </Row>
+      )}
+
       {isPending ? (
         <SkeletonRow title="Recientes" />
       ) : (

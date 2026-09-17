@@ -68,6 +68,16 @@ featured: FeaturedItem | null, continue_watching: Array<ContinueWatchingItem>, n
  */
 recommended: Array<RecommendedMovieSummary>, 
 /**
+ * Igual que `recommended`, para series.
+ */
+recommended_series: Array<RecommendedSeriesSummary>, 
+/**
+ * "Tendencias ahora" (F "premium"): lo más visto/comentado de TMDB esta semana,
+ * igual para cualquier perfil — ver `catalog::trending`. Vacío sin clave de TMDB, o
+ * si ningún título de esa lista está todavía en el catálogo local.
+ */
+trending_movies: Array<SimilarTitleSummary>, trending_series: Array<SimilarTitleSummary>, 
+/**
  * Filas por género (F "premium"): los géneros con más películas en el catálogo de
  * verdad del usuario, no una lista fija. Vacío hasta la primera sincronización con
  * TMDB (sin nombres de género que enseñar, ver `catalog::tmdb::sync_genre_names`).
@@ -193,6 +203,11 @@ export type ProviderSummary = { id: number, name: string, kind: ProviderKind, ba
 export type RandomTitleResponse = { kind: string, id: number, };
 
 export type RecommendedMovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, because_of: string, };
+
+/**
+ * Igual que `RecommendedMovieSummary`, para series.
+ */
+export type RecommendedSeriesSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, because_of: string, };
 
 export type ResetPasswordInput = { email: string, 
 /**
