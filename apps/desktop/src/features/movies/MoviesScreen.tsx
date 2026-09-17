@@ -6,8 +6,11 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import { CatalogFilterBar, EMPTY_FILTERS, type CatalogFilters, type SortValue } from "../../components/CatalogFilterBar";
 import type { MoviesPage } from "../../lib/api-types";
 import { VirtualPosterGrid } from "../../components/VirtualPosterGrid";
+import { recallScreenState, rememberScreenState } from "../../lib/screenMemory";
 
 type PageParam = { after?: number; afterKey?: string };
+
+const FILTERS_MEMORY_KEY = "movies:filters";
 
 function sortParam(sort: SortValue): string | null {
   return sort === "recent" ? null : sort;
@@ -16,7 +19,14 @@ function sortParam(sort: SortValue): string | null {
 export function MoviesScreen() {
   const navigate = useNavigate();
   const { profileId } = useActiveProfile();
-  const [filters, setFilters] = useState<CatalogFilters>(EMPTY_FILTERS);
+  // Recuerda los filtros elegidos al volver de una ficha (la pantalla se desmonta al
+  // navegar fuera) — junto con VirtualPosterGrid.restoreKey, evita que "atrás" mande
+  // siempre al principio del catálogo sin filtrar.
+  const [filters, setFilters] = useState<CatalogFilters>(() => recallScreenState(FILTERS_MEMORY_KEY) ?? EMPTY_FILTERS);
+  function updateFilters(next: CatalogFilters) {
+    setFilters(next);
+    rememberScreenState(FILTERS_MEMORY_KEY, next);
+  }
 
   const query = useInfiniteQuery({
     queryKey: ["movies", profileId, filters],
@@ -49,7 +59,7 @@ export function MoviesScreen() {
   return (
     <div className="flex h-full flex-col gap-6 py-8">
       <h1 className="px-6 text-3xl font-semibold sm:px-10">Películas</h1>
-      <CatalogFilterBar kind="movie" filters={filters} onChange={setFilters} showQuality />
+      <CatalogFilterBar kind="movie" filters={filters} onChange={updateFilters} showQuality />
       <div className="min-h-0 flex-1">
         <VirtualPosterGrid
           items={items}
@@ -60,6 +70,7 @@ export function MoviesScreen() {
           onOpen={(id) => navigate({ to: "/movies/$movieId", params: { movieId: String(id) } })}
           emptyMessage="Nada con estos filtros. Prueba a quitar alguno, o añade un proveedor en Ajustes si el catálogo está vacío."
           favoriteKind="movie"
+          restoreKey={JSON.stringify(filters)}
         />
       </div>
     </div>

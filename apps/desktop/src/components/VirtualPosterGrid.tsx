@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { PosterCard, PosterCardSkeleton } from "./PosterCard";
 import { useFavorites } from "../lib/favorites";
+import { recallScreenState, rememberScreenState } from "../lib/screenMemory";
 
 export type GridItem = {
   id: number;
@@ -25,6 +26,11 @@ type VirtualPosterGridProps = {
    * vacío durante una fracción de segundo en cada entrada a la pantalla, antes de que
    * llegara la respuesta real. */
   isInitialLoading?: boolean;
+  /** Si se da, recuerda el scroll de esta rejilla concreta (F "premium" — volver de una
+   * ficha ya no manda de vuelta al principio del catálogo). Distinto por cada
+   * combinación de filtros: cambiar de filtro debe empezar arriba, no en un scroll que
+   * pertenecía a otra lista. Ver lib/screenMemory. */
+  restoreKey?: string;
 };
 
 const CARD_WIDTH = 192; // 176px tarjeta (44 * 4) + 16px de separación
@@ -37,11 +43,22 @@ const ROW_HEIGHT = 300;
  * Flechas para moverse entre tarjetas: como la rejilla está virtualizada, la tarjeta
  * destino puede no existir todavía en el DOM al pulsar la flecha, así que primero se
  * desplaza la fila con `scrollToIndex` y el foco se aplica en el siguiente pintado. */
-export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, onOpen, emptyMessage, favoriteKind, isInitialLoading }: VirtualPosterGridProps) {
+export function VirtualPosterGrid({
+  items,
+  hasMore,
+  isLoadingMore,
+  onLoadMore,
+  onOpen,
+  emptyMessage,
+  favoriteKind,
+  isInitialLoading,
+  restoreKey,
+}: VirtualPosterGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(4);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const { isFavorite, toggleFavorite } = useFavorites();
+  const restoredForKey = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     const el = parentRef.current;
@@ -65,6 +82,23 @@ export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, o
   });
 
   const virtualRows = virtualizer.getVirtualItems();
+
+  // Restaura el scroll guardado la primera vez que esta rejilla (identificada por
+  // `restoreKey`) tiene datos que mostrar — antes de pintar, para que no se vea el
+  // salto desde arriba. Solo una vez por key: los renders siguientes no deben pelearse
+  // con el scroll que el usuario esté haciendo ahora mismo.
+  useLayoutEffect(() => {
+    if (!restoreKey || items.length === 0) return;
+    if (restoredForKey.current === restoreKey) return;
+    restoredForKey.current = restoreKey;
+    const saved = recallScreenState<number>(`grid-scroll:${restoreKey}`);
+    if (saved && parentRef.current) parentRef.current.scrollTop = saved;
+  }, [restoreKey, items.length]);
+
+  function onScroll() {
+    if (!restoreKey || !parentRef.current) return;
+    rememberScreenState(`grid-scroll:${restoreKey}`, parentRef.current.scrollTop);
+  }
 
   useEffect(() => {
     const last = virtualRows.at(-1);
@@ -125,7 +159,7 @@ export function VirtualPosterGrid({ items, hasMore, isLoadingMore, onLoadMore, o
   }
 
   return (
-    <div ref={parentRef} onKeyDown={onKeyDown} className="h-full overflow-y-auto px-6 sm:px-10">
+    <div ref={parentRef} onKeyDown={onKeyDown} onScroll={onScroll} className="h-full overflow-y-auto px-6 sm:px-10">
       <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
         {virtualRows.map((virtualRow) => {
           const isLoaderRow = virtualRow.index === rowCount - 1 && hasMore;

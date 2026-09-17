@@ -6,8 +6,11 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import { CatalogFilterBar, EMPTY_FILTERS, type CatalogFilters, type SortValue } from "../../components/CatalogFilterBar";
 import type { SeriesPage } from "../../lib/api-types";
 import { VirtualPosterGrid } from "../../components/VirtualPosterGrid";
+import { recallScreenState, rememberScreenState } from "../../lib/screenMemory";
 
 type PageParam = { after?: number; afterKey?: string };
+
+const FILTERS_MEMORY_KEY = "series:filters";
 
 function sortParam(sort: SortValue): string | null {
   return sort === "recent" ? null : sort;
@@ -16,7 +19,11 @@ function sortParam(sort: SortValue): string | null {
 export function SeriesScreen() {
   const navigate = useNavigate();
   const { profileId } = useActiveProfile();
-  const [filters, setFilters] = useState<CatalogFilters>(EMPTY_FILTERS);
+  const [filters, setFilters] = useState<CatalogFilters>(() => recallScreenState(FILTERS_MEMORY_KEY) ?? EMPTY_FILTERS);
+  function updateFilters(next: CatalogFilters) {
+    setFilters(next);
+    rememberScreenState(FILTERS_MEMORY_KEY, next);
+  }
 
   const query = useInfiniteQuery({
     queryKey: ["series", profileId, filters],
@@ -47,7 +54,7 @@ export function SeriesScreen() {
   return (
     <div className="flex h-full flex-col gap-6 py-8">
       <h1 className="px-6 text-3xl font-semibold sm:px-10">Series</h1>
-      <CatalogFilterBar kind="tv" filters={filters} onChange={setFilters} />
+      <CatalogFilterBar kind="tv" filters={filters} onChange={updateFilters} />
       <div className="min-h-0 flex-1">
         <VirtualPosterGrid
           items={items}
@@ -58,6 +65,7 @@ export function SeriesScreen() {
           onOpen={(id) => navigate({ to: "/series/$seriesId", params: { seriesId: String(id) } })}
           emptyMessage="Nada con estos filtros. Prueba a quitar alguno, o añade un proveedor en Ajustes si el catálogo está vacío."
           favoriteKind="series"
+          restoreKey={JSON.stringify(filters)}
         />
       </div>
     </div>
