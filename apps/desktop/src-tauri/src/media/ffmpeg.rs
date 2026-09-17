@@ -19,6 +19,7 @@ pub fn build_remux_command(
     user_agent: &str,
     transcode_audio: bool,
     start_seconds: Option<f64>,
+    audio_track: Option<i64>,
 ) -> Command {
     let mut command = Command::new(ffmpeg_path);
     command
@@ -33,7 +34,17 @@ pub fn build_remux_command(
         command.args(["-ss", &seconds.to_string()]);
     }
 
-    command.args(["-i", url]).args(["-c:v", "copy"]);
+    command.args(["-i", url]);
+
+    // Sin pista elegida, se deja que ffmpeg escoja solas la de vídeo y la de audio (su
+    // comportamiento de siempre, antes de que existiera el selector — no tocar nada
+    // aquí es justo lo que mantiene ese caso común idéntico). En cuanto se pide `-map`
+    // una vez hay que pedirlo para las dos, o ffmpeg deja de incluir vídeo del todo.
+    if let Some(track) = audio_track {
+        command.args(["-map", "0:v:0", "-map", &format!("0:a:{track}")]);
+    }
+
+    command.args(["-c:v", "copy"]);
 
     if transcode_audio {
         command.args(["-c:a", "aac", "-b:a", "192k"]);
@@ -63,8 +74,9 @@ pub fn spawn_remux(
     user_agent: &str,
     transcode_audio: bool,
     start_seconds: Option<f64>,
+    audio_track: Option<i64>,
 ) -> std::io::Result<Child> {
-    let mut child = build_remux_command(ffmpeg_path, url, user_agent, transcode_audio, start_seconds).spawn()?;
+    let mut child = build_remux_command(ffmpeg_path, url, user_agent, transcode_audio, start_seconds, audio_track).spawn()?;
 
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(async move {
@@ -88,7 +100,7 @@ mod tests {
 
     #[test]
     fn video_is_always_copied_never_recoded() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:v").unwrap();
         assert_eq!(args[pos + 1], "copy");
@@ -96,7 +108,7 @@ mod tests {
 
     #[test]
     fn audio_is_copied_when_transcode_not_needed() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "copy");
@@ -104,7 +116,7 @@ mod tests {
 
     #[test]
     fn audio_transcodes_to_aac_at_192k_when_incompatible() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", true, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", true, None, None);
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "aac");
@@ -114,7 +126,7 @@ mod tests {
 
     #[test]
     fn output_uses_fragmented_mp4_over_stdout() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
         let args = args_of(&command);
         assert!(args.windows(2).any(|w| w[0] == "-f" && w[1] == "mp4"));
         assert!(args.iter().any(|a| a == "frag_keyframe+empty_moov+default_base_moof+delay_moov"));
@@ -123,7 +135,7 @@ mod tests {
 
     #[test]
     fn low_latency_flags_are_present() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
         let args = args_of(&command);
         assert!(args.iter().any(|a| a == "nobuffer"));
         assert!(args.iter().any(|a| a == "low_delay"));
@@ -131,7 +143,7 @@ mod tests {
 
     #[test]
     fn user_agent_and_input_url_are_forwarded() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "MiAgente/1.0", false, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "MiAgente/1.0", false, None, None);
         let args = args_of(&command);
         let ua_pos = args.iter().position(|a| a == "-user_agent").unwrap();
         assert_eq!(args[ua_pos + 1], "MiAgente/1.0");
@@ -141,7 +153,7 @@ mod tests {
 
     #[test]
     fn start_seconds_inserts_input_seek_before_input_url() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", false, Some(125.5));
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", false, Some(125.5), None);
         let args = args_of(&command);
         let ss_pos = args.iter().position(|a| a == "-ss").unwrap();
         assert_eq!(args[ss_pos + 1], "125.5");
@@ -151,9 +163,39 @@ mod tests {
 
     #[test]
     fn no_seek_flag_when_start_seconds_is_none() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", false, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", false, None, None);
         let args = args_of(&command);
         assert!(!args.iter().any(|a| a == "-ss"));
+    }
+
+    #[test]
+    fn no_explicit_map_without_an_audio_track_choice() {
+        // Comportamiento de siempre: sin pista elegida, ffmpeg decide solo qué pistas
+        // incluir — pedir `-map` sin necesidad rompería eso (dejaría de incluir vídeo).
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
+        let args = args_of(&command);
+        assert!(!args.iter().any(|a| a == "-map"));
+    }
+
+    #[test]
+    fn selecting_an_audio_track_maps_video_and_that_track_explicitly() {
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, Some(1));
+        let args = args_of(&command);
+        let map_positions: Vec<usize> = args.iter().enumerate().filter(|(_, a)| *a == "-map").map(|(i, _)| i).collect();
+        assert_eq!(map_positions.len(), 2, "hacen falta los dos -map (vídeo y audio) o ffmpeg deja de incluir vídeo");
+        assert_eq!(args[map_positions[0] + 1], "0:v:0");
+        assert_eq!(args[map_positions[1] + 1], "0:a:1");
+    }
+
+    #[test]
+    fn selecting_audio_track_zero_still_maps_explicitly() {
+        // Track 0 es "falsy" en muchos lenguajes — confirma que Some(0) no se confunde
+        // con None y se sigue mapeando de forma explícita.
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, Some(0));
+        let args = args_of(&command);
+        assert!(args.iter().any(|a| a == "-map"));
+        let last_map = args.iter().enumerate().filter(|(_, a)| *a == "-map").last().unwrap().0;
+        assert_eq!(args[last_map + 1], "0:a:0");
     }
 
     /// Prueba real contra el ffmpeg instalado: genera una señal sintética, la remuxea a
@@ -188,7 +230,7 @@ mod tests {
         // fichero por HTTP en localhost para que la prueba ejercite exactamente los
         // mismos flags que se usan contra un proveedor real.
         let url = serve_file_over_http(sample.clone()).await;
-        let mut child = spawn_remux(&ffmpeg_path, &url, "vibe-iptv-test", false, None).unwrap();
+        let mut child = spawn_remux(&ffmpeg_path, &url, "vibe-iptv-test", false, None, None).unwrap();
         let mut stdout = child.stdout.take().expect("stdout debería estar conectado");
 
         let mut buf = vec![0u8; 65536];

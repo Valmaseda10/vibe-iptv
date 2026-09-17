@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::process::Command;
 
@@ -41,6 +41,25 @@ pub struct ProbeResult {
     /// ignorarla; en VOD es la única fuente fiable de duración para el reproductor
     /// cuando el nivel 2 remuxea a un stream sin longitud declarada.
     pub duration_seconds: Option<f64>,
+    /// Todas las pistas de audio del stream, no solo la primera (F "premium" — selector
+    /// de pista de audio). Casi siempre una sola, pero un canal o una película con varios
+    /// idiomas puede traer dos o tres.
+    pub audio_tracks: Vec<AudioTrack>,
+}
+
+/// Una pista de audio del stream original (F "premium"). `index` es la posición
+/// **relativa entre pistas de audio** (0, 1, 2…), no el índice absoluto que da ffprobe
+/// entre todas las pistas — es justo lo que espera `-map 0:a:N` de ffmpeg, así ni el
+/// cliente ni `media::ffmpeg` tienen que traducir nada.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AudioTrack {
+    pub index: i64,
+    /// Código de idioma tal cual lo da el proveedor en los metadatos del stream (p. ej.
+    /// "spa", "eng") — sin normalizar ni traducir a nombre legible, eso es cosa de la
+    /// interfaz. `None` si el proveedor no etiquetó la pista.
+    pub language: Option<String>,
+    pub codec_name: Option<String>,
+    pub channels: Option<i64>,
 }
 
 /// Identificador estable de una URL de stream para la caché `probe_cache`, sin poder
@@ -105,6 +124,14 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
     struct FfprobeStream {
         codec_type: Option<String>,
         codec_name: Option<String>,
+        #[serde(default)]
+        channels: Option<i64>,
+        #[serde(default)]
+        tags: Option<FfprobeTags>,
+    }
+    #[derive(Debug, Deserialize)]
+    struct FfprobeTags {
+        language: Option<String>,
     }
     #[derive(Deserialize)]
     struct FfprobeFormat {
@@ -130,10 +157,22 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
         .iter()
         .find(|s| s.codec_type.as_deref() == Some("audio"))
         .and_then(|s| s.codec_name.clone());
+    let audio_tracks: Vec<AudioTrack> = parsed
+        .streams
+        .iter()
+        .filter(|s| s.codec_type.as_deref() == Some("audio"))
+        .enumerate()
+        .map(|(index, s)| AudioTrack {
+            index: index as i64,
+            language: s.tags.as_ref().and_then(|t| t.language.clone()),
+            codec_name: s.codec_name.clone(),
+            channels: s.channels,
+        })
+        .collect();
     let format = parsed.format?;
     let container = format.format_name?;
 
-    Some(ProbeResult { video_codec, audio_codec, container, duration_seconds: format.duration })
+    Some(ProbeResult { video_codec, audio_codec, container, duration_seconds: format.duration, audio_tracks })
 }
 
 /// Decide el nivel de la cascada (1, 2 o 3) a partir de contenedor y códecs, siguiendo
@@ -280,6 +319,42 @@ mod tests {
         assert_eq!(result.video_codec.as_deref(), Some("h264"));
         assert_eq!(result.audio_codec.as_deref(), Some("aac"));
         assert_eq!(result.container, "mpegts");
+        assert_eq!(result.audio_tracks, vec![AudioTrack { index: 0, language: None, codec_name: Some("aac".to_string()), channels: None }]);
+    }
+
+    #[test]
+    fn parses_multiple_audio_tracks_with_language_and_channels() {
+        // Caso real de un canal/película con audio original + doblaje: dos pistas de
+        // audio, cada una con su propio idioma y número de canales.
+        let json = br#"{
+            "streams": [
+                {"codec_type": "video", "codec_name": "h264"},
+                {"codec_type": "audio", "codec_name": "aac", "channels": 2, "tags": {"language": "spa"}},
+                {"codec_type": "audio", "codec_name": "ac3", "channels": 6, "tags": {"language": "eng"}}
+            ],
+            "format": {"format_name": "mpegts"}
+        }"#;
+        let result = parse_ffprobe_json(json).unwrap();
+        assert_eq!(
+            result.audio_tracks,
+            vec![
+                AudioTrack { index: 0, language: Some("spa".to_string()), codec_name: Some("aac".to_string()), channels: Some(2) },
+                AudioTrack { index: 1, language: Some("eng".to_string()), codec_name: Some("ac3".to_string()), channels: Some(6) },
+            ]
+        );
+        // El códec/idioma "principal" (para decide_tier/audio_needs_transcode) sigue
+        // siendo el de la PRIMERA pista, igual que antes de que existiera el selector.
+        assert_eq!(result.audio_codec.as_deref(), Some("aac"));
+    }
+
+    #[test]
+    fn audio_tracks_is_empty_for_a_stream_without_audio() {
+        let json = br#"{
+            "streams": [{"codec_type": "video", "codec_name": "h264"}],
+            "format": {"format_name": "mov,mp4,m4a,3gp,3g2,mj2"}
+        }"#;
+        let result = parse_ffprobe_json(json).unwrap();
+        assert!(result.audio_tracks.is_empty());
     }
 
     #[test]
@@ -335,6 +410,8 @@ mod tests {
         assert_eq!(result.audio_codec.as_deref(), Some("aac"));
         assert!(result.container.contains("mp4"));
         assert_eq!(decide_tier(&result.container, result.video_codec.as_deref(), result.audio_codec.as_deref()), 1);
+        assert_eq!(result.audio_tracks.len(), 1, "el fichero de prueba solo tiene una pista de audio");
+        assert_eq!(result.audio_tracks[0].codec_name.as_deref(), Some("aac"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

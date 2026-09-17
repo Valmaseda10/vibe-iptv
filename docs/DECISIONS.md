@@ -1065,6 +1065,43 @@ sincronización — no se tocó, deduplicar por nombre escondería alternativas 
   ficha; no cubre transiciones entre el borde de una rejilla virtualizada (Películas/
   Series) y la barra de filtros o la barra lateral.
 
+**Añadido después de cerrar esta ronda: selector de pista de audio.** El plan original de
+F6 pedía "pistas de audio, subtítulos" en el reproductor y nunca se llegó a construir —
+hueco real del plan, no una función "premium" inventada. Recomendaciones de series y
+tendencias (más arriba) sí quedaron probadas en vivo contra la app real; esto no ha
+podido probarse igual, y por qué queda documentado aquí en vez de asumirlo verificado.
+
+- `media::probe::AudioTrack` (índice relativo entre pistas de audio, idioma si el
+  proveedor lo etiqueta, códec, canales) y su lista completa en `ProbeResult` — antes
+  `parse_ffprobe_json` solo se quedaba con la primera pista de audio, para
+  `decide_tier`/`audio_needs_transcode`, que lo siguen usando igual.
+- Persistido en `probe_cache.audio_tracks_json` (migración 010) como texto, mismo
+  criterio que `similar_tmdb_ids` (migración 009): es una lista pequeña y de solo
+  lectura, no hace falta ni una tabla propia ni una sonda aparte — se calcula la única
+  vez que ya se inspecciona el stream (regla R1).
+- `GET /stream/:kind/:id` acepta `?audio_track=N`; en nivel 2 (remux) se traduce a
+  `-map 0:v:0 -map 0:a:N` en `media::ffmpeg::build_remux_command`. Sin el parámetro,
+  ffmpeg sigue decidiendo solo qué pistas incluir, exactamente como antes de que
+  existiera el selector — no toca el caso común.
+- **Deliberadamente fuera de alcance: nivel 1 y subtítulos.** En nivel 1 (proxy directo)
+  esta app no decide qué pistas lleva el fichero — sería el propio `<video>` quien tendría
+  que exponer `audioTracks` de forma nativa, sin verificar si el WebView lo soporta bien
+  de verdad. Los subtítulos incrustados (MKV) exigirían abrir una segunda conexión al
+  proveedor para extraerlos con ffmpeg aparte del remux en curso — **eso violaría
+  directamente la regla R1** (una sola conexión de stream activa), así que no se ha
+  intentado ninguna forma de extraerlos.
+- **Verificación real, con los límites que tiene.** Se añadió un test funcional
+  (`selecting_an_audio_track_maps_that_exact_track_into_the_remux`,
+  `server::stream::tests`) que genera un stream sintético con dos pistas de audio
+  distinguibles (mono/estéreo) y confirma con un segundo `ffprobe` que el remux con
+  `audio_track=1` lleva de verdad la estéreo y ninguna otra — no es una prueba contra un
+  proveedor real, pero sí confirma el mecanismo de principio a fin con ffmpeg de verdad,
+  no solo que los argumentos se construyen bien. Lo que **no** se ha podido comprobar: si
+  el contenido real de la cuenta de prueba trae más de una pista de audio, y si el
+  selector se comporta bien en un canal en directo cambiando de pista en caliente
+  (`?audio_track=` fuerza un remux nuevo, mismo mecanismo que cambiar de fuente/calidad,
+  pero sin un canal real de varios idiomas a mano para probarlo).
+
 ---
 
 ## Deuda técnica conocida desde el diseño

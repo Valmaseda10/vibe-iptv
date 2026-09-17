@@ -193,7 +193,7 @@ export function PlayerScreen() {
     ? `/stream/catchup/${itemId}?profile_id=${profileId}&start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}`
     : kind === "channel"
       ? `/stream/channel/${itemId}?profile_id=${profileId}`
-      : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}${search.source ? `&source=${search.source}` : ""}`;
+      : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}${search.source ? `&source=${search.source}` : ""}${search.audioTrack != null ? `&audio_track=${search.audioTrack}` : ""}`;
   const streamUrl = base && profileId !== null ? `${base}${streamPath}` : undefined;
 
   // Cambiar de stream de verdad (zapping, o abrir otro título) es un intento nuevo:
@@ -351,6 +351,17 @@ export function PlayerScreen() {
       navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(next.id) }, search: { categoryId: search.categoryId } });
     },
     [channelsQuery.data, itemId, navigate, search.categoryId],
+  );
+
+  // Selector de pista de audio (F "premium", pendiente desde el plan original de F6).
+  // Solo tiene efecto de verdad en nivel 2 (remux): cambiarlo reescribe `search`, lo que
+  // cambia `streamPath` y por tanto la `key` del `<video>` más abajo — mismo mecanismo
+  // que ya usa el selector de fuente/calidad de la ficha, no uno nuevo.
+  const setAudioTrack = useCallback(
+    (index: number) => {
+      navigate({ to: "/player/$kind/$id", params: { kind, id }, search: { ...search, audioTrack: index } });
+    },
+    [kind, id, search, navigate],
   );
 
   const seekTo = useCallback(
@@ -650,6 +661,22 @@ export function PlayerScreen() {
             aria-label="Volumen"
           />
 
+          {kind !== "channel" && (tierQuery.data?.audio_tracks.length ?? 0) > 1 && (
+            <select
+              value={search.audioTrack ?? 0}
+              onChange={(e) => setAudioTrack(Number(e.target.value))}
+              className="rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none"
+              aria-label="Pista de audio"
+              title="Pista de audio"
+            >
+              {tierQuery.data!.audio_tracks.map((track) => (
+                <option key={track.index} value={track.index}>
+                  {audioTrackLabel(track)}
+                </option>
+              ))}
+            </select>
+          )}
+
           <button type="button" onClick={goBack} className="ml-auto text-sm text-neutral-300 outline-none hover:text-white">
             ← Volver (Esc)
           </button>
@@ -680,6 +707,27 @@ function findNextEpisode(all: EpisodeSummary[], current: EpisodeSummary): Episod
   const nextSeason = seasons.find((s) => s > current.season);
   if (nextSeason == null) return undefined;
   return all.filter((e) => e.season === nextSeason).sort((a, b) => a.number - b.number)[0];
+}
+
+/// Nombre de idioma legible para los códigos ISO-639-2 más habituales en paneles Xtream
+/// (español/inglés casi siempre, a veces algún otro) — sin librería de localización solo
+/// para esto; un código sin traducir en mayúsculas sigue siendo mejor que nada.
+const LANGUAGE_NAMES: Record<string, string> = {
+  spa: "Español",
+  eng: "Inglés",
+  lat: "Latino",
+  fre: "Francés",
+  fra: "Francés",
+  ger: "Alemán",
+  deu: "Alemán",
+  ita: "Italiano",
+  por: "Portugués",
+  und: "Sin idioma",
+};
+
+function audioTrackLabel(track: { index: number; language: string | null; channels: number | null }): string {
+  const language = track.language ? (LANGUAGE_NAMES[track.language.toLowerCase()] ?? track.language.toUpperCase()) : `Pista ${track.index + 1}`;
+  return track.channels === 6 ? `${language} 5.1` : language;
 }
 
 function bufferedSeconds(video: HTMLVideoElement | null): number {

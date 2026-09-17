@@ -14,6 +14,9 @@ type PlayerSearch = {
    * cuando la película tiene más de una — el backend ya lo aceptaba desde F6, sin
    * ningún selector todavía en la interfaz que lo mandara. */
   source?: number;
+  /** Índice relativo de pista de audio elegida (F "premium" — selector de pista de
+   * audio). Solo tiene efecto en nivel 2 (remux); en nivel 1 no hay selector todavía. */
+  audioTrack?: number;
 };
 
 export const playerRoute = createRoute({
@@ -25,6 +28,7 @@ export const playerRoute = createRoute({
     catchupStart: typeof search.catchupStart === "number" ? search.catchupStart : undefined,
     catchupDuration: typeof search.catchupDuration === "number" ? search.catchupDuration : undefined,
     source: typeof search.source === "number" ? search.source : undefined,
+    audioTrack: typeof search.audioTrack === "number" ? search.audioTrack : undefined,
   }),
   component: PlayerScreen,
 });

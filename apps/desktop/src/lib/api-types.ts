@@ -6,6 +6,13 @@ export type AccountStatusResponse = { logged_in: boolean, email: string | null, 
 
 export type AddProviderInput = { kind: ProviderKind, name: string, base_url: string, username: string | null, password: string | null, m3u_url: string | null, user_agent: string | null, };
 
+/**
+ * Copia con derives de ts-rs de `media::probe::AudioTrack` — ese tipo vive en `media`,
+ * que no conoce nada de la API HTTP, mismo patrón que el resto de tipos de respuesta de
+ * este fichero envolviendo los de `db::reads`.
+ */
+export type AudioTrackSummary = { index: number, language: string | null, codec_name: string | null, channels: number | null, };
+
 export type BinariesStatus = { ffmpeg: boolean, ffprobe: boolean, mpv: boolean, };
 
 export type CategorySummary = { id: number, name: string, };
@@ -184,7 +191,12 @@ tier: number | null, video_codec: string | null, audio_codec: string | null, con
  * Duración real del fichero en segundos (VOD), tal cual la dio ffprobe. `None` en
  * directo o si todavía no se ha reproducido nunca este ítem.
  */
-duration_s: number | null, };
+duration_s: number | null, 
+/**
+ * Pistas de audio del stream (F "premium" — selector de pista de audio). Vacío si
+ * nunca se ha reproducido, o si solo tiene una (no hace falta selector para eso).
+ */
+audio_tracks: Array<AudioTrackSummary>, };
 
 export type ProfileInput = { name: string, avatar: string | null, adult_ok: boolean, };
 

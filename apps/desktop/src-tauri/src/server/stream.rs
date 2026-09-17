@@ -87,6 +87,29 @@ pub struct PlaybackTierResponse {
     /// Duración real del fichero en segundos (VOD), tal cual la dio ffprobe. `None` en
     /// directo o si todavía no se ha reproducido nunca este ítem.
     pub duration_s: Option<f64>,
+    /// Pistas de audio del stream (F "premium" — selector de pista de audio). Vacío si
+    /// nunca se ha reproducido, o si solo tiene una (no hace falta selector para eso).
+    pub audio_tracks: Vec<AudioTrackSummary>,
+}
+
+/// Copia con derives de ts-rs de `media::probe::AudioTrack` — ese tipo vive en `media`,
+/// que no conoce nada de la API HTTP, mismo patrón que el resto de tipos de respuesta de
+/// este fichero envolviendo los de `db::reads`.
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct AudioTrackSummary {
+    #[ts(type = "number")]
+    pub index: i64,
+    pub language: Option<String>,
+    pub codec_name: Option<String>,
+    #[ts(type = "number | null")]
+    pub channels: Option<i64>,
+}
+
+impl From<probe::AudioTrack> for AudioTrackSummary {
+    fn from(t: probe::AudioTrack) -> Self {
+        Self { index: t.index, language: t.language, codec_name: t.codec_name, channels: t.channels }
+    }
 }
 
 /// Panel de estadísticas del reproductor (Ctrl+Shift+D, F6): lee `probe_cache`, nunca
@@ -118,14 +141,19 @@ async fn get_playback_tier(
     let cached = with_db(state.db_path, move |conn| queries::get_probe_cache(conn, &cache_key)).await?;
 
     Ok(axum::Json(match cached {
-        Some(row) => PlaybackTierResponse {
-            tier: Some(row.play_tier as u8),
-            video_codec: row.video_codec,
-            audio_codec: row.audio_codec,
-            container: row.container,
-            duration_s: row.duration_s,
-        },
-        None => PlaybackTierResponse { tier: None, video_codec: None, audio_codec: None, container: None, duration_s: None },
+        Some(row) => {
+            let audio_tracks: Vec<probe::AudioTrack> =
+                row.audio_tracks_json.as_deref().and_then(|json| serde_json::from_str(json).ok()).unwrap_or_default();
+            PlaybackTierResponse {
+                tier: Some(row.play_tier as u8),
+                video_codec: row.video_codec,
+                audio_codec: row.audio_codec,
+                container: row.container,
+                duration_s: row.duration_s,
+                audio_tracks: audio_tracks.into_iter().map(Into::into).collect(),
+            }
+        }
+        None => PlaybackTierResponse { tier: None, video_codec: None, audio_codec: None, container: None, duration_s: None, audio_tracks: Vec::new() },
     }))
 }
 
@@ -204,6 +232,10 @@ struct StreamQuery {
     profile_id: i64,
     source: Option<i64>,
     start: Option<f64>,
+    /// Índice relativo de pista de audio (F "premium" — selector de pista de audio, ver
+    /// `media::probe::AudioTrack`). Solo tiene efecto en nivel 2 (remux): en nivel 1 el
+    /// proxy pasa el fichero tal cual, sin ninguna decisión de pistas que tomar aquí.
+    audio_track: Option<i64>,
 }
 
 async fn get_stream(
@@ -213,7 +245,7 @@ async fn get_stream(
     headers: HeaderMap,
 ) -> Response {
     let range = headers.get(header::RANGE).cloned();
-    match handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, range).await {
+    match handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, query.audio_track, range).await {
         Ok(response) => response,
         Err(err) => {
             tracing::warn!(kind = %kind, id, error = %err, "fallo al servir /stream");
@@ -304,6 +336,7 @@ async fn record_tier(db_path: &PathBuf, profile_id: i64, item_kind: &str, item_i
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_stream(
     state: StreamState,
     kind_str: String,
@@ -311,6 +344,7 @@ async fn handle_stream(
     profile_id: i64,
     source_id: Option<i64>,
     start_seconds: Option<f64>,
+    audio_track: Option<i64>,
     range_header: Option<HeaderValue>,
 ) -> Result<Response, StreamError> {
     let media_kind = parse_kind(&kind_str)?;
@@ -359,7 +393,7 @@ async fn handle_stream(
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
         2 => {
             let transcode_audio = probe::audio_needs_transcode(audio_codec.as_deref());
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), transcode_audio, start_seconds, permit, Arc::clone(&state.stream_guard))
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), transcode_audio, start_seconds, audio_track, permit, Arc::clone(&state.stream_guard))
                 .await
         }
         _ => Err(StreamError::NeedsMpv),
@@ -462,7 +496,7 @@ async fn handle_catchup(
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
         2 => {
             let transcode_audio = probe::audio_needs_transcode(audio_codec.as_deref());
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), transcode_audio, None, permit, Arc::clone(&state.stream_guard))
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), transcode_audio, None, None, permit, Arc::clone(&state.stream_guard))
                 .await
         }
         _ => Err(StreamError::NeedsMpv),
@@ -513,11 +547,12 @@ async fn resolve_catchup_tier_and_url(
     let video = probe_result.video_codec.clone();
     let audio = probe_result.audio_codec.clone();
     let container = probe_result.container.clone();
+    let audio_tracks_json = serde_json::to_string(&probe_result.audio_tracks).ok();
     // Catch-up es contenido con fin (el bloque pedido), pero su "duración" no es la del
     // programa: no tiene sentido pintarla como barra de búsqueda editorial, así que no
     // se guarda (igual que el directo en `resolve_tier_and_url`).
     with_db(db_path.clone(), move |conn| {
-        queries::set_probe_cache(conn, &store_key, video.as_deref(), audio.as_deref(), Some(&container), tier as i64, None)
+        queries::set_probe_cache(conn, &store_key, video.as_deref(), audio.as_deref(), Some(&container), tier as i64, None, audio_tracks_json.as_deref())
     })
     .await?;
 
@@ -572,8 +607,18 @@ async fn resolve_tier_and_url(
     let video = probe_result.video_codec.clone();
     let audio = probe_result.audio_codec.clone();
     let container = probe_result.container.clone();
+    let audio_tracks_json = serde_json::to_string(&probe_result.audio_tracks).ok();
     with_db(db_path.clone(), move |conn| {
-        queries::set_probe_cache(conn, &store_key, video.as_deref(), audio.as_deref(), Some(&container), tier as i64, duration_s)
+        queries::set_probe_cache(
+            conn,
+            &store_key,
+            video.as_deref(),
+            audio.as_deref(),
+            Some(&container),
+            tier as i64,
+            duration_s,
+            audio_tracks_json.as_deref(),
+        )
     })
     .await?;
 
@@ -657,15 +702,17 @@ async fn proxy_passthrough(url: Url, range: Option<HeaderValue>, permit: StreamP
 /// Nivel 2: remux a fMP4 con ffmpeg, un proceso vivo por sesión (ver
 /// `util::stream_guard`). `start_seconds` implementa la búsqueda en VOD: el cliente pide
 /// un stream nuevo con `?start=<segundos>` y aquí se traduce a un `-ss` de entrada.
+#[allow(clippy::too_many_arguments)]
 async fn spawn_remux_response(
     ffmpeg_path: &Path,
     url: &str,
     transcode_audio: bool,
     start_seconds: Option<f64>,
+    audio_track: Option<i64>,
     permit: StreamPermit,
     guard: Arc<StreamGuard>,
 ) -> Result<Response, StreamError> {
-    let mut child = ffmpeg::spawn_remux(ffmpeg_path, url, DEFAULT_USER_AGENT, transcode_audio, start_seconds).map_err(|err| {
+    let mut child = ffmpeg::spawn_remux(ffmpeg_path, url, DEFAULT_USER_AGENT, transcode_audio, start_seconds, audio_track).map_err(|err| {
         tracing::error!(error = %err, "no se pudo lanzar ffmpeg para el remux");
         StreamError::BinariesMissing
     })?;
@@ -732,6 +779,28 @@ mod tests {
             .await
             .unwrap();
         assert!(status.success(), "no se pudo generar el fichero de prueba {filename}");
+        out
+    }
+
+    /// Igual que `generate_sample`, pero con dos pistas de audio distinguibles por su
+    /// número de canales (mono la primera, estéreo la segunda) — para probar de verdad
+    /// que `?audio_track=N` selecciona la pista correcta en el remux, no solo que el
+    /// parámetro se acepta sin error.
+    async fn generate_sample_with_two_audio_tracks(ffmpeg_path: &Path, dir: &Path, filename: &str) -> PathBuf {
+        let out = dir.join(filename);
+        let status = tokio::process::Command::new(ffmpeg_path)
+            .args(["-y", "-f", "lavfi", "-i", "testsrc=duration=2:size=64x64:rate=10"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=440:duration=2"])
+            .args(["-f", "lavfi", "-i", "sine=frequency=880:duration=2"])
+            .args(["-map", "0:v", "-map", "1:a", "-map", "2:a"])
+            .args(["-c:v", "libx264", "-c:a", "aac", "-ac:a:1", "2", "-t", "2", "-f", "mpegts"])
+            .arg(&out)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "no se pudo generar el fichero de prueba con dos pistas de audio {filename}");
         out
     }
 
@@ -908,6 +977,52 @@ mod tests {
         // canal (no tiene fin): no debe guardarse, o el reproductor pintaría una barra
         // de búsqueda falsa en un canal en directo.
         assert_eq!(duration, None, "un canal en directo no debe guardar duración");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Prueba de verdad del selector de pista de audio (F "premium", pendiente desde el
+    /// plan original de F6) — no solo que `?audio_track=N` se acepta sin error, sino que
+    /// el remux resultante lleva de verdad la pista pedida y ninguna otra. Genera un
+    /// stream con dos pistas distinguibles por su número de canales (mono/estéreo, ver
+    /// `generate_sample_with_two_audio_tracks`) y confirma con un segundo ffprobe sobre
+    /// la respuesta cuál de las dos quedó dentro.
+    #[tokio::test]
+    async fn selecting_an_audio_track_maps_that_exact_track_into_the_remux() {
+        let Some(ffmpeg_path) = which_on_path("ffmpeg") else {
+            eprintln!("ffmpeg no está en el PATH: prueba omitida");
+            return;
+        };
+        let Some(ffprobe_path) = which_on_path("ffprobe") else {
+            eprintln!("ffprobe no está en el PATH: prueba omitida");
+            return;
+        };
+
+        let dir = std::env::temp_dir().join(format!("vibe-iptv-stream-audiotrack-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sample = generate_sample_with_two_audio_tracks(&ffmpeg_path, &dir, "sample.ts").await;
+        let base_url = spawn_file_server("/live/user/pass/1.ts", sample).await;
+
+        let db_path = temp_db_path("audiotrack");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "audiotrack");
+        let channel_id = seed_channel(&db_path, provider_id, "1", false, 0);
+
+        // Pista 1 (índice relativo) es la estéreo según `generate_sample_with_two_audio_tracks`.
+        let state = base_state(db_path.clone(), Some(ffmpeg_path.clone()), Some(ffprobe_path.clone()));
+        let response = stream_router(state)
+            .oneshot(Request::builder().uri(format!("/stream/channel/{channel_id}?profile_id=1&audio_track=1")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert!(!body.is_empty());
+
+        let remuxed_path = dir.join("remuxed-track1.mp4");
+        std::fs::write(&remuxed_path, &body).unwrap();
+        let probed = probe::probe_url(&ffprobe_path, &remuxed_path.to_string_lossy(), "vibe-iptv-test").await.unwrap();
+        assert_eq!(probed.audio_tracks.len(), 1, "el remux con una pista elegida debe llevar solo esa, no las dos originales");
+        assert_eq!(probed.audio_tracks[0].channels, Some(2), "se pidió audio_track=1 (la estéreo) y no llegó");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);
