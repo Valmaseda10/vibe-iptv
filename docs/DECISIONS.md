@@ -1216,10 +1216,13 @@ renueva al arrancar. Test de regresión con tamaños reales.
   de estado de Ajustes se han probado en la ventana de la app, solo su lógica por la API.
 - **Migración del usuario sin hacer.** Al abrir esta versión, la sesión de Supabase ya no
   vale: hay que crear la cuenta en Firebase desde la pantalla de cuenta, y la primera
-  fusión subirá todo lo de este PC. Los datos de Supabase no se exportan: el PC ya tenía
-  una copia completa.
-- El proyecto de Supabase sigue existiendo y ya no lo usa nada: se puede borrar desde su
-  panel.
+  fusión sube todo lo que haya en el PC. **Pero en este PC no quedaba nada:** al arrancar
+  la app real para comprobar F11, su base de datos se creó vacía (0 proveedores, 0
+  perfiles), igual que faltaban Rust y Visual Studio. Lo que hubiera en Supabase
+  (perfiles, favoritos y progreso; nunca el catálogo ni el proveedor) no se migra solo.
+  Hace falta volver a dar de alta el proveedor, y decidir si merece la pena importar lo
+  de Supabase.
+- El proyecto de Supabase ya no lo usa nada. No borrarlo hasta decidir lo anterior.
 - Ver "Límites conocidos" en `docs/CLOUD-SYNC.md` (lo que el catálogo local no tiene al
   bajar se pierde para este PC; conflictos por reloj del cliente).
 
