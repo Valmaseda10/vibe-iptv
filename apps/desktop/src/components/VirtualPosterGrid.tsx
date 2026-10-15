@@ -34,7 +34,11 @@ type VirtualPosterGridProps = {
 };
 
 const CARD_WIDTH = 192; // 176px tarjeta (44 * 4) + 16px de separación
-const ROW_HEIGHT = 300;
+/** Solo la estimación inicial: cada fila se mide de verdad al pintarse
+ * (`measureElement`). Póster 2:3 de 176px (264) + título y año (~44) + separación (16).
+ * Con una altura fija de 300 (la de la tarjeta estrecha de pantallas pequeñas), el año
+ * quedaba tapado por la fila siguiente en cualquier ventana de escritorio. */
+const ROW_HEIGHT_ESTIMATE = 330;
 
 /** Rejilla virtualizada (TanStack Virtual): solo se montan las filas visibles, con un
  * margen (`overscan`). Las columnas por fila se recalculan con un `ResizeObserver` según
@@ -77,7 +81,7 @@ export function VirtualPosterGrid({
   const virtualizer = useVirtualizer({
     count: rowCount,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => ROW_HEIGHT,
+    estimateSize: () => ROW_HEIGHT_ESTIMATE,
     overscan: 3,
   });
 
@@ -169,7 +173,9 @@ export function VirtualPosterGrid({
           return (
             <div
               key={virtualRow.key}
-              style={{ position: "absolute", top: 0, left: 0, width: "100%", height: virtualRow.size, transform: `translateY(${virtualRow.start}px)` }}
+              ref={virtualizer.measureElement}
+              data-index={virtualRow.index}
+              style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${virtualRow.start}px)` }}
               className="flex gap-4 pb-4"
             >
               {isLoaderRow

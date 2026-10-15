@@ -95,7 +95,7 @@ pub fn resolve_recommendations(
         }
         let row: Option<(i64, String, Option<i32>, Option<String>, Option<f64>)> = conn
             .query_row(
-                "SELECT id, clean_title, year, poster_path, rating FROM movies WHERE tmdb_id = ?1",
+                "SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url) AS poster_path, rating FROM movies WHERE tmdb_id = ?1",
                 params![tmdb_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
@@ -168,7 +168,7 @@ pub fn resolve_series_recommendations(
         }
         let row: Option<(i64, String, Option<i32>, Option<String>, Option<f64>)> = conn
             .query_row(
-                "SELECT id, clean_title, year, poster_path, rating FROM series WHERE tmdb_id = ?1",
+                "SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url) AS poster_path, rating FROM series WHERE tmdb_id = ?1",
                 params![tmdb_id],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
             )
@@ -202,7 +202,7 @@ pub fn resolve_similar_movies(conn: &Connection, tmdb_ids: &[i64], exclude_movie
             break;
         }
         let row: Option<(i64, String, Option<i32>, Option<String>)> = conn
-            .query_row("SELECT id, clean_title, year, poster_path FROM movies WHERE tmdb_id = ?1", params![tmdb_id], |r| {
+            .query_row("SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url) AS poster_path FROM movies WHERE tmdb_id = ?1", params![tmdb_id], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })
             .optional()?;
@@ -225,7 +225,7 @@ pub fn resolve_similar_series(conn: &Connection, tmdb_ids: &[i64], exclude_serie
             break;
         }
         let row: Option<(i64, String, Option<i32>, Option<String>)> = conn
-            .query_row("SELECT id, clean_title, year, poster_path FROM series WHERE tmdb_id = ?1", params![tmdb_id], |r| {
+            .query_row("SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url) AS poster_path FROM series WHERE tmdb_id = ?1", params![tmdb_id], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })
             .optional()?;
@@ -358,7 +358,7 @@ pub fn list_movies_page(
     limit: i64,
     include_adult: bool,
 ) -> Result<Vec<MovieListItem>> {
-    let mut sql = String::from("SELECT DISTINCT m.id, m.clean_title, m.year, m.poster_path, m.rating, m.tmdb_state, m.added_at FROM movies m");
+    let mut sql = String::from("SELECT DISTINCT m.id, m.clean_title, m.year, COALESCE(m.poster_path, m.provider_poster_url) AS poster_path, m.rating, m.tmdb_state, m.added_at FROM movies m");
     if quality.is_some() {
         sql.push_str(" JOIN movie_sources ms ON ms.movie_id = m.id");
     }
@@ -509,7 +509,7 @@ fn parse_tmdb_ids(raw: Option<String>) -> Vec<i64> {
 pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
     let base = conn
         .query_row(
-            "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, runtime_min, genres, tmdb_state,
+            "SELECT id, clean_title, year, overview, COALESCE(poster_path, provider_poster_url) AS poster_path, backdrop_path, rating, runtime_min, genres, tmdb_state,
                     tmdb_id, youtube_trailer_key, trailer_checked_at, age_rating, similar_tmdb_ids
              FROM movies WHERE id = ?1",
             params![id],
@@ -631,7 +631,7 @@ pub fn list_series_page(
     limit: i64,
     include_adult: bool,
 ) -> Result<Vec<SeriesListItem>> {
-    let mut sql = String::from("SELECT id, clean_title, year, poster_path, rating, tmdb_state FROM series WHERE 1=1");
+    let mut sql = String::from("SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url) AS poster_path, rating, tmdb_state FROM series WHERE 1=1");
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
     if !include_adult {
         // Mismo criterio que las películas (F8): se oculta si tiene alguna fuente en
@@ -750,7 +750,7 @@ pub struct SeriesDetail {
 pub fn get_series(conn: &Connection, id: i64) -> Result<Option<SeriesDetail>> {
     let base = conn
         .query_row(
-            "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating, genres, tmdb_state,
+            "SELECT id, clean_title, year, overview, COALESCE(poster_path, provider_poster_url) AS poster_path, backdrop_path, rating, genres, tmdb_state,
                     tmdb_id, youtube_trailer_key, trailer_checked_at, age_rating, similar_tmdb_ids
              FROM series WHERE id = ?1",
             params![id],
@@ -868,7 +868,9 @@ pub fn upsert_episodes(conn: &Connection, series_source_id: i64, episodes: &[cra
             still_path = excluded.still_path, duration_s = excluded.duration_s, container = excluded.container",
     )?;
     for ep in episodes {
-        stmt.execute(params![series_source_id, ep.remote_id, ep.season, ep.number, ep.title, ep.still_url, ep.duration_s, ep.container_extension])?;
+        // La miniatura es una URL del proveedor: redactada antes de guardarla (R5).
+        let still_url = ep.still_url.as_deref().map(redact);
+        stmt.execute(params![series_source_id, ep.remote_id, ep.season, ep.number, ep.title, still_url, ep.duration_s, ep.container_extension])?;
     }
     Ok(())
 }
@@ -912,8 +914,8 @@ pub fn search(conn: &Connection, query: &str, limit_per_kind: i64) -> Result<Vec
         .into_iter()
         .map(|(item_kind, item_id, title)| {
             let poster_path = match item_kind.as_str() {
-                "movie" => query_optional_string(conn, "SELECT poster_path FROM movies WHERE id = ?1", item_id),
-                "series" => query_optional_string(conn, "SELECT poster_path FROM series WHERE id = ?1", item_id),
+                "movie" => query_optional_string(conn, "SELECT COALESCE(poster_path, provider_poster_url) AS poster_path FROM movies WHERE id = ?1", item_id),
+                "series" => query_optional_string(conn, "SELECT COALESCE(poster_path, provider_poster_url) AS poster_path FROM series WHERE id = ?1", item_id),
                 // El logo de canal es una URL del proveedor: se redacta antes de salir de
                 // la capa de datos, igual que en `list_channels_page` (regla R5).
                 "channel" => query_optional_string(conn, "SELECT logo_url FROM channels WHERE id = ?1", item_id).map(|url| redact(&url)),
@@ -1381,13 +1383,13 @@ pub fn list_continue_watching(conn: &Connection, profile_id: i64, limit: i64) ->
     for r in raw {
         let enriched = match r.item_kind.as_str() {
             "movie" => conn
-                .query_row("SELECT clean_title, poster_path FROM movies WHERE id = ?1", params![r.item_id], |row| {
+                .query_row("SELECT clean_title, COALESCE(poster_path, provider_poster_url) AS poster_path FROM movies WHERE id = ?1", params![r.item_id], |row| {
                     Ok((row.get::<_, String>(0)?, None::<String>, row.get::<_, Option<String>>(1)?))
                 })
                 .optional()?,
             "episode" => conn
                 .query_row(
-                    "SELECT s.clean_title, e.season, e.number, e.title, e.still_path, s.poster_path
+                    "SELECT s.clean_title, e.season, e.number, e.title, e.still_path, COALESCE(s.poster_path, s.provider_poster_url) AS poster_path
                      FROM episodes e JOIN series_sources ss ON ss.id = e.series_source_id JOIN series s ON s.id = ss.series_id
                      WHERE e.id = ?1",
                     params![r.item_id],
@@ -1436,7 +1438,7 @@ pub struct NextEpisodeRow {
 /// sí puede no tener ningún progreso guardado todavía.
 pub fn list_next_episodes(conn: &Connection, profile_id: i64, limit: i64) -> Result<Vec<NextEpisodeRow>> {
     let mut series_stmt = conn.prepare(
-        "SELECT s.id, s.clean_title, s.poster_path, MAX(ps.played_at) AS last_played
+        "SELECT s.id, s.clean_title, COALESCE(s.poster_path, s.provider_poster_url) AS poster_path, MAX(ps.played_at) AS last_played
          FROM playback_state ps
          JOIN episodes e ON e.id = ps.item_id AND ps.item_kind = 'episode'
          JOIN series_sources ss ON ss.id = e.series_source_id
@@ -1538,7 +1540,7 @@ pub struct FeaturedMovieRow {
 /// el usuario probablemente se vaya a encontrar, no una rareza de hace años.
 pub fn get_featured_movie(conn: &Connection) -> Result<Option<FeaturedMovieRow>> {
     conn.query_row(
-        "SELECT id, clean_title, year, overview, poster_path, backdrop_path, rating
+        "SELECT id, clean_title, year, overview, COALESCE(poster_path, provider_poster_url) AS poster_path, backdrop_path, rating
          FROM (SELECT * FROM movies WHERE tmdb_state = 'matched' ORDER BY added_at DESC, id DESC LIMIT 50)
          WHERE backdrop_path IS NOT NULL AND overview IS NOT NULL
          ORDER BY rating DESC NULLS LAST
@@ -1562,7 +1564,7 @@ pub fn get_featured_movie(conn: &Connection) -> Result<Option<FeaturedMovieRow>>
 
 pub fn list_recent_movies(conn: &Connection, limit: i64) -> Result<Vec<MovieListItem>> {
     let mut stmt = conn.prepare(
-        "SELECT id, clean_title, year, poster_path, rating, tmdb_state, added_at FROM movies ORDER BY added_at DESC, id DESC LIMIT ?1",
+        "SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url) AS poster_path, rating, tmdb_state, added_at FROM movies ORDER BY added_at DESC, id DESC LIMIT ?1",
     )?;
     let rows = stmt.query_map(params![limit], |row| {
         Ok(MovieListItem {
@@ -1597,7 +1599,7 @@ pub fn list_genre_rows(conn: &Connection, top_genre_count: i64, movies_per_genre
     let genre_ids: Vec<i64> = genre_stmt.query_map(params![top_genre_count], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut movie_stmt = conn.prepare(
-        "SELECT id, clean_title, year, poster_path, rating, tmdb_state, added_at FROM movies
+        "SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url) AS poster_path, rating, tmdb_state, added_at FROM movies
          WHERE tmdb_state = 'matched' AND EXISTS (SELECT 1 FROM json_each(movies.genres) WHERE value = ?1)
          ORDER BY added_at DESC, id DESC LIMIT ?2",
     )?;
@@ -1642,8 +1644,8 @@ pub fn list_favorites(conn: &Connection, profile_id: i64) -> Result<Vec<Favorite
     let mut items = Vec::with_capacity(raw.len());
     for (item_kind, item_id) in raw {
         let enriched: Option<(String, Option<String>)> = match item_kind.as_str() {
-            "movie" => conn.query_row("SELECT clean_title, poster_path FROM movies WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
-            "series" => conn.query_row("SELECT clean_title, poster_path FROM series WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
+            "movie" => conn.query_row("SELECT clean_title, COALESCE(poster_path, provider_poster_url) AS poster_path FROM movies WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
+            "series" => conn.query_row("SELECT clean_title, COALESCE(poster_path, provider_poster_url) AS poster_path FROM series WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
             "channel" => conn.query_row("SELECT display_name, NULL FROM channels WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
             _ => None,
         };

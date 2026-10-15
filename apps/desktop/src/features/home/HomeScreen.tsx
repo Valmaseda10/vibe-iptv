@@ -1,8 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { invoke } from "@tauri-apps/api/core";
 import { apiDelete, apiGet, imagePath, useApiBase } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
-import type { FeaturedItem, HomeResponse } from "../../lib/api-types";
+import type { FeaturedItem, HomeResponse, ProviderSummary } from "../../lib/api-types";
 import { Row } from "../../components/Row";
 import { PosterCard, PosterCardSkeleton } from "../../components/PosterCard";
 
@@ -10,6 +11,11 @@ export function HomeScreen() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { profileId } = useActiveProfile();
+  // Misma clave que Ajustes: al añadir el primer proveedor, Inicio se entera solo.
+  const providersQuery = useQuery({
+    queryKey: ["providers"],
+    queryFn: () => invoke<ProviderSummary[]>("list_providers"),
+  });
   const { data, isPending, isError } = useQuery({
     queryKey: ["home", profileId],
     queryFn: () => apiGet<HomeResponse>(`/api/home?profile_id=${profileId}`),
@@ -45,11 +51,16 @@ export function HomeScreen() {
     return (positionS / durationS) * 100;
   }
 
+  if (providersQuery.data?.length === 0) {
+    return <WelcomeWithoutProvider />;
+  }
+
   return (
     <div className="flex flex-col gap-10 pb-8">
       {isPending ? <HeroBannerSkeleton /> : data?.featured ? <HeroBanner featured={data.featured} /> : null}
 
-      <h1 className="px-6 text-3xl font-semibold sm:px-10">Inicio</h1>
+      {/* Sin banner (sin clave de TMDB no hay fondos), el título necesita su propio margen. */}
+      <h1 className={`px-6 text-3xl font-semibold sm:px-10 ${!isPending && !data?.featured ? "pt-8" : ""}`}>Inicio</h1>
 
       {isError && <p className="px-6 text-red-400 sm:px-10">No se pudo cargar el inicio. ¿Hay algún proveedor sincronizado?</p>}
 
@@ -181,6 +192,27 @@ export function HomeScreen() {
             ))}
           </Row>
         ))}
+    </div>
+  );
+}
+
+/** Primera vez, sin ningún proveedor: en vez de filas vacías, decir qué hacer. */
+function WelcomeWithoutProvider() {
+  const navigate = useNavigate();
+  return (
+    <div className="flex min-h-full flex-col items-center justify-center gap-5 px-6 py-16 text-center">
+      <h1 className="text-3xl font-semibold sm:text-4xl">Te damos la bienvenida a VIBE IPTV</h1>
+      <p className="max-w-lg text-neutral-400">
+        Añade tu proveedor IPTV (Xtream Codes o lista M3U) y aquí aparecerán tus canales, películas y series.
+      </p>
+      <button
+        type="button"
+        autoFocus
+        onClick={() => navigate({ to: "/settings" })}
+        className="rounded bg-red-600 px-6 py-3 font-medium outline-none hover:bg-red-500 focus-visible:ring-4 focus-visible:ring-red-400"
+      >
+        Añadir proveedor
+      </button>
     </div>
   );
 }

@@ -5,37 +5,12 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { apiGet } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type { CategorySummary, ChannelsPage, EpgNowNextResponse } from "../../lib/api-types";
+import { groupChannelsByName, type ChannelGroup } from "../../lib/channels";
 
 const ROW_HEIGHT = 60;
 const EPG_REFRESH_MS = 60_000;
 
 type ChannelItem = ChannelsPage["items"][number];
-
-/** Varios paneles Xtream listan el mismo canal varias veces como feeds de respaldo
- * distintos (mismo nombre, `remote_id` distinto — visto de verdad contra un proveedor
- * real, no un caso hipotético). Sin esto, "La 1" aparecía tres veces seguidas sin
- * explicación. Se agrupan por nombre exacto conservando el orden de aparición, no se
- * toca la paginación del backend (agrupar en SQL entre páginas es mucho más frágil que
- * agrupar aquí sobre todo lo ya cargado). */
-type ChannelGroup = {
-  displayName: string;
-  channels: ChannelItem[];
-};
-
-function groupChannelsByName(items: ChannelItem[]): ChannelGroup[] {
-  const byName = new Map<string, ChannelGroup>();
-  const order: ChannelGroup[] = [];
-  for (const channel of items) {
-    let group = byName.get(channel.display_name);
-    if (!group) {
-      group = { displayName: channel.display_name, channels: [] };
-      byName.set(channel.display_name, group);
-      order.push(group);
-    }
-    group.channels.push(channel);
-  }
-  return order;
-}
 
 export function LiveScreen() {
   const navigate = useNavigate();

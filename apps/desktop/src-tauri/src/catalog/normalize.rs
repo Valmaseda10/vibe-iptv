@@ -26,9 +26,13 @@ const ARTICLES: &[&str] = &["el", "la", "los", "las", "un", "una", "unos", "unas
 
 // Dos formas: entre corchetes (el propio corchete ya delimita, no hace falta separador
 // detrás) o suelto con un separador explícito (sin él, "ES" podría ser parte del título).
+// El separador se captura (grupo 3): una barra vertical tras una etiqueta desconocida
+// en mayúsculas es una etiqueta de categoría del panel, nunca parte del título.
 static PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(?:\[\s*([A-Za-zÀ-ÿ0-9]{1,6})\s*\]|([A-Za-zÀ-ÿ0-9]{1,6})\s*[|:\-])\s*").unwrap()
+    Regex::new(r"^\s*(?:\[\s*([A-Za-zÀ-ÿ0-9]{1,6})\s*\]|([A-Za-zÀ-ÿ0-9]{1,6})\s*([|:\-]))\s*").unwrap()
 });
+/// Cuántas etiquetas de prefijo seguidas se retiran como mucho ("ES| DEP| Fútbol").
+const MAX_PREFIX_TAGS: usize = 3;
 static HASH_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*#\s*").unwrap());
 // Solo formas entre paréntesis/corchetes: un año suelto al final es indistinguible de
 // parte del título ("1917", "2012", "Blade Runner 2049"). Ver docs/DECISIONS.md.
@@ -57,31 +61,35 @@ pub fn normalize(raw_title: &str) -> NormalizedTitle {
     if let Some(rest) = HASH_PREFIX_RE.find(&text).map(|m| text[m.end()..].to_string()) {
         text = rest;
     }
-    if let Some(caps) = PREFIX_RE.captures(&text) {
+    for _ in 0..MAX_PREFIX_TAGS {
+        let Some(caps) = PREFIX_RE.captures(&text) else { break };
         // La alternativa entre corchetes captura en el grupo 1, la suelta con separador
         // en el grupo 2; solo una de las dos existe según cuál coincidió.
-        if let Some(tag_match) = caps.get(1).or_else(|| caps.get(2)) {
-            let tag = tag_match.as_str().to_uppercase();
-            let whole_end = caps.get(0).map(|m| m.end()).unwrap_or(0);
-            if LANGUAGE_CODES.contains(&tag.as_str()) {
-                language = Some(tag);
-                text = text[whole_end..].to_string();
-            } else if QUALITY_MARKERS.contains(&tag.as_str()) {
-                quality = Some(tag);
-                text = text[whole_end..].to_string();
-            } else if NOISE_PREFIXES.contains(&tag.as_str()) {
-                text = text[whole_end..].to_string();
-            }
+        let Some(tag_match) = caps.get(1).or_else(|| caps.get(2)) else { break };
+        let raw_tag = tag_match.as_str();
+        let tag = raw_tag.to_uppercase();
+        let whole_end = caps.get(0).map(|m| m.end()).unwrap_or(0);
+        let pipe_separated = caps.get(3).is_some_and(|sep| sep.as_str() == "|");
+        if LANGUAGE_CODES.contains(&tag.as_str()) {
+            language.get_or_insert(tag);
+        } else if QUALITY_MARKERS.contains(&tag.as_str()) {
+            quality.get_or_insert(tag);
+        } else if NOISE_PREFIXES.contains(&tag.as_str()) || (pipe_separated && raw_tag == tag) {
+            // Etiquetas de categoría de los paneles ("DEP|", "NOT|", "XXX|"). Solo con
+            // barra vertical: con ":" o "-" podría ser parte del título ("Alien: ..."), y
+            // entre corchetes también ("[REC]").
+        } else {
             // Prefijo desconocido: no se toca. Podría ser parte real del título.
+            break;
         }
+        text = text[whole_end..].to_string();
     }
 
-    // Regla 2: marca de calidad, primera coincidencia en cualquier posición.
-    if quality.is_none() {
-        if let Some((found, span)) = find_quality(&text) {
-            quality = Some(found);
-            text = remove_span(&text, span);
-        }
+    // Regla 2: marcas de calidad en cualquier posición. La primera es la calidad de la
+    // fuente; se retiran todas ("4K HDR" no debe dejar "HDR" en el título).
+    while let Some((found, span)) = find_quality(&text) {
+        quality.get_or_insert(found);
+        text = remove_span(&text, span);
     }
 
     // Regla 3: año entre paréntesis o corchetes, dentro de rango.
@@ -288,6 +296,36 @@ mod tests {
         let n = normalize("LAT - Serie");
         assert_eq!(n.language.as_deref(), Some("LAT"));
         assert_eq!(n.clean_title, "Serie");
+    }
+
+    #[test]
+    fn panel_category_tags_with_a_pipe_are_removed() {
+        assert_eq!(normalize("DEP| Deportes Uno").clean_title, "Deportes Uno");
+        assert_eq!(normalize("NOT| 24 Horas").clean_title, "24 Horas");
+        assert_eq!(normalize("XXX| Película Adulta (2020)").clean_title, "Película Adulta");
+    }
+
+    #[test]
+    fn several_prefix_tags_in_a_row_are_removed() {
+        let n = normalize("ES| DEP| Fútbol Total HD");
+        assert_eq!(n.language.as_deref(), Some("ES"));
+        assert_eq!(n.quality.as_deref(), Some("HD"));
+        assert_eq!(n.clean_title, "Fútbol Total");
+    }
+
+    #[test]
+    fn unknown_prefixes_without_a_pipe_are_kept() {
+        assert_eq!(normalize("Alien: Romulus (2024)").clean_title, "Alien: Romulus");
+        assert_eq!(normalize("Mission: Impossible").clean_title, "Mission: Impossible");
+        assert_eq!(normalize("[REC] (2007)").clean_title, "[REC]");
+    }
+
+    #[test]
+    fn every_quality_marker_is_removed_and_the_first_one_wins() {
+        let n = normalize("Origen (2010) 4K HDR");
+        assert_eq!(n.clean_title, "Origen");
+        assert_eq!(n.quality.as_deref(), Some("4K"));
+        assert_eq!(n.year, Some(2010));
     }
 
     #[test]

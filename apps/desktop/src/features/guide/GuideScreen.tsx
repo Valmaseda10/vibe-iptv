@@ -4,6 +4,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type { CategorySummary, ChannelsPage, EpgGridProgramme } from "../../lib/api-types";
+import { uniqueChannelsByName } from "../../lib/channels";
 
 const WINDOW_HOURS = 4;
 const WINDOW_SECONDS = WINDOW_HOURS * 3600;
@@ -56,7 +57,7 @@ export function GuideScreen() {
       apiGet<ChannelsPage>(`/api/live/channels?profile_id=${profileId}&limit=${CHANNEL_LIMIT}${categoryId ? `&category_id=${categoryId}` : ""}`),
     enabled: profileId !== null,
   });
-  const channels = channelsQuery.data?.items ?? [];
+  const channels = useMemo(() => uniqueChannelsByName(channelsQuery.data?.items ?? []), [channelsQuery.data]);
   const channelIds = useMemo(() => channels.map((c) => c.id), [channels]);
 
   const windowEnd = windowStart + WINDOW_SECONDS;

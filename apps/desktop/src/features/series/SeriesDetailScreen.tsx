@@ -59,19 +59,23 @@ export function SeriesDetailScreen() {
   if (isError || !data) return <p className="p-10 text-red-400">No se encontró la serie.</p>;
 
   const backdrop = imagePath(base, data.backdrop_path, "w1280");
+  // Mismo criterio que la ficha de película: sin fondo de TMDB, el póster ocupa su lugar.
+  const poster = backdrop ? null : imagePath(base, data.poster_path, "w500");
   const episodesOfSeason = seasons.find((s) => s.season === activeSeason)?.episodes ?? [];
 
   return (
     <div className="relative min-h-full">
       <div className="absolute inset-0 h-[50vh] overflow-hidden">
         {backdrop && <img src={backdrop} alt="" className="h-full w-full object-cover" />}
+        {poster && <img src={poster} alt="" className="h-full w-full scale-110 object-cover opacity-40 blur-2xl" />}
         <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/70 to-transparent" />
       </div>
 
-      <div className="relative flex flex-col gap-5 px-6 pb-16 pt-[26vh] sm:px-10">
+      <div className={`relative flex flex-col gap-5 px-6 pb-16 sm:px-10 ${backdrop ? "pt-[26vh]" : "pt-10"}`}>
         <button type="button" onClick={() => navigate({ to: "/series" })} className="w-fit text-sm text-neutral-400 outline-none hover:text-neutral-200">
           ← Volver (Esc)
         </button>
+        {poster && <img src={poster} alt="" className="w-36 rounded-lg shadow-2xl ring-1 ring-white/10 sm:w-44" />}
         <h1 className="max-w-2xl text-4xl font-bold sm:text-5xl">{data.clean_title}</h1>
         <div className="flex flex-wrap items-center gap-3 text-sm text-neutral-300">
           {data.age_rating && <span className="rounded border border-neutral-500 px-1.5 py-0.5 text-xs font-semibold">{data.age_rating}</span>}
@@ -152,7 +156,13 @@ export function SeriesDetailScreen() {
                   >
                     <div className="flex h-20 w-32 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-xs text-neutral-500">
                       {imagePath(base, episode.still_path, "w342") ? (
-                        <img src={imagePath(base, episode.still_path, "w342")!} alt="" className="h-full w-full object-cover" />
+                        <img
+                          src={imagePath(base, episode.still_path, "w342")!}
+                          alt=""
+                          className="h-full w-full object-cover"
+                          // Miniatura del proveedor caída: mejor el hueco gris que el icono roto.
+                          onError={(e) => (e.currentTarget.style.visibility = "hidden")}
+                        />
                       ) : (
                         episode.number
                       )}

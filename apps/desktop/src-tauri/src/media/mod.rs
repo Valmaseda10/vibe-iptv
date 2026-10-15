@@ -32,6 +32,25 @@ pub fn resolve_binary(name: &str) -> Option<PathBuf> {
         }
     }
 
+    // En desarrollo (`tauri dev`) los sidecars siguen en `src-tauri/binaries/` con el
+    // sufijo de la plataforma (`ffmpeg-x86_64-pc-windows-msvc.exe`): solo el instalador
+    // los copia junto al ejecutable. Sin esto, desarrollo usaba el ffmpeg que hubiera en el
+    // PATH (otra versión que la empaquetada) y avisaba de que faltaba mpv.
+    #[cfg(debug_assertions)]
+    {
+        let prefix = format!("{name}-");
+        let dev_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries");
+        if let Ok(entries) = std::fs::read_dir(&dev_dir) {
+            let found = entries.flatten().map(|entry| entry.path()).find(|path| {
+                let file_name = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+                file_name.starts_with(&prefix) && (!cfg!(windows) || file_name.ends_with(".exe"))
+            });
+            if found.is_some() {
+                return found;
+            }
+        }
+    }
+
     let path_var = std::env::var_os("PATH")?;
     std::env::split_paths(&path_var).map(|dir| dir.join(&exe_name)).find(|p| p.is_file())
 }

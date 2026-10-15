@@ -9,6 +9,7 @@ use ts_rs::TS;
 use crate::sources::model::{MediaKind, RawCategory, RawChannel, RawMovie, RawSeries};
 
 use super::{now_epoch, Result};
+use crate::util::redact;
 
 /// Tipo de proveedor, igual que la columna `kind` de `providers` en `docs/DATA-MODEL.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -254,10 +255,11 @@ pub fn upsert_movie(
     fields: &TitleFields,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO movies (clean_title, year, match_key, tmdb_id, added_at)
-         VALUES (?1, ?2, ?3, ?4, ?5)
-         ON CONFLICT(match_key) DO UPDATE SET clean_title = excluded.clean_title, year = excluded.year",
-        params![fields.clean_title, fields.year, fields.match_key, movie.tmdb_id, movie.added_at],
+        "INSERT INTO movies (clean_title, year, match_key, tmdb_id, added_at, provider_poster_url)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(match_key) DO UPDATE SET clean_title = excluded.clean_title, year = excluded.year,
+            provider_poster_url = COALESCE(excluded.provider_poster_url, movies.provider_poster_url)",
+        params![fields.clean_title, fields.year, fields.match_key, movie.tmdb_id, movie.added_at, movie.logo_url.as_deref().map(redact)],
     )?;
     let movie_id: i64 =
         conn.query_row("SELECT id FROM movies WHERE match_key = ?1", params![fields.match_key], |row| row.get(0))?;
@@ -291,10 +293,11 @@ pub fn upsert_movie(
 /// `docs/DATA-MODEL.md`): esas variantes son por episodio/fuente, no por serie.
 pub fn upsert_series(conn: &Connection, provider_id: i64, category_map: &HashMap<String, i64>, series: &RawSeries, fields: &TitleFields) -> Result<()> {
     conn.execute(
-        "INSERT INTO series (clean_title, year, match_key, added_at)
-         VALUES (?1, ?2, ?3, ?4)
-         ON CONFLICT(match_key) DO UPDATE SET clean_title = excluded.clean_title, year = excluded.year",
-        params![fields.clean_title, fields.year, fields.match_key, now_epoch()],
+        "INSERT INTO series (clean_title, year, match_key, added_at, provider_poster_url)
+         VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(match_key) DO UPDATE SET clean_title = excluded.clean_title, year = excluded.year,
+            provider_poster_url = COALESCE(excluded.provider_poster_url, series.provider_poster_url)",
+        params![fields.clean_title, fields.year, fields.match_key, now_epoch(), series.cover_url.as_deref().map(redact)],
     )?;
     let series_id: i64 =
         conn.query_row("SELECT id FROM series WHERE match_key = ?1", params![fields.match_key], |row| row.get(0))?;

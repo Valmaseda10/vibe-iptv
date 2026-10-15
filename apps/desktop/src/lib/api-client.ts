@@ -90,10 +90,13 @@ export async function apiDelete(path: string): Promise<void> {
   if (!response.ok) return throwWithBody(path, response);
 }
 
-/** URL de una imagen cacheada por el núcleo (`GET /img/:size/:image_id`), o `null` si
- * no hay ruta de TMDB todavía (p. ej. `tmdb_state` sigue en `pending`). */
+/** URL de una imagen: la de TMDB cacheada por el núcleo (`GET /img/:size/:image_id`), o
+ * tal cual si es una URL absoluta del proveedor (carátula sin ficha de TMDB, miniatura
+ * de episodio; el núcleo ya la redacta). `null` si no hay ninguna. */
 export function imagePath(base: string | undefined, path: string | null | undefined, size: "w342" | "w500" | "w1280"): string | null {
-  if (!base || !path) return null;
+  if (!path) return null;
+  if (/^https?:\/\//.test(path)) return path;
+  if (!base) return null;
   const clean = path.startsWith("/") ? path.slice(1) : path;
   return `${base}/img/${size}/${clean}`;
 }

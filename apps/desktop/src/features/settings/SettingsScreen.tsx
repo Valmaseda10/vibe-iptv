@@ -289,58 +289,7 @@ export function SettingsScreen() {
         )}
       </section>
 
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
-        <h2 className="mb-4 text-xl font-medium">TMDB</h2>
-        <p className="mb-3 text-sm text-neutral-400">
-          {tmdbKeyQuery.data ? "Clave de API guardada." : "Sin clave de API guardada todavía. Sin ella, las películas y series se quedan sin portada ni sinopsis."}
-        </p>
-        <div className="flex gap-3">
-          <input
-            type="password"
-            placeholder="Clave de API de TMDB"
-            className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
-            value={tmdbApiKey}
-            onChange={(e) => setTmdbApiKey(e.target.value)}
-          />
-          <button
-            type="button"
-            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50"
-            onClick={() => saveTmdbKeyMutation.mutate(tmdbApiKey)}
-            disabled={!tmdbApiKey || saveTmdbKeyMutation.isPending}
-          >
-            {saveTmdbKeyMutation.isPending ? "Guardando…" : "Guardar"}
-          </button>
-          <button
-            type="button"
-            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50"
-            onClick={() => matchTmdbMutation.mutate()}
-            disabled={!tmdbKeyQuery.data || matchTmdbMutation.isPending}
-          >
-            Buscar en TMDB
-          </button>
-        </div>
-        {matchTmdbMutation.isError && <p className="mt-3 text-red-400">{String(matchTmdbMutation.error)}</p>}
-        {tmdbProgress && tmdbProgress.total > 0 && (
-          <div className="mt-4">
-            <p className="mb-1 text-sm text-neutral-400">
-              Emparejando con TMDB: {tmdbProgress.current}/{tmdbProgress.total}
-            </p>
-            <div className="h-2 w-full overflow-hidden rounded bg-neutral-800">
-              <div
-                className="h-full bg-red-600 transition-[width]"
-                style={{ width: `${Math.min(100, (tmdbProgress.current / tmdbProgress.total) * 100)}%` }}
-              />
-            </div>
-          </div>
-        )}
-      </section>
-
-      <AccountSection />
-      <ProfileSection />
-      <LanSection />
-      <DiagnosticsSection />
-
-      <section>
+      <section className="mb-10">
         <h2 className="mb-4 text-xl font-medium">Proveedores</h2>
         {providersQuery.isPending && <p className="text-neutral-400">Cargando…</p>}
         {providersQuery.data?.length === 0 && <p className="text-neutral-400">Todavía no has añadido ninguno.</p>}
@@ -411,6 +360,57 @@ export function SettingsScreen() {
           </p>
         )}
       </section>
+
+      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+        <h2 className="mb-4 text-xl font-medium">TMDB</h2>
+        <p className="mb-3 text-sm text-neutral-400">
+          {tmdbKeyQuery.data ? "Clave de API guardada." : "Sin clave de API guardada todavía. Sin ella, las películas y series se quedan sin portada ni sinopsis."}
+        </p>
+        <div className="flex gap-3">
+          <input
+            type="password"
+            placeholder="Clave de API de TMDB"
+            className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+            value={tmdbApiKey}
+            onChange={(e) => setTmdbApiKey(e.target.value)}
+          />
+          <button
+            type="button"
+            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50"
+            onClick={() => saveTmdbKeyMutation.mutate(tmdbApiKey)}
+            disabled={!tmdbApiKey || saveTmdbKeyMutation.isPending}
+          >
+            {saveTmdbKeyMutation.isPending ? "Guardando…" : "Guardar"}
+          </button>
+          <button
+            type="button"
+            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50"
+            onClick={() => matchTmdbMutation.mutate()}
+            disabled={!tmdbKeyQuery.data || matchTmdbMutation.isPending}
+          >
+            Buscar en TMDB
+          </button>
+        </div>
+        {matchTmdbMutation.isError && <p className="mt-3 text-red-400">{String(matchTmdbMutation.error)}</p>}
+        {tmdbProgress && tmdbProgress.total > 0 && (
+          <div className="mt-4">
+            <p className="mb-1 text-sm text-neutral-400">
+              Emparejando con TMDB: {tmdbProgress.current}/{tmdbProgress.total}
+            </p>
+            <div className="h-2 w-full overflow-hidden rounded bg-neutral-800">
+              <div
+                className="h-full bg-red-600 transition-[width]"
+                style={{ width: `${Math.min(100, (tmdbProgress.current / tmdbProgress.total) * 100)}%` }}
+              />
+            </div>
+          </div>
+        )}
+      </section>
+
+      <AccountSection />
+      <ProfileSection />
+      <LanSection />
+      <DiagnosticsSection />
     </div>
   );
 }
@@ -796,11 +796,16 @@ function BinariesStatusBanner() {
   const missing = (["ffmpeg", "ffprobe", "mpv"] as const).filter((name) => !data[name]);
   if (missing.length === 0) return null;
 
+  // ffmpeg/ffprobe sostienen casi toda la reproducción (directo, MKV); mpv solo el
+  // respaldo para códecs que el reproductor de la app no puede abrir.
+  const missingCore = !data.ffmpeg || !data.ffprobe;
   return (
     <div className="mb-6 rounded-lg border border-amber-700 bg-amber-950/40 p-4 text-sm text-amber-200">
-      Falta{missing.length > 1 ? "n" : ""} <strong>{missing.join(", ")}</strong>: la reproducción de directo
-      {missing.includes("mpv") ? " y algunos contenidos con códecs poco habituales" : ""} no va a funcionar hasta que
-      estén disponibles. Si esto es una instalación desde el instalador, es un fallo real — reinstala la app.
+      Falta{missing.length > 1 ? "n" : ""} <strong>{missing.join(", ")}</strong>:{" "}
+      {missingCore
+        ? "no se podrá ver el directo ni la mayoría de películas y series."
+        : "los contenidos con códecs poco habituales (H.265 sin aceleración, VC-1…) no se podrán abrir en mpv; el resto se ve con normalidad."}{" "}
+      Si instalaste la app con el instalador, reinstálala.
     </div>
   );
 }

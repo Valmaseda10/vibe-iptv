@@ -32,6 +32,9 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
   const { data: base } = useApiBase();
   const src = imagePath(base, posterPath, "w342");
   const [loaded, setLoaded] = useState(false);
+  // Una carátula del proveedor puede no cargar (enlace caído): mejor el título que el
+  // icono de imagen rota.
+  const [failed, setFailed] = useState(false);
 
   return (
     <div className="group relative w-40 shrink-0 sm:w-44">
@@ -48,12 +51,13 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
         className="flex w-full flex-col gap-2 rounded text-left outline-none"
       >
         <div className="relative aspect-[2/3] w-full overflow-hidden rounded-lg bg-neutral-800 ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] group-focus-visible:scale-[1.03]">
-          {src ? (
+          {src && !failed ? (
             <img
               src={src}
               alt=""
               loading="lazy"
               onLoad={() => setLoaded(true)}
+              onError={() => setFailed(true)}
               className={`h-full w-full object-cover transition-opacity duration-300 ${loaded ? "opacity-100" : "opacity-0"}`}
             />
           ) : (

@@ -45,6 +45,9 @@ export function MovieDetailScreen() {
   if (isError || !data) return <p className="p-10 text-red-400">No se encontró la película.</p>;
 
   const backdrop = imagePath(base, data.backdrop_path, "w1280");
+  // Sin fondo de TMDB (sin clave, o título sin ficha), el póster hace de fondo difuminado
+  // y aparece junto al título: mejor que un gran hueco negro.
+  const poster = backdrop ? null : imagePath(base, data.poster_path, "w500");
   const qualities = [...new Set(data.sources.map((s) => s.quality).filter((q): q is string => Boolean(q)))];
   // TMDB no siempre tiene la duración (títulos nuevos u oscuros); la duración real del
   // fichero, sin abrir ningún stream (F "premium", Source::vod_info), es un buen
@@ -60,21 +63,22 @@ export function MovieDetailScreen() {
     <div className="relative min-h-full">
       <div className="absolute inset-0 h-[60vh] overflow-hidden">
         {backdrop && <img src={backdrop} alt="" className="h-full w-full object-cover" />}
+        {poster && <img src={poster} alt="" className="h-full w-full scale-110 object-cover opacity-40 blur-2xl" />}
         <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/70 to-transparent" />
         <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/90 via-neutral-950/10 to-transparent" />
       </div>
 
-      <div className="relative flex flex-col gap-5 px-6 pb-16 pt-[32vh] sm:px-10">
+      <div className={`relative flex flex-col gap-5 px-6 pb-16 sm:px-10 ${backdrop ? "pt-[32vh]" : "pt-10"}`}>
         <button type="button" onClick={() => navigate({ to: "/movies" })} className="w-fit text-sm text-neutral-400 outline-none hover:text-neutral-200">
           ← Volver (Esc)
         </button>
+        {poster && <img src={poster} alt="" className="w-36 rounded-lg shadow-2xl ring-1 ring-white/10 sm:w-44" />}
         <h1 className="max-w-2xl text-4xl font-bold sm:text-5xl">{data.clean_title}</h1>
         <div className="flex flex-wrap items-center gap-3 text-sm text-neutral-300">
           {data.age_rating && <span className="rounded border border-neutral-500 px-1.5 py-0.5 text-xs font-semibold">{data.age_rating}</span>}
           {data.year && <span>{data.year}</span>}
           {durationMin ? <span>{durationMin} min</span> : null}
           {data.rating != null && <span>★ {data.rating.toFixed(1)}</span>}
-          <span className="rounded bg-neutral-800 px-2 py-0.5 text-xs uppercase tracking-wide text-neutral-400">{tmdbStateLabel(data.tmdb_state)}</span>
         </div>
         {data.overview && <p className="max-w-2xl text-neutral-300">{data.overview}</p>}
 
@@ -170,19 +174,6 @@ export function MovieDetailScreen() {
       )}
     </div>
   );
-}
-
-function tmdbStateLabel(state: string) {
-  switch (state) {
-    case "matched":
-      return "TMDB";
-    case "pending":
-      return "pendiente de TMDB";
-    case "not_found":
-      return "sin coincidencia en TMDB";
-    default:
-      return state;
-  }
 }
 
 function DetailSkeleton() {
