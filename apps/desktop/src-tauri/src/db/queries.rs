@@ -636,8 +636,8 @@ pub fn delete_profile(conn: &Connection, profile_id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Vincula este perfil local a su fila espejo en Supabase, una vez sincronizado por
-/// primera vez. `remote_id` es el UUID que Supabase generó para él.
+/// Vincula este perfil local a su documento en la nube. `remote_id` lo genera
+/// `sync::outbox::new_remote_id` (o es el UUID que le dio Supabase antes de F11).
 pub fn set_profile_remote_id(conn: &Connection, profile_id: i64, remote_id: &str) -> Result<()> {
     conn.execute("UPDATE profiles SET remote_id = ?1 WHERE id = ?2", params![remote_id, profile_id])?;
     Ok(())

@@ -8,6 +8,7 @@ import type {
   AccountStatus,
   AccountStatusResponse,
   AddProviderInput,
+  CloudSyncStatus,
   BinariesStatus,
   EpgSyncSummary,
   LanStatusResponse,
@@ -436,7 +437,7 @@ function ProfileSection() {
 }
 
 /** Cuenta de sincronización: perfiles/favoritos/progreso viajan entre dispositivos vía
- * Supabase (excepción consciente a "el PC es el servidor" — ver docs/DECISIONS.md). El
+ * Firebase (excepción consciente a "el PC es el servidor" — ver docs/CLOUD-SYNC.md). El
  * catálogo, las credenciales de proveedor y el streaming en sí nunca pasan por aquí. */
 function AccountSection() {
   const queryClient = useQueryClient();
@@ -445,11 +446,12 @@ function AccountSection() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
 
   const statusQuery = useQuery({
     queryKey: ["account-status"],
     queryFn: () => apiGet<AccountStatusResponse>("/api/account/status"),
+    // Solo mientras Ajustes está abierto: para ver bajar los cambios pendientes.
+    refetchInterval: 15_000,
   });
 
   function invalidate() {
@@ -466,16 +468,11 @@ function AccountSection() {
 
   const authMutation = useMutation({
     mutationFn: () => apiPost<AccountStatusResponse>(mode === "login" ? "/api/account/login" : "/api/account/signup", { email, password }),
-    onSuccess: (result) => {
+    onSuccess: () => {
       setError(null);
       setPassword("");
-      if (result.logged_in) {
-        invalidate();
-        forgetActiveProfile();
-      } else {
-        // Alta hecha pero pendiente de confirmar el email: no hay sesión todavía.
-        setInfo("Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión.");
-      }
+      invalidate();
+      forgetActiveProfile();
     },
     onError: (err) => setError(String(err).replace(/^Error:\s*/, "")),
   });
@@ -496,6 +493,7 @@ function AccountSection() {
       <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
         <h2 className="mb-4 text-xl font-medium">Cuenta</h2>
         <p className="mb-3 text-sm text-neutral-300">Sesión iniciada como {statusQuery.data.email}.</p>
+        {statusQuery.data.sync && <CloudSyncLine sync={statusQuery.data.sync} />}
         <p className="mb-4 text-xs text-neutral-500">
           Se sincronizan perfiles, favoritos y progreso — nunca las credenciales de tus proveedores IPTV, que se
           quedan solo en este PC.
@@ -553,13 +551,38 @@ function AccountSection() {
         </button>
       </div>
       {error && <p role="alert" className="text-red-400">{error}</p>}
-      {info && <p className="text-neutral-300">{info}</p>}
     </section>
   );
 }
 
+/** Una línea de estado de la sincronización: si hay cambios esperando y por qué. Sin
+ * conexión con la nube la app sigue funcionando igual; esto solo lo hace visible. */
+function CloudSyncLine({ sync }: { sync: CloudSyncStatus }) {
+  const pending = sync.pending_changes;
+  const pendingText = `${pending} cambio${pending === 1 ? "" : "s"} esperando`;
+  if (sync.last_error) {
+    return (
+      <p className="mb-3 text-sm text-amber-400">
+        Sincronización en pausa: {sync.last_error}
+        {pending > 0 && ` ${pendingText}; se enviarán solos cuando vuelva la conexión.`}
+      </p>
+    );
+  }
+  if (pending > 0) {
+    return <p className="mb-3 text-sm text-neutral-400">Sincronizando… {pendingText}.</p>;
+  }
+  if (sync.last_synced_at) {
+    return (
+      <p className="mb-3 text-sm text-emerald-400">
+        Todo sincronizado · {new Date(sync.last_synced_at * 1000).toLocaleTimeString()}
+      </p>
+    );
+  }
+  return <p className="mb-3 text-sm text-neutral-400">Conectando con la nube…</p>;
+}
+
 /** Cambiar contraseña con la sesión ya abierta (F "premium" — confianza de cuenta). El
- * backend vuelve a pedir la actual contra Supabase antes de fijar la nueva, aunque la
+ * backend vuelve a comprobar la actual contra la nube antes de fijar la nueva, aunque la
  * sesión ya esté abierta: no es cosa de esta pantalla, es la propia API la que lo exige. */
 function ChangePasswordForm() {
   const [currentPassword, setCurrentPassword] = useState("");

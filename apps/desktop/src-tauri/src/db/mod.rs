@@ -1,3 +1,4 @@
+pub mod cloud;
 pub mod queries;
 pub mod reads;
 pub mod schema;
@@ -11,6 +12,8 @@ pub enum DbError {
     Sqlite(#[from] rusqlite::Error),
     #[error("error de E/S: {0}")]
     Io(#[from] std::io::Error),
+    #[error("error de serialización: {0}")]
+    Json(#[from] serde_json::Error),
 }
 
 pub type Result<T> = std::result::Result<T, DbError>;

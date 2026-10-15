@@ -1201,7 +1201,7 @@ pub fn count_profiles(conn: &Connection) -> Result<i64> {
     conn.query_row("SELECT COUNT(*) FROM profiles", [], |row| row.get(0)).map_err(Into::into)
 }
 
-/// El UUID de Supabase de este perfil, si ya se sincronizó alguna vez. Hace falta
+/// El id en la nube de este perfil, si ya se encoló alguna vez. Hace falta
 /// leerlo antes de borrar la fila local (`server::profiles::delete_profile_route`):
 /// una vez borrada, ya no habría de dónde sacarlo para borrar también el espejo remoto.
 pub fn get_profile_remote_id(conn: &Connection, profile_id: i64) -> Result<Option<String>> {
@@ -1252,7 +1252,7 @@ pub fn item_key_for(conn: &Connection, item_kind: &str, item_id: i64) -> Result<
     .map_err(Into::into)
 }
 
-/// El camino inverso: de un `item_key` bajado de Supabase al `id` local, si ese
+/// El camino inverso: de un `item_key` bajado de la nube al `id` local, si ese
 /// contenido existe en el catálogo de este PC (puede que no — proveedores distintos).
 pub fn item_id_for_key(conn: &Connection, item_kind: &str, item_key: &str) -> Result<Option<i64>> {
     match item_kind {

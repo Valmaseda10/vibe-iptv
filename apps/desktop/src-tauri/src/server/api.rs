@@ -15,6 +15,7 @@ use crate::catalog::tmdb::{TmdbClient, TmdbExtras, TMDB_API_KEY_CREDENTIAL_REF};
 use crate::db::reads::{self, MovieSort};
 use crate::db::{queries, schema, DbError};
 use crate::sources::{Source, VodInfo};
+use crate::sync::{engine, outbox};
 use crate::util::keychain;
 
 #[derive(Clone)]
@@ -1177,19 +1178,13 @@ async fn post_playback_progress(State(state): State<CatalogState>, Json(input): 
     if !matches!(input.item_kind.as_str(), "movie" | "episode" | "channel") {
         return Err(ApiError::BadRequest("item_kind debe ser movie, episode o channel".to_string()));
     }
-    let item_kind = input.item_kind.clone();
     with_db(state.db_path.clone(), move |conn| {
-        reads::upsert_playback_progress(conn, input.profile_id, &input.item_kind, input.item_id, input.position_s, input.duration_s)
+        reads::upsert_playback_progress(conn, input.profile_id, &input.item_kind, input.item_id, input.position_s, input.duration_s)?;
+        // Se guarda cada 10 s mientras se reproduce: a la nube va agrupado (ver sync::outbox).
+        outbox::enqueue_playback(conn, input.profile_id, &input.item_kind, input.item_id, true)
     })
     .await?;
-    tokio::spawn(crate::sync::engine::push_playback_progress(
-        state.db_path,
-        input.profile_id,
-        item_kind,
-        input.item_id,
-        input.position_s,
-        input.duration_s,
-    ));
+    engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1199,9 +1194,12 @@ async fn get_favorites(State(state): State<CatalogState>, Query(query): Query<Pr
 }
 
 async fn post_favorite(State(state): State<CatalogState>, Json(input): Json<FavoriteInput>) -> Result<StatusCode, ApiError> {
-    let item_kind = input.item_kind.clone();
-    with_db(state.db_path.clone(), move |conn| reads::add_favorite(conn, input.profile_id, &input.item_kind, input.item_id)).await?;
-    tokio::spawn(crate::sync::engine::push_favorite_add(state.db_path, input.profile_id, item_kind, input.item_id));
+    with_db(state.db_path.clone(), move |conn| {
+        reads::add_favorite(conn, input.profile_id, &input.item_kind, input.item_id)?;
+        outbox::enqueue_favorite(conn, input.profile_id, &input.item_kind, input.item_id)
+    })
+    .await?;
+    engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1213,18 +1211,12 @@ struct DeleteFavoriteQuery {
 }
 
 async fn delete_favorite(State(state): State<CatalogState>, Query(query): Query<DeleteFavoriteQuery>) -> Result<StatusCode, ApiError> {
-    // El item_key hace falta ANTES de borrar la fila local (server::api::delete_favorite
-    // ya no podría resolverlo después) — ver sync::engine::push_favorite_remove_by_key.
-    let item_key = with_db(state.db_path.clone(), {
-        let item_kind = query.item_kind.clone();
-        move |conn| reads::item_key_for(conn, &item_kind, query.item_id)
+    with_db(state.db_path.clone(), move |conn| {
+        reads::remove_favorite(conn, query.profile_id, &query.item_kind, query.item_id)?;
+        outbox::enqueue_favorite(conn, query.profile_id, &query.item_kind, query.item_id)
     })
     .await?;
-    let item_kind = query.item_kind.clone();
-    with_db(state.db_path.clone(), move |conn| reads::remove_favorite(conn, query.profile_id, &query.item_kind, query.item_id)).await?;
-    if let Some(item_key) = item_key {
-        tokio::spawn(crate::sync::engine::push_favorite_remove_by_key(state.db_path, query.profile_id, item_kind, item_key));
-    }
+    engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1232,16 +1224,12 @@ async fn delete_favorite(State(state): State<CatalogState>, Query(query): Query<
 /// que ya usa `GET /api/playback/progress` — profile_id/item_kind/item_id es justo lo
 /// que hace falta para borrar la fila.
 async fn delete_playback_progress(State(state): State<CatalogState>, Query(query): Query<PlaybackProgressQuery>) -> Result<StatusCode, ApiError> {
-    let item_key = with_db(state.db_path.clone(), {
-        let item_kind = query.item_kind.clone();
-        move |conn| reads::item_key_for(conn, &item_kind, query.item_id)
+    with_db(state.db_path.clone(), move |conn| {
+        reads::remove_playback_progress(conn, query.profile_id, &query.item_kind, query.item_id)?;
+        outbox::enqueue_playback(conn, query.profile_id, &query.item_kind, query.item_id, false)
     })
     .await?;
-    let item_kind = query.item_kind.clone();
-    with_db(state.db_path.clone(), move |conn| reads::remove_playback_progress(conn, query.profile_id, &query.item_kind, query.item_id)).await?;
-    if let Some(item_key) = item_key {
-        tokio::spawn(crate::sync::engine::push_playback_remove_by_key(state.db_path, query.profile_id, item_kind, item_key));
-    }
+    engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1255,25 +1243,12 @@ struct EpisodeWatchedInput {
 /// Marcar (o desmarcar) un episodio como visto a mano, sin reproducirlo (F "premium",
 /// como Plex/Emby) — hasta ahora el checkmark de la ficha de serie era de solo lectura.
 async fn post_episode_watched(State(state): State<CatalogState>, Json(input): Json<EpisodeWatchedInput>) -> Result<StatusCode, ApiError> {
-    let item_key = with_db(state.db_path.clone(), move |conn| reads::item_key_for(conn, "episode", input.episode_id)).await?;
-    with_db(state.db_path.clone(), move |conn| reads::set_episode_watched(conn, input.profile_id, input.episode_id, input.watched)).await?;
-    if input.watched {
-        // Sincroniza el mismo par posición/duración que se acaba de guardar en local
-        // (ver reads::set_episode_watched), en vez de inventar otro en el handler.
-        let saved = with_db(state.db_path.clone(), move |conn| reads::get_playback_progress(conn, input.profile_id, "episode", input.episode_id)).await?;
-        if let Some(p) = saved {
-            tokio::spawn(crate::sync::engine::push_playback_progress(
-                state.db_path,
-                input.profile_id,
-                "episode".to_string(),
-                input.episode_id,
-                p.position_s,
-                p.duration_s,
-            ));
-        }
-    } else if let Some(item_key) = item_key {
-        tokio::spawn(crate::sync::engine::push_playback_remove_by_key(state.db_path, input.profile_id, "episode".to_string(), item_key));
-    }
+    with_db(state.db_path.clone(), move |conn| {
+        reads::set_episode_watched(conn, input.profile_id, input.episode_id, input.watched)?;
+        outbox::enqueue_playback(conn, input.profile_id, "episode", input.episode_id, false)
+    })
+    .await?;
+    engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1287,23 +1262,12 @@ struct MovieWatchedInput {
 /// Igual que `post_episode_watched`, para una película (F "premium" — paridad con el
 /// marcado de episodios).
 async fn post_movie_watched(State(state): State<CatalogState>, Json(input): Json<MovieWatchedInput>) -> Result<StatusCode, ApiError> {
-    let item_key = with_db(state.db_path.clone(), move |conn| reads::item_key_for(conn, "movie", input.movie_id)).await?;
-    with_db(state.db_path.clone(), move |conn| reads::set_movie_watched(conn, input.profile_id, input.movie_id, input.watched)).await?;
-    if input.watched {
-        let saved = with_db(state.db_path.clone(), move |conn| reads::get_playback_progress(conn, input.profile_id, "movie", input.movie_id)).await?;
-        if let Some(p) = saved {
-            tokio::spawn(crate::sync::engine::push_playback_progress(
-                state.db_path,
-                input.profile_id,
-                "movie".to_string(),
-                input.movie_id,
-                p.position_s,
-                p.duration_s,
-            ));
-        }
-    } else if let Some(item_key) = item_key {
-        tokio::spawn(crate::sync::engine::push_playback_remove_by_key(state.db_path, input.profile_id, "movie".to_string(), item_key));
-    }
+    with_db(state.db_path.clone(), move |conn| {
+        reads::set_movie_watched(conn, input.profile_id, input.movie_id, input.watched)?;
+        outbox::enqueue_playback(conn, input.profile_id, "movie", input.movie_id, false)
+    })
+    .await?;
+    engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -1315,25 +1279,18 @@ struct SeasonWatchedInput {
     watched: bool,
 }
 
-/// Igual que `post_episode_watched` pero para toda una temporada de golpe. No existe un
-/// endpoint de sincronización en lote: cada episodio se encola por separado con el
-/// mismo mecanismo que el marcado individual.
+/// Igual que `post_episode_watched` pero para toda una temporada de golpe. Cada episodio
+/// se encola por separado y la cola los envía juntos en una sola escritura.
 async fn post_season_watched(State(state): State<CatalogState>, Json(input): Json<SeasonWatchedInput>) -> Result<StatusCode, ApiError> {
     let SeasonWatchedInput { profile_id, series_id, season, watched } = input;
-    let episode_ids =
-        with_db(state.db_path.clone(), move |conn| reads::set_season_watched(conn, profile_id, series_id, season, watched)).await?;
-    for episode_id in episode_ids {
-        let db_path = state.db_path.clone();
-        tokio::spawn(async move {
-            if watched {
-                if let Ok(Some(p)) = with_db(db_path.clone(), move |conn| reads::get_playback_progress(conn, profile_id, "episode", episode_id)).await {
-                    crate::sync::engine::push_playback_progress(db_path, profile_id, "episode".to_string(), episode_id, p.position_s, p.duration_s).await;
-                }
-            } else if let Ok(Some(item_key)) = with_db(db_path.clone(), move |conn| reads::item_key_for(conn, "episode", episode_id)).await {
-                crate::sync::engine::push_playback_remove_by_key(db_path, profile_id, "episode".to_string(), item_key).await;
-            }
-        });
-    }
+    with_db(state.db_path.clone(), move |conn| {
+        for episode_id in reads::set_season_watched(conn, profile_id, series_id, season, watched)? {
+            outbox::enqueue_playback(conn, profile_id, "episode", episode_id, false)?;
+        }
+        Ok(())
+    })
+    .await?;
+    engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
 

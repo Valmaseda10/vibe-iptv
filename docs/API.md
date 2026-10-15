@@ -8,6 +8,11 @@ API — no hay una API "interna" distinta de la que vería un cliente remoto.
 No es una API pública ni versionada: cambia con la app. Este documento describe el
 estado en el momento de F10; si algo no coincide con el código, gana el código.
 
+Perfiles, favoritos y progreso también viven en la nube desde F11: un cliente de otra
+plataforma los lee y escribe directamente en Firebase con el modelo de
+`docs/CLOUD-SYNC.md`, no a través de esta API. Las rutas `/api/account/*` son solo para
+la pantalla de cuenta del escritorio.
+
 ## Convenciones
 
 - Todas las rutas son relativas a `http://<host>:<puerto>` — el puerto es efímero

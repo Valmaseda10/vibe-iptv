@@ -19,6 +19,7 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("008_info_tecnica_vod.sql", include_str!("../../migrations/008_info_tecnica_vod.sql")),
     ("009_titulos_similares.sql", include_str!("../../migrations/009_titulos_similares.sql")),
     ("010_pistas_de_audio.sql", include_str!("../../migrations/010_pistas_de_audio.sql")),
+    ("011_cola_sync_nube.sql", include_str!("../../migrations/011_cola_sync_nube.sql")),
 ];
 
 /// Ruta del fichero SQLite en el directorio de datos de la aplicación, sin abrirlo.
@@ -42,8 +43,7 @@ pub fn open_connection(app_handle: &tauri::AppHandle) -> Result<Connection> {
 /// probarlo sin un `AppHandle` real.
 pub fn open_connection_at(path: &Path) -> Result<Connection> {
     let mut conn = Connection::open(path)?;
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "foreign_keys", true)?;
+    configure(&conn)?;
     run_migrations(&mut conn)?;
     Ok(conn)
 }
@@ -51,9 +51,19 @@ pub fn open_connection_at(path: &Path) -> Result<Connection> {
 /// Para lecturas frecuentes (la API HTTP): sin comprobar migraciones en cada apertura.
 pub fn open_readonly_at(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
+    configure(&conn)?;
+    Ok(conn)
+}
+
+/// Con WAL hay un único escritor a la vez. Sin espera, el segundo falla al instante con
+/// `SQLITE_BUSY`; desde F11 el motor de sincronización escribe en segundo plano mientras
+/// la API guarda progreso, así que la colisión deja de ser rara. Los bloqueos reales
+/// duran milisegundos: cinco segundos es un margen holgado, no una espera esperada.
+fn configure(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "foreign_keys", true)?;
-    Ok(conn)
+    conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    Ok(())
 }
 
 fn run_migrations(conn: &mut Connection) -> Result<()> {

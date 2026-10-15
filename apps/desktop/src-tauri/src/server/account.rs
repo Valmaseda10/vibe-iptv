@@ -1,9 +1,15 @@
-//! Cuenta de sincronización (F "perfiles Netflix"): login/registro contra Supabase.
-//! Ver `sync::supabase` para el porqué de un cliente propio y qué NO pasa nunca por
-//! aquí — catálogo, credenciales de proveedor y streaming siguen siendo cosa exclusiva
-//! de este PC (reglas R2/R5 de `CLAUDE.md` intactas).
+//! Cuenta en la nube: registro, inicio y cierre de sesión, recuperación y cambio de
+//! contraseña (F11: Firebase, antes Supabase). Ver `sync` para qué viaja y qué no —
+//! catálogo, credenciales de proveedor y streaming siguen siendo exclusivos de este PC
+//! (reglas R2/R5 de `CLAUDE.md` intactas).
+//!
+//! Local-first: el estado de la cuenta se responde sin tocar la red, y un fallo
+//! pasajero de la nube responde 503 para que la interfaz pueda ofrecer entrar sin
+//! conexión en vez de dejar al usuario fuera de su propio catálogo.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -12,12 +18,16 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 
-use crate::sync::supabase::{SupabaseClient, SupabaseError};
+use crate::sync::backend::{CloudBackend, CloudError, Session};
 use crate::sync::{engine, session};
+
+/// Lo que se espera a que se envíe lo pendiente antes de cerrar sesión.
+const LOGOUT_FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone)]
 pub struct AccountState {
     pub db_path: PathBuf,
+    pub cloud: Arc<dyn CloudBackend>,
 }
 
 pub fn account_router(state: AccountState) -> Router {
@@ -32,17 +42,50 @@ pub fn account_router(state: AccountState) -> Router {
         .with_state(state)
 }
 
+/// Cómo va la sincronización con la nube, para Ajustes.
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct CloudSyncStatus {
+    /// Cambios hechos en este PC que todavía no han llegado a la nube.
+    #[ts(type = "number")]
+    pub pending_changes: i64,
+    /// Epoch de la última vuelta completa sin errores, si la hubo desde que arrancó la app.
+    #[ts(type = "number | null")]
+    pub last_synced_at: Option<i64>,
+    /// Último error, en español, si la última vuelta falló.
+    pub last_error: Option<String>,
+}
+
 #[derive(serde::Serialize, ts_rs::TS)]
 #[ts(export, export_to = "api-types.ts")]
 pub struct AccountStatusResponse {
     pub logged_in: bool,
     pub email: Option<String>,
+    pub sync: Option<CloudSyncStatus>,
 }
 
-async fn get_status() -> Json<AccountStatusResponse> {
-    match session::get_valid().await {
-        Some(session) => Json(AccountStatusResponse { logged_in: true, email: Some(session.email) }),
-        None => Json(AccountStatusResponse { logged_in: false, email: None }),
+/// Sin red de por medio: hay sesión si hay una guardada. Si la nube la revoca, el motor
+/// de sincronización la borra al intentar renovarla y la siguiente consulta ya lo ve.
+async fn get_status(State(state): State<AccountState>) -> Json<AccountStatusResponse> {
+    let Some(session) = session::load() else {
+        return Json(AccountStatusResponse { logged_in: false, email: None, sync: None });
+    };
+    let status = engine::status();
+    Json(AccountStatusResponse {
+        logged_in: true,
+        email: Some(session.email),
+        sync: Some(CloudSyncStatus {
+            pending_changes: engine::pending_changes(&state.db_path).await,
+            last_synced_at: status.last_synced_at,
+            last_error: status.last_error,
+        }),
+    })
+}
+
+impl IntoResponse for CloudError {
+    fn into_response(self) -> Response {
+        let status = if self.is_transient() { StatusCode::SERVICE_UNAVAILABLE } else { StatusCode::UNAUTHORIZED };
+        (status, self.to_string()).into_response()
     }
 }
 
@@ -52,40 +95,39 @@ struct CredentialsInput {
     password: String,
 }
 
-impl IntoResponse for SupabaseError {
-    fn into_response(self) -> Response {
-        let status = match &self {
-            SupabaseError::Network | SupabaseError::InvalidResponse => StatusCode::BAD_GATEWAY,
-            SupabaseError::Api(_) => StatusCode::UNAUTHORIZED,
-        };
-        (status, self.to_string()).into_response()
-    }
-}
-
-async fn post_signup(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, SupabaseError> {
-    let session = SupabaseClient::new().sign_up(&input.email, &input.password).await?;
+fn signed_in(session: Session) -> Json<AccountStatusResponse> {
     let email = session.email.clone();
     session::save(&session);
-    tokio::spawn(engine::pull_and_merge(state.db_path));
-    Ok(Json(AccountStatusResponse { logged_in: true, email: Some(email) }))
+    // La fusión con lo que haya en la nube la hace el motor en segundo plano: el login
+    // responde en cuanto la nube acepta las credenciales.
+    engine::wake();
+    Json(AccountStatusResponse { logged_in: true, email: Some(email), sync: None })
 }
 
-async fn post_login(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, SupabaseError> {
-    let session = SupabaseClient::new().sign_in(&input.email, &input.password).await?;
-    let email = session.email.clone();
-    session::save(&session);
-    // En segundo plano: el login responde en cuanto Supabase confirma las credenciales,
-    // no hace falta esperar a que baje y fusione perfiles/favoritos/progreso.
-    tokio::spawn(engine::pull_and_merge(state.db_path));
-    Ok(Json(AccountStatusResponse { logged_in: true, email: Some(email) }))
+async fn post_signup(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, CloudError> {
+    let session = state.cloud.sign_up(input.email.trim(), &input.password).await?;
+    Ok(signed_in(session))
 }
 
-/// Cierra sesión localmente siempre, aunque el aviso a Supabase falle (sin red, p.
-/// ej.) — quedarse "atrapado" logueado porque no había conexión en ese instante sería
-/// peor que el token quedar vivo en el servidor hasta que caduque solo.
-async fn post_logout() -> StatusCode {
-    if let Some(session) = session::load() {
-        SupabaseClient::new().sign_out(&session.access_token).await;
+async fn post_login(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, CloudError> {
+    let session = state.cloud.sign_in(input.email.trim(), &input.password).await?;
+    Ok(signed_in(session))
+}
+
+/// Cierra sesión localmente siempre. Antes intenta un último envío de lo pendiente,
+/// con un tope de tiempo: sin red no debe quedarse colgado, y lo no enviado sigue en
+/// este PC y se subirá en la fusión del próximo inicio de sesión.
+async fn post_logout(State(state): State<AccountState>) -> StatusCode {
+    let cloud = state.cloud.clone();
+    let db_path = state.db_path.clone();
+    let _ = tokio::time::timeout(LOGOUT_FLUSH_TIMEOUT, async move {
+        if let Some(session) = session::get_valid(cloud.as_ref()).await {
+            let _ = engine::flush_outbox(&db_path, cloud.as_ref(), &session).await;
+        }
+    })
+    .await;
+    if let Err(err) = engine::forget_account(&state.db_path).await {
+        tracing::warn!(error = %err, "no se pudo limpiar el estado de sincronización al cerrar sesión");
     }
     session::clear();
     StatusCode::NO_CONTENT
@@ -97,8 +139,8 @@ pub struct ForgotPasswordInput {
     pub email: String,
 }
 
-async fn post_forgot_password(Json(input): Json<ForgotPasswordInput>) -> Result<StatusCode, SupabaseError> {
-    SupabaseClient::new().recover(&input.email).await?;
+async fn post_forgot_password(State(state): State<AccountState>, Json(input): Json<ForgotPasswordInput>) -> Result<StatusCode, CloudError> {
+    state.cloud.send_password_reset(input.email.trim()).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -106,37 +148,17 @@ async fn post_forgot_password(Json(input): Json<ForgotPasswordInput>) -> Result<
 #[ts(export, export_to = "api-types.ts")]
 pub struct ResetPasswordInput {
     pub email: String,
-    /// El enlace completo del correo, o solo el valor de su parámetro `token=` — la app
-    /// no tiene página web propia que lo reciba, así que el usuario lo pega a mano.
+    /// El enlace completo del correo, o solo su código (`oobCode`).
     pub token_or_link: String,
     pub new_password: String,
 }
 
-/// Extrae el token de un enlace de recuperación pegado entero, o lo deja tal cual si ya
-/// es solo el token — para no obligar al usuario a saber cuál de los dos ha copiado.
-fn extract_recovery_token(token_or_link: &str) -> &str {
-    let trimmed = token_or_link.trim();
-    match trimmed.find("token=") {
-        Some(pos) => {
-            let after = &trimmed[pos + "token=".len()..];
-            after.split('&').next().unwrap_or(after)
-        }
-        None => trimmed,
-    }
-}
-
-/// Completa la recuperación: valida el enlace/código contra Supabase, fija la
-/// contraseña nueva con la sesión que eso devuelve, y deja al usuario logueado — un
-/// cambio de contraseña con éxito no debería obligar a iniciar sesión otra vez aparte.
-async fn post_reset_password(State(state): State<AccountState>, Json(input): Json<ResetPasswordInput>) -> Result<Json<AccountStatusResponse>, SupabaseError> {
-    let token = extract_recovery_token(&input.token_or_link);
-    let client = SupabaseClient::new();
-    let session = client.verify_recovery(&input.email, token).await?;
-    client.update_password(&session.access_token, &input.new_password).await?;
-    let email = session.email.clone();
-    session::save(&session);
-    tokio::spawn(engine::pull_and_merge(state.db_path));
-    Ok(Json(AccountStatusResponse { logged_in: true, email: Some(email) }))
+/// Completa la recuperación y deja al usuario dentro: un cambio de contraseña con éxito
+/// no debería obligar a iniciar sesión otra vez aparte.
+async fn post_reset_password(State(state): State<AccountState>, Json(input): Json<ResetPasswordInput>) -> Result<Json<AccountStatusResponse>, CloudError> {
+    state.cloud.confirm_password_reset(&input.token_or_link, &input.new_password).await?;
+    let session = state.cloud.sign_in(input.email.trim(), &input.new_password).await?;
+    Ok(signed_in(session))
 }
 
 #[derive(Deserialize)]
@@ -145,32 +167,55 @@ struct ChangePasswordInput {
     new_password: String,
 }
 
-/// Cambiar contraseña con la sesión ya abierta (Ajustes) — a diferencia de
-/// `post_reset_password`, aquí no hace falta ningún enlace de correo: pero sí se vuelve
-/// a pedir la contraseña actual antes de cambiarla (`sign_in` de verificación), aunque
-/// la sesión ya esté abierta. Sin eso, quien encontrara el PC con la sesión abierta
-/// podría cambiar la contraseña sin saber la actual — sesión abierta no debería ser lo
-/// mismo que "puedo cambiar la contraseña sin más".
-async fn post_change_password(Json(input): Json<ChangePasswordInput>) -> Result<StatusCode, SupabaseError> {
-    let session = session::get_valid().await.ok_or_else(|| SupabaseError::Api("no hay sesión iniciada".to_string()))?;
-    let client = SupabaseClient::new();
-    client.sign_in(&session.email, &input.current_password).await?;
-    client.update_password(&session.access_token, &input.new_password).await?;
+/// Cambiar contraseña con la sesión ya abierta (Ajustes). Se vuelve a pedir la actual
+/// aunque haya sesión: quien encuentre el PC con la sesión abierta no debería poder
+/// cambiarla sin saberla. Ese mismo inicio de sesión da un token recién emitido, que es
+/// lo que Firebase exige para cambiar la contraseña.
+async fn post_change_password(State(state): State<AccountState>, Json(input): Json<ChangePasswordInput>) -> Result<StatusCode, CloudError> {
+    let current = session::load().ok_or_else(|| CloudError::Rejected("No hay ninguna sesión iniciada.".to_string()))?;
+    let verified = state.cloud.sign_in(&current.email, &input.current_password).await?;
+    let renewed = state.cloud.change_password(&verified, &input.new_password).await?;
+    session::save(&renewed);
     Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::memory::MemoryBackend;
+    use crate::util::keychain::TEST_LOCK as TEST_KEYCHAIN_LOCK;
     use axum::body::Body;
     use axum::http::Request;
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    fn router(cloud: Arc<MemoryBackend>) -> Router {
+        account_router(AccountState { db_path: temp_db(), cloud })
+    }
+
+    fn temp_db() -> PathBuf {
+        use rand::RngExt;
+        let suffix: u64 = rand::rng().random();
+        let path = std::env::temp_dir().join(format!("vibe-iptv-account-test-{}-{suffix:x}.sqlite3", std::process::id()));
+        crate::db::schema::open_connection_at(&path).unwrap();
+        path
+    }
+
+    async fn post(router: Router, uri: &str, body: &str) -> (StatusCode, String) {
+        let response = router
+            .oneshot(Request::builder().method("POST").uri(uri).header("content-type", "application/json").body(Body::from(body.to_string())).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
     #[tokio::test]
     async fn status_reports_logged_out_when_no_session_saved() {
-        session::clear(); // por si un test anterior de sync::session dejó algo.
-        let response = account_router(AccountState { db_path: std::env::temp_dir() })
+        let _lock = TEST_KEYCHAIN_LOCK.lock().await;
+        session::clear();
+        let response = router(Arc::new(MemoryBackend::new()))
             .oneshot(Request::builder().uri("/api/account/status").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -180,57 +225,58 @@ mod tests {
         assert_eq!(parsed["logged_in"], false);
     }
 
+    /// El fallo real que motivó F11: con la nube caída, la app no puede saber si la
+    /// sesión sigue valiendo, y no por eso debe echar al usuario.
     #[tokio::test]
-    async fn logout_clears_a_locally_saved_session_even_without_network() {
-        use crate::sync::supabase::Session;
-        session::save(&Session {
-            access_token: "at".into(),
-            refresh_token: "rt".into(),
-            user_id: "u1".into(),
-            email: "demo@example.com".into(),
-            expires_at: crate::db::now_epoch() + 3600,
-        });
+    async fn status_keeps_the_user_signed_in_while_the_cloud_is_down() {
+        let _lock = TEST_KEYCHAIN_LOCK.lock().await;
+        let cloud = Arc::new(MemoryBackend::new());
+        session::save(&Session { expires_at: 0, ..cloud.session() });
+        cloud.fail_everything(Some(CloudError::Unavailable));
 
-        let response = account_router(AccountState { db_path: std::env::temp_dir() })
-            .oneshot(Request::builder().method("POST").uri("/api/account/logout").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        let response = router(cloud).oneshot(Request::builder().uri("/api/account/status").body(Body::empty()).unwrap()).await.unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let parsed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(parsed["logged_in"], true);
+        assert_eq!(parsed["sync"]["pending_changes"], 0);
+        session::clear();
+    }
+
+    #[tokio::test]
+    async fn login_failing_for_an_outage_is_a_503_not_a_wrong_password() {
+        let _lock = TEST_KEYCHAIN_LOCK.lock().await;
+        let cloud = Arc::new(MemoryBackend::new());
+        cloud.fail_everything(Some(CloudError::Network));
+        let (status, _) = post(router(cloud), "/api/account/login", r#"{"email":"a@b.c","password":"x"}"#).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn login_saves_the_session() {
+        let _lock = TEST_KEYCHAIN_LOCK.lock().await;
+        session::clear();
+        let (status, body) = post(router(Arc::new(MemoryBackend::new())), "/api/account/login", r#"{"email":"qa@example.com","password":"x"}"#).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(session::load().unwrap().user_id, "uid-test");
+        session::clear();
+    }
+
+    #[tokio::test]
+    async fn logout_clears_the_session_even_without_network() {
+        let _lock = TEST_KEYCHAIN_LOCK.lock().await;
+        let cloud = Arc::new(MemoryBackend::new());
+        session::save(&cloud.session());
+        cloud.fail_everything(Some(CloudError::Network));
+        let (status, _) = post(router(cloud), "/api/account/logout", "{}").await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
         assert!(session::load().is_none());
-    }
-
-    #[test]
-    fn extract_recovery_token_accepts_a_bare_token() {
-        assert_eq!(extract_recovery_token("abc123"), "abc123");
-    }
-
-    #[test]
-    fn extract_recovery_token_pulls_it_out_of_a_pasted_link() {
-        let link = "https://beqentvogqamkopsnfos.supabase.co/auth/v1/verify?token=abc123&type=recovery&redirect_to=http://localhost:3000";
-        assert_eq!(extract_recovery_token(link), "abc123");
-    }
-
-    #[test]
-    fn extract_recovery_token_trims_surrounding_whitespace() {
-        assert_eq!(extract_recovery_token("  abc123  "), "abc123");
     }
 
     #[tokio::test]
     async fn change_password_rejects_when_there_is_no_session_at_all() {
+        let _lock = TEST_KEYCHAIN_LOCK.lock().await;
         session::clear();
-        let response = account_router(AccountState { db_path: std::env::temp_dir() })
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/account/change-password")
-                    .header("content-type", "application/json")
-                    .body(Body::from(r#"{"current_password":"x","new_password":"y"}"#))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        // No debe entrar siquiera a intentar verificar la contraseña actual contra
-        // Supabase (no hay red en un test) — se rechaza antes, por falta de sesión.
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        let (status, _) = post(router(Arc::new(MemoryBackend::new())), "/api/account/change-password", r#"{"current_password":"x","new_password":"y"}"#).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }

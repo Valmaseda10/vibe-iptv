@@ -26,6 +26,13 @@ pub fn delete_secret(credential_ref: &str) -> Result<()> {
     Ok(())
 }
 
+/// Los tests que tocan el almacén real van de uno en uno. El Administrador de
+/// credenciales de Windows falla de forma intermitente (`NoEntry` justo después de
+/// guardar) cuando el mismo proceso escribe y lee varias entradas a la vez, y cargo
+/// ejecuta los tests en paralelo. Los tests síncronos lo cogen con `blocking_lock`.
+#[cfg(test)]
+pub static TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -39,6 +46,7 @@ mod tests {
 
     #[test]
     fn stores_and_reads_back_a_secret() {
+        let _lock = TEST_LOCK.blocking_lock();
         let credential_ref = test_ref("roundtrip");
         store_secret(&credential_ref, "hunter2").unwrap();
         assert_eq!(read_secret(&credential_ref).unwrap(), "hunter2");
@@ -47,6 +55,7 @@ mod tests {
 
     #[test]
     fn overwriting_replaces_the_previous_value() {
+        let _lock = TEST_LOCK.blocking_lock();
         let credential_ref = test_ref("overwrite");
         store_secret(&credential_ref, "primero").unwrap();
         store_secret(&credential_ref, "segundo").unwrap();
@@ -56,6 +65,7 @@ mod tests {
 
     #[test]
     fn reading_a_missing_secret_fails() {
+        let _lock = TEST_LOCK.blocking_lock();
         let credential_ref = test_ref("missing");
         assert!(read_secret(&credential_ref).is_err());
     }

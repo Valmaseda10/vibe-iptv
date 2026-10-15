@@ -19,6 +19,15 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F8 Búsqueda, favoritos, continuar viendo (construido de manera autónoma — ver DECISIONS.md)
 - [x] F9 mpv, catch-up y pulido (construido de manera autónoma — mpv y catch-up sin verificar contra software/proveedor real, ver DECISIONS.md)
 - [x] F10 Empaquetado y apertura a la LAN (construido de manera autónoma — modo LAN sin verificar contra un dispositivo real, instalador sin firmar, ver DECISIONS.md)
+- [x] F11 Nube sin pausas y app local-first (Firebase en lugar de Supabase — verificada contra el proyecto real; la interfaz nueva sin ver en pantalla, ver DECISIONS.md)
+- [ ] F12 Cerrar la deuda de v1
+- [ ] F13 Directo de nivel TiviMate
+- [ ] F14 Detalles premium en VOD y perfiles
+- [ ] F15 Cliente iOS
+- [ ] F16 Cliente Fire TV (pospuesto: no hay dispositivo a mano para probarlo)
+
+Las fases F11 en adelante se añadieron el 2026-10-15, con las diez primeras ya cerradas.
+Ver la entrada de esa fecha en `docs/DECISIONS.md` para el porqué del orden.
 
 ---
 
@@ -269,6 +278,112 @@ catálogo completo cargado.
 - Documenta la API en docs/API.md para el futuro cliente de Fire TV
 
 Criterio de aceptación: instalo el .msi en un PC limpio sin nada preinstalado y funciona.
+```
+
+---
+
+## F11 — Nube sin pausas y app local-first
+
+```
+La nube (cuenta, perfiles, favoritos y progreso entre dispositivos) pasa de Supabase a
+Firebase, y deja de poder bloquear la app. Lee docs/CLOUD-SYNC.md entero.
+
+- La cuenta nunca bloquea el uso local: un servidor caído, pausado o sin red no borra
+  la sesión ni deja al usuario fuera de su propio catálogo. Solo una sesión revocada de
+  verdad vuelve a pedir login. Si el login falla por no poder contactar con la nube,
+  se ofrece entrar sin conexión
+- Cola de salida persistente (sync_outbox) con reintentos y espera exponencial: ningún
+  cambio hecho sin conexión se pierde. El progreso se agrupa (como mucho una escritura
+  por título y minuto) en vez de una petición cada 10 s
+- Trait CloudBackend, con FirebaseBackend (Auth REST + Firestore REST) como única
+  implementación real y un backend en memoria para tests
+- Bajada incremental periódica por marca de tiempo del servidor, con borrados lógicos,
+  para que los cambios de otro dispositivo lleguen sin cerrar sesión
+- Fusión inicial al iniciar sesión que sube también el progreso local, no solo
+  favoritos y perfiles
+- Supabase se retira por completo
+- Configuración de Firebase como código en infra/firebase/
+
+Criterio de aceptación: con la red cortada la app abre y se usa con normalidad; al
+volver la red, lo hecho sin conexión aparece en Firestore. Un cambio hecho desde otro
+cliente aparece en el PC en menos de 5 minutos sin cerrar sesión.
+```
+
+---
+
+## F12 — Cerrar la deuda de v1
+
+```
+Lo que docs/DECISIONS.md deja pendiente o sin verificar, priorizado por lo que más se
+nota al usarla.
+
+- Subtítulos incrustados de texto (SRT, ASS, mov_text) como segunda salida del MISMO
+  proceso ffmpeg del remux, convertidos a WebVTT: una sola conexión al proveedor (R1)
+- Escalada automática de nivel 2 a mpv tras dos fallos seguidos
+- Refresco periódico de la EPG en segundo plano, respetando StreamGuard
+- Caché en disco de logos de canal servida por /img
+- Favorito de canal desde Directo; marcar y desmarcar categorías adultas a mano
+- hls.js para proveedores que sirvan .m3u8, con reescritura del manifiesto en el proxy
+- ffmpeg en build LGPL y comprobación de firma del instalador
+
+Criterio de aceptación: una película MKV con subtítulos SRT incrustados los muestra y
+permite elegirlos, sin abrir una segunda conexión al proveedor.
+```
+
+---
+
+## F13 — Directo de nivel TiviMate
+
+```
+- Pausar y rebobinar el directo con un búfer en disco de la sesión ya abierta (nada de
+  conexiones extra), con límite de tamaño y borrado al cambiar de canal
+- Canales recientes y salto por número de canal
+- Recordatorios de programa: aviso cuando empieza, con un clic para ir al canal
+- Búsqueda dentro de la guía
+- Guía virtualizada en los dos ejes, sin el límite de 60 canales
+
+Criterio de aceptación: pausar un canal 10 minutos y reanudar donde se dejó, sin que el
+proveedor vea más de una conexión.
+```
+
+---
+
+## F14 — Detalles premium en VOD y perfiles
+
+```
+- Perfil infantil: solo contenido con clasificación por edad apta, sin directo adulto
+- Control parental por perfil, no por proceso
+- Velocidad de reproducción e imagen en imagen
+- Saltar intro solo cuando el fichero traiga capítulos (ffprobe), nunca inventado
+
+Criterio de aceptación: un perfil infantil no puede llegar a ningún título no apto ni
+por búsqueda, ni por recomendaciones, ni por "Sorpréndeme".
+```
+
+---
+
+## F15 — Cliente iOS
+
+```
+Primer cliente fuera del PC, en clients/ios. Lee docs/API.md y docs/CLOUD-SYNC.md.
+
+- SwiftUI, reproducción con VLCKit (TS y MKV sin remux)
+- Misma cuenta Firebase: perfiles, favoritos y progreso con el SDK oficial y caché offline
+- Catálogo desde la API LAN del PC cuando está encendido, con emparejamiento por código
+- Decidir en el plan de la fase si el iPhone habla con el proveedor directamente cuando
+  el PC está apagado (implica credenciales del proveedor en el dispositivo: R5)
+
+Criterio de aceptación: empiezo una película en el PC y la continúo en el iPhone desde
+el mismo minuto.
+```
+
+---
+
+## F16 — Cliente Fire TV
+
+```
+Pospuesto hasta tener un Fire TV para probar. Kotlin, Compose for TV y Media3
+(ExoPlayer) contra la misma API LAN y la misma cuenta Firebase que el cliente iOS.
 ```
 
 ---

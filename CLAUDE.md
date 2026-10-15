@@ -40,6 +40,11 @@ la base de datos, el sincronizador y un servidor HTTP local (axum). En v1 escuch
 en `127.0.0.1`. En una fase posterior podrá escuchar en la LAN para que Fire TV se
 conecte cuando el PC esté encendido. Diseña pensando en eso, pero no lo implementes aún.
 
+**Única excepción: la nube de cuentas (Firebase, F11).** Perfiles, favoritos y progreso
+viajan entre dispositivos por Firebase. Nunca el catálogo, ni credenciales o URLs del
+proveedor, y la app tiene que seguir funcionando entera sin conexión con la nube: ningún
+fallo de Firebase puede bloquear el uso local. Ver `docs/CLOUD-SYNC.md`.
+
 ### R3. Los códecs mandan
 El directo IPTV llega en MPEG-TS crudo. El VOD en MKV o MP4. El WebView no reproduce
 TS ni MKV de forma nativa, y no soporta audio AC3/E-AC3. Por eso existe la cascada de
@@ -94,7 +99,10 @@ vibe-iptv/
 │  ├─ ARCHITECTURE.md         ← decisiones técnicas y flujo de datos
 │  ├─ DATA-MODEL.md           ← esquema SQLite y reglas de normalización
 │  ├─ XTREAM-API.md           ← referencia de los endpoints del proveedor
+│  ├─ API.md                  ← API HTTP local, para los clientes de otras plataformas
+│  ├─ CLOUD-SYNC.md           ← sincronización de cuentas con Firebase
 │  └─ DECISIONS.md            ← registro de decisiones (ADR ligero)
+├─ infra/firebase/            ← reglas y configuración de Firebase (firebase deploy)
 └─ apps/desktop/
    ├─ src/                    ← React
    │  ├─ routes/              ← una carpeta por pantalla
@@ -111,6 +119,7 @@ vibe-iptv/
       │  ├─ catalog/          ← sync.rs, normalize.rs, tmdb.rs, epg.rs
       │  ├─ db/                 ← schema.rs, queries.rs, conexión (las migraciones viven en ../migrations/)
       │  ├─ media/            ← ffmpeg.rs, mpv.rs, probe.rs
+      │  ├─ sync/             ← nube de cuentas: backend.rs, firebase.rs, outbox.rs, engine.rs
       │  └─ util/             ← redact.rs, StreamGuard
       └─ binaries/            ← sidecars ffmpeg y mpv
 ```

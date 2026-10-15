@@ -46,9 +46,42 @@ pub fn epoch_to_ymd_hms(epoch: i64) -> (i32, u32, u32, i64, i64, i64) {
     (y, m, d, secs_of_day / 3600, (secs_of_day / 60) % 60, secs_of_day % 60)
 }
 
+/// Instante epoch en RFC 3339 UTC (`2023-11-14T22:13:20Z`), el formato de marca de
+/// tiempo que esperan las APIs de la nube (`sync`).
+pub fn epoch_to_rfc3339(epoch: i64) -> String {
+    let (y, m, d, h, mi, s) = epoch_to_ymd_hms(epoch);
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+}
+
+/// RFC 3339 a epoch, truncando a segundos. Ignora fracciones y sufijo de zona: los seis
+/// primeros grupos de dígitos son siempre año, mes, día, hora, minuto y segundo, y todo
+/// lo que llega aquí viene en UTC (`Z` o `+00:00`).
+pub fn rfc3339_to_epoch(value: &str) -> Option<i64> {
+    let digits: Vec<i64> = value
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .take(6)
+        .filter_map(|s| s.parse().ok())
+        .collect();
+    let [y, mo, d, h, mi, s] = digits[..] else { return None };
+    let days = days_from_civil(y as i32, mo as u32, d as u32)?;
+    Some(days * 86_400 + h * 3600 + mi * 60 + s)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rfc3339_roundtrips_and_ignores_fraction_and_offset() {
+        assert_eq!(epoch_to_rfc3339(1_700_000_000), "2023-11-14T22:13:20Z");
+        assert_eq!(rfc3339_to_epoch("2023-11-14T22:13:20Z"), Some(1_700_000_000));
+        // Forma real de Firestore (milisegundos) y de Postgres (microsegundos + desfase).
+        assert_eq!(rfc3339_to_epoch("2023-11-14T22:13:20.180Z"), Some(1_700_000_000));
+        assert_eq!(rfc3339_to_epoch("2023-11-14T22:13:20.123456+00:00"), Some(1_700_000_000));
+        assert_eq!(rfc3339_to_epoch("no es una fecha"), None);
+        assert_eq!(rfc3339_to_epoch(""), None);
+    }
 
     #[test]
     fn days_from_civil_matches_known_epoch_dates() {

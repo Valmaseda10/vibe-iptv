@@ -1,8 +1,13 @@
-//! Sincronización opcional de perfiles/favoritos/progreso contra Supabase (excepción
-//! consciente a la regla R2 de `CLAUDE.md` — ver `docs/DECISIONS.md` para el porqué y
-//! los límites exactos). El catálogo, las credenciales de proveedor y el streaming en
-//! sí **nunca** pasan por aquí: siguen siendo cosa exclusiva de este PC.
+//! Sincronización de perfiles, favoritos y progreso entre dispositivos, contra Firebase
+//! (F11, sustituye a Supabase). Excepción consciente a la regla R2 de `CLAUDE.md`, con
+//! límites estrictos: el catálogo, las credenciales de proveedor y el streaming **nunca**
+//! pasan por aquí, y la app funciona igual sin conexión con la nube. Ver
+//! `docs/CLOUD-SYNC.md`.
 
+pub mod backend;
 pub mod engine;
+pub mod firebase;
+#[cfg(test)]
+pub mod memory;
+pub mod outbox;
 pub mod session;
-pub mod supabase;

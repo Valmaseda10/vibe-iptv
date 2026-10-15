@@ -1,23 +1,23 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost } from "../../lib/api-client";
+import { ApiError, apiGet, apiPost } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type { AccountStatusResponse } from "../../lib/api-types";
 
 type View = "auth" | "forgot" | "reset";
 
 /** Envuelve toda la app, por fuera incluso del selector de perfiles: hace falta cuenta
- * e inicio de sesión siempre, igual que Netflix o Prime Video — los perfiles viven
- * dentro de la cuenta, no antes de ella. No hay ningún botón para saltárselo: la única
- * excepción es un fallo de red genuino (ni siquiera se pudo preguntar el estado de la
- * cuenta a la propia app local), que deja pasar en silencio para no dejar la app
- * completamente inutilizable por algo que no tiene botón que lo arregle. El estado real
- * de sesión (`logged_in`) es la única fuente de verdad: cerrar sesión invalida esta
- * consulta y la puerta vuelve a aparecer sola, sin ninguna bandera "no preguntar más"
- * que recordar ni deshacer. */
+ * e inicio de sesión, igual que Netflix o Prime Video — los perfiles viven dentro de la
+ * cuenta, no antes de ella. No hay ningún botón para saltárselo, con una excepción
+ * (F11, local-first): si la nube no responde al intentar entrar, se ofrece entrar sin
+ * conexión, porque el catálogo y la reproducción son de este PC y no dependen de ella.
+ * Con una sesión ya guardada, la nube caída tampoco echa a nadie: el núcleo responde
+ * `logged_in` sin preguntarle. El estado real de sesión es la única fuente de verdad:
+ * cerrar sesión invalida esta consulta y la puerta vuelve a aparecer sola. */
 export function AccountGate({ children }: { children: ReactNode }) {
   const queryClient = useQueryClient();
   const { setProfileId } = useActiveProfile();
+  const [offline, setOffline] = useState(false);
 
   const statusQuery = useQuery({
     queryKey: ["account-status"],
@@ -35,7 +35,7 @@ export function AccountGate({ children }: { children: ReactNode }) {
     queryClient.invalidateQueries({ queryKey: ["profiles"] });
   }
 
-  if (statusQuery.data?.logged_in) {
+  if (statusQuery.data?.logged_in || offline) {
     return <>{children}</>;
   }
 
@@ -49,29 +49,27 @@ export function AccountGate({ children }: { children: ReactNode }) {
     return <div className="flex h-full min-h-screen items-center justify-center bg-neutral-950 text-neutral-500">Cargando…</div>;
   }
 
-  return <AccountForm onLoggedIn={handleLoggedIn} />;
+  return <AccountForm onLoggedIn={handleLoggedIn} onEnterOffline={() => setOffline(true)} />;
 }
 
-function AccountForm({ onLoggedIn }: { onLoggedIn: () => void }) {
+function AccountForm({ onLoggedIn, onEnterOffline }: { onLoggedIn: () => void; onEnterOffline: () => void }) {
   const [view, setView] = useState<View>("auth");
   const [mode, setMode] = useState<"login" | "signup">("signup");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
+  const [cloudDown, setCloudDown] = useState(false);
 
   const authMutation = useMutation({
     mutationFn: () => apiPost<AccountStatusResponse>(mode === "login" ? "/api/account/login" : "/api/account/signup", { email, password }),
-    onSuccess: (result) => {
+    onSuccess: () => {
       setError(null);
-      if (result.logged_in) {
-        onLoggedIn();
-      } else {
-        setInfo("Cuenta creada. Revisa tu correo para confirmarla y luego inicia sesión.");
-        setPassword("");
-      }
+      onLoggedIn();
     },
-    onError: (err) => setError(String(err)),
+    onError: (err) => {
+      setError(String(err));
+      setCloudDown(err instanceof ApiError && err.status === 503);
+    },
   });
 
   if (view === "forgot") {
@@ -140,7 +138,17 @@ function AccountForm({ onLoggedIn }: { onLoggedIn: () => void }) {
       </button>
 
       {error && <p role="alert" className="mt-3 text-sm text-red-400">{error}</p>}
-      {info && <p className="mt-3 text-sm text-neutral-300">{info}</p>}
+      {cloudDown && (
+        <div className="mt-4 border-t border-neutral-800 pt-4">
+          <p className="mb-3 text-sm text-neutral-400">
+            Puedes usar la app con lo que ya hay en este PC. Tus cambios se guardan aquí y se sincronizarán cuando inicies
+            sesión desde Ajustes.
+          </p>
+          <button type="button" className="w-full rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600" onClick={onEnterOffline}>
+            Entrar sin conexión
+          </button>
+        </div>
+      )}
     </AuthShell>
   );
 }
@@ -175,7 +183,10 @@ function ForgotPasswordForm({ email: initialEmail, onSent, onBack }: { email: st
   return (
     <>
       <h2 className="mb-3 text-lg font-medium">Recuperar contraseña</h2>
-      <p className="mb-4 text-sm text-neutral-400">Te mandamos un correo con un enlace. Cuando lo tengas, vuelve aquí para completar el cambio.</p>
+      <p className="mb-4 text-sm text-neutral-400">
+        Te mandamos un correo con un enlace. Ábrelo y elige la contraseña nueva en el navegador, o pégalo aquí en el
+        siguiente paso.
+      </p>
       <label className="mb-4 block">
         <span className="mb-1 block text-sm text-neutral-400">Correo</span>
         <input

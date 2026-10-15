@@ -1105,6 +1105,126 @@ podido probarse igual, y por qué queda documentado aquí en vez de asumirlo ver
 
 ---
 
+## 2026-10-15 — Nueva hoja de ruta (F11–F16)
+
+Con F0–F10 y la ronda "premium" cerradas, se revisó todo el repositorio y se añadieron
+seis fases a `PROMPTS.md`. Decidido con el usuario:
+
+- **F11 primero, por urgencia.** El proyecto gratuito de Supabase se pausaba tras unos 7
+  días sin uso. Peor que la pausa: con la cuenta obligatoria (`26bc5ab`), el refresco del
+  token fallaba con un error HTTP (no de red), `sync::session` borraba la sesión y
+  `AccountGate` pedía un login que también fallaba. **La app quedaba inutilizable aunque
+  catálogo, base de datos y streaming estuvieran en el PC.** Además, cada cambio se
+  enviaba una sola vez, sin reintento: lo hecho durante un corte nunca llegaba a la nube.
+- **Firebase en lugar de Supabase**, frente a Supabase Pro (25 $/mes), Neon (Auth en beta,
+  sin cambio de contraseña gestionado, SMTP propio para recuperar) y Cloudflare Workers +
+  D1 (autenticación propia). Comparativa completa en `docs/CLOUD-SYNC.md`.
+- **iOS (F15) antes que Fire TV (F16)**: el usuario no tiene un Fire TV a mano.
+- **Repositorio privado en GitHub** como copia de seguridad: hasta ahora el código solo
+  existía en este PC (sin remoto).
+
+**Entorno.** La máquina ya no tenía el toolchain de Rust ni las Build Tools de Visual
+Studio (los dos estaban en F0). Reinstalados con autorización del usuario: `rustup`
+(estable, `x86_64-pc-windows-msvc`) y VS 2022 Build Tools con la carga de trabajo C++.
+
+**Línea base antes de tocar nada:** 406 tests pasaban y 2 fallaban de forma
+intermitente (`sync::session`), porque varios tests usaban a la vez la misma entrada real
+del keychain. Al ejecutarlos, además, borraban la sesión real de la app de quien
+estuviera desarrollando.
+
+---
+
+## 2026-10-15 — F11 Nube sin pausas y app local-first
+
+**Qué se ha construido.**
+- **Proyecto Firebase `vibe-iptv-sync`**, creado y configurado entero desde la CLI (ya
+  tenía sesión del usuario): app web, Firestore en `europe-southwest1`, login por correo y
+  reglas de seguridad. Todo versionado en `infra/firebase/` y desplegable con
+  `firebase deploy --only firestore,auth`.
+- **`sync::backend::CloudBackend`**, un trait como `sources::Source`: el motor no sabe
+  nada de Firebase. `sync::firebase::FirebaseBackend` (Auth REST + Firestore REST, sin SDK)
+  es la única implementación real; `sync::memory::MemoryBackend` (solo tests) simula
+  cortes y cambios desde otro dispositivo.
+- **Cola de salida persistente** (`sync_outbox`, migración 011, `db::cloud`,
+  `sync::outbox`). Cada cambio se encola en la misma conexión que lo guarda, con
+  sustitución por documento, revisión contra carreras, espera exponencial y progreso
+  agrupado (como mucho una escritura por título y minuto, antes una cada 10 s).
+- **Motor en segundo plano** (`sync::engine`): primera fusión por cuenta (sube también el
+  progreso local, que con Supabase nunca se subía), envío de la cola y **bajada
+  incremental cada 3 minutos** con borrados lógicos. Antes los cambios de otro dispositivo
+  solo llegaban al volver a iniciar sesión.
+- **Local-first de verdad.** La sesión solo se borra si Firebase rechaza el token de
+  refresco. `GET /api/account/status` ya no toca la red. Un fallo pasajero al entrar
+  responde 503 y `AccountGate` ofrece "Entrar sin conexión". Ajustes muestra el estado
+  ("Todo sincronizado", "N cambios esperando", "Sincronización en pausa: ...").
+- **Recuperar contraseña**: el correo de Firebase abre una página en el navegador para
+  fijar la nueva; pegar el enlace en la app sigue funcionando (`oobCode`).
+- `sync::supabase` eliminado. La sesión de Supabase que quedara en el keychain se borra
+  al arrancar.
+
+**Decisiones tomadas.**
+- **Colecciones planas** (`users/{uid}/favorites`, no dentro de cada perfil): la bajada
+  incremental es una consulta simple por colección con el índice automático de un campo,
+  sin consultas de grupo de colecciones ni índices compuestos.
+- **Marca de tiempo del servidor para el cursor y del cliente para los conflictos.** El
+  cursor no puede depender de relojes de clientes distintos; quién gana un conflicto sí
+  tiene que reflejar cuándo lo hizo el usuario.
+- **Ids de perfil generados en el cliente** (20 alfanuméricos, como Firestore): permiten
+  encolar sin conexión. Los UUID de Supabase que ya había se reutilizan tal cual, así
+  que la migración no cambia ningún id local.
+- **La fusión de lo bajado conserva fechas** (`put_playback_from_remote`,
+  `upsert_profile_from_remote`) en vez de reutilizar las funciones de escritura de la
+  API, que ponen la hora actual: si no, cada bajada parecería un cambio local nuevo y
+  rebotaría a la nube.
+- **`busy_timeout` de 5 s en todas las conexiones SQLite.** Con WAL hay un único escritor;
+  sin espera, el segundo fallaba al instante con `SQLITE_BUSY`. Ahora el motor escribe en
+  segundo plano mientras la API guarda progreso, y la colisión deja de ser rara.
+- **Entrada de keychain propia para los tests** (`cloud-session-test`), para no cerrar
+  la sesión real al ejecutar `cargo test`, y **un único cerrojo para todo test que toque
+  el keychain real** (`util::keychain::TEST_LOCK`). Arregla los dos fallos intermitentes
+  de la línea base y otro que apareció después: los propios tests de `util::keychain`
+  fallaban 2 de cada 5 ejecuciones (`NoEntry` justo después de guardar, con entradas
+  distintas). El Administrador de credenciales de Windows no tolera bien varias
+  escrituras y lecturas simultáneas desde el mismo proceso.
+- **Ninguna dependencia nueva.** `reqwest`, `sha2`, `rand`, `async-trait` y `serde_json`
+  ya estaban.
+
+**Bug real encontrado solo contra Firebase de verdad.** Con el backend falso todo pasaba,
+pero la prueba de punta a punta contra el proyecto real no conseguía sesión tras el
+login. Causa: el Administrador de credenciales de Windows admite 2560 bytes por secreto,
+`keyring` los guarda en UTF-16, y una sesión de Firebase completa ocupa unos 2644 (el
+token de acceso es un JWT de ~950 caracteres). `keyring` devolvía `TooLong`, se
+registraba un aviso y la sesión nunca se guardaba. Con Supabase los tokens eran más
+cortos y nunca pasó. Arreglado guardando en el keychain solo el token de refresco, el uid
+y el correo (~600 bytes); el token de acceso, que dura una hora, vive en memoria y se
+renueva al arrancar. Test de regresión con tamaños reales.
+
+**Verificación real.**
+- `cargo test`: 426 pasan, 0 fallan, 3 ignorados (los dos de abajo y el de zapping de
+  F6). Cinco ejecuciones seguidas, sin intermitencias. `tsc --noEmit` y `vite build`
+  limpios.
+- Contra el proyecto real, con una cuenta de pruebas (`claude-qa-test@vibeiptv.test`, su
+  contraseña no está en el repositorio):
+  `live_roundtrip_against_the_real_project` (login, refresco, escritura, bajada
+  incremental, borrado lógico, error de contraseña) y
+  `live_end_to_end_sync_through_the_local_api` (API local → cola → motor → Firestore,
+  sobre una base de datos temporal). Las dos pasan en unos 4 s.
+- Reglas comprobadas a mano con `curl`: otro uid y una petición sin token reciben 403.
+
+**Deuda técnica pendiente.**
+- **La interfaz no se ha visto con datos reales.** Ni "Entrar sin conexión" ni la línea
+  de estado de Ajustes se han probado en la ventana de la app, solo su lógica por la API.
+- **Migración del usuario sin hacer.** Al abrir esta versión, la sesión de Supabase ya no
+  vale: hay que crear la cuenta en Firebase desde la pantalla de cuenta, y la primera
+  fusión subirá todo lo de este PC. Los datos de Supabase no se exportan: el PC ya tenía
+  una copia completa.
+- El proyecto de Supabase sigue existiendo y ya no lo usa nada: se puede borrar desde su
+  panel.
+- Ver "Límites conocidos" en `docs/CLOUD-SYNC.md` (lo que el catálogo local no tiene al
+  bajar se pierde para este PC; conflictos por reloj del cliente).
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

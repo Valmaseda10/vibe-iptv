@@ -14,13 +14,24 @@ export function useApiBase() {
   return useQuery({ queryKey: ["server-base-url"], queryFn: getApiBase, staleTime: Infinity });
 }
 
+/** Error de la API local con su código de estado: hace falta para distinguir, por
+ * ejemplo, "la nube no responde" (503) de "contraseña incorrecta" (401). */
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
+}
+
 /** El núcleo manda mensajes de error pensados para enseñarse tal cual (p. ej.
  * "email rate limit exceeded", "PIN incorrecto") — antes se perdían y solo llegaba el
  * número de estado (`502`, `401`...) a quien mostraba el error, un fallo real
  * encontrado probando la cuenta de sincronización contra el proveedor real. */
 async function throwWithBody(path: string, response: Response): Promise<never> {
   const text = await response.text().catch(() => "");
-  throw new Error(text || `${path} -> ${response.status}`);
+  throw new ApiError(text || `${path} -> ${response.status}`, response.status);
 }
 
 export async function apiGet<T>(path: string): Promise<T> {

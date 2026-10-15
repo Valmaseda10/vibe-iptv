@@ -1,469 +1,636 @@
-//! Motor de sincronización: empuja cambios locales a Supabase en segundo plano
-//! (best-effort — nunca bloquea ni hace fallar la petición que los originó, igual que
-//! `server::stream::record_tier`) y baja+fusiona lo que haya en la nube al iniciar
-//! sesión. Ver `docs/DECISIONS.md` para el porqué y los límites exactos: perfiles,
-//! favoritos y progreso sí; catálogo, credenciales de proveedor y streaming, nunca.
+//! Motor de sincronización con la nube (F11). Un único bucle en segundo plano que:
 //!
-//! Todo lo de aquí es opcional: sin sesión de Supabase (`session::get_valid` da `None`),
-//! cada función no hace nada — la app funciona igual de bien sin cuenta.
+//! 1. la primera vez que ve una cuenta en este PC, fusiona lo local con lo de la nube
+//!    (sube lo que falte arriba, incluido el progreso, que antes nunca se subía);
+//! 2. envía la cola de salida (`sync_outbox`) con reintentos y espera exponencial;
+//! 3. cada pocos minutos baja lo que otros dispositivos cambiaron en la nube.
+//!
+//! Local-first: nada de esto bloquea ni hace fallar una acción del usuario. Sin red o
+//! con la nube caída, la cola espera y la app sigue igual. Catálogo, credenciales de
+//! proveedor y streaming nunca pasan por aquí. Detalle en `docs/CLOUD-SYNC.md`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
-use rusqlite::OptionalExtension;
-use serde_json::{json, Value};
+use rusqlite::Connection;
+use tokio::sync::Notify;
 
-use crate::db::{queries, reads, schema};
+use super::backend::{CloudBackend, CloudError, Collection, RemoteDoc, Session};
+use super::{outbox, session};
+use crate::db::{cloud, now_epoch, queries, reads, schema};
 
-use super::session;
-use super::supabase::{Session, SupabaseClient};
+/// Cada cuánto despierta el bucle aunque nadie lo avise (reintentos, progreso agrupado).
+const TICK: Duration = Duration::from_secs(30);
+/// Cada cuánto se baja lo cambiado en otros dispositivos.
+const PULL_EVERY: Duration = Duration::from_secs(180);
+/// Al bajar, se relee este margen antes del cursor: una escritura con marca de servidor
+/// anterior a la última vista puede hacerse visible un instante después. Aplicar dos
+/// veces el mismo documento no cambia nada.
+const PULL_OVERLAP_S: i64 = 120;
+/// Documentos por escritura (Firestore admite 500 por `commit`).
+const BATCH: i64 = 200;
+const MAX_BACKOFF_S: i64 = 3_600;
 
-/// `timestamptz` de Postgres en UTC, sin tirar de una librería de fechas nueva — ya
-/// existe `util::civil_time` para exactamente esta conversión (EPG, catch-up).
-fn epoch_to_iso8601(epoch: i64) -> String {
-    let (y, m, d, h, mi, s) = crate::util::civil_time::epoch_to_ymd_hms(epoch);
-    format!("{y:04}-{m:02}-{d:02}T{h:02}:{mi:02}:{s:02}Z")
+/// Ajustes de la cuenta sincronizada en `app_settings`; se borran todos al cerrar sesión.
+const SETTINGS_PREFIX: &str = "cloud.";
+const MERGED_UID_KEY: &str = "cloud.merged_uid";
+
+fn cursor_key(collection: Collection) -> String {
+    format!("cloud.cursor.{}", collection.as_str())
 }
 
-async fn with_db<T, F>(db_path: PathBuf, f: F) -> Option<T>
-where
-    T: Send + 'static,
-    F: FnOnce(&rusqlite::Connection) -> crate::db::Result<T> + Send + 'static,
-{
-    tokio::task::spawn_blocking(move || {
-        let conn = schema::open_connection_at(&db_path).ok()?;
-        f(&conn).ok()
-    })
-    .await
-    .ok()
-    .flatten()
+#[derive(Debug, thiserror::Error)]
+pub enum SyncError {
+    #[error(transparent)]
+    Cloud(#[from] CloudError),
+    #[error("error local de sincronización: {0}")]
+    Local(String),
 }
 
-// ─────────────── Perfiles ───────────────
-
-struct LocalProfileForPush {
-    name: String,
-    avatar: Option<String>,
-    adult_ok: bool,
-    pin_hash: Option<String>,
-    remote_id: Option<String>,
+/// Cómo fue la última vuelta del motor, para enseñarlo en Ajustes.
+#[derive(Debug, Clone, Default)]
+pub struct EngineStatus {
+    pub last_synced_at: Option<i64>,
+    pub last_error: Option<String>,
 }
 
-fn read_profile_for_push(conn: &rusqlite::Connection, profile_id: i64) -> crate::db::Result<Option<LocalProfileForPush>> {
-    conn.query_row(
-        "SELECT name, avatar, adult_ok, pin_hash, remote_id FROM profiles WHERE id = ?1",
-        rusqlite::params![profile_id],
-        |row| {
-            Ok(LocalProfileForPush {
-                name: row.get(0)?,
-                avatar: row.get(1)?,
-                adult_ok: row.get::<_, i64>(2)? != 0,
-                pin_hash: row.get(3)?,
-                remote_id: row.get(4)?,
-            })
-        },
-    )
-    .optional()
-    .map_err(Into::into)
+struct Engine {
+    db_path: PathBuf,
+    cloud: Arc<dyn CloudBackend>,
+    wake: Notify,
+    status: Mutex<EngineStatus>,
 }
 
-/// Sube (crea o actualiza) un perfil local. Sin sesión, no hace nada. Si el perfil
-/// nunca se había sincronizado, lo crea en Supabase y guarda el UUID resultante en
-/// `profiles.remote_id` para las próximas veces.
-pub async fn push_profile_upsert(db_path: PathBuf, local_profile_id: i64) {
-    let Some(session) = session::get_valid().await else { return };
-    let Some(profile) = with_db(db_path.clone(), move |conn| read_profile_for_push(conn, local_profile_id)).await.flatten() else {
-        return;
-    };
+static ENGINE: OnceLock<Arc<Engine>> = OnceLock::new();
 
-    let client = SupabaseClient::new();
-    let now = epoch_to_iso8601(crate::db::now_epoch());
+/// Arranca el bucle en segundo plano. Solo la primera llamada tiene efecto.
+pub fn start(db_path: PathBuf, cloud: Arc<dyn CloudBackend>) {
+    session::clear_legacy();
+    let engine = Arc::new(Engine { db_path, cloud, wake: Notify::new(), status: Mutex::new(EngineStatus::default()) });
+    if ENGINE.set(engine.clone()).is_ok() {
+        tokio::spawn(engine.run());
+    }
+}
 
-    match &profile.remote_id {
-        Some(remote_id) => {
-            let body = json!({ "name": profile.name, "avatar": profile.avatar, "adult_ok": profile.adult_ok, "pin_hash": profile.pin_hash, "updated_at": now });
-            let filter = format!("id=eq.{remote_id}");
-            if let Err(err) = client.patch(&session, "profiles", &filter, &body).await {
-                tracing::warn!(error = %err, "no se pudo subir el cambio de perfil a Supabase");
-            }
-        }
-        None => {
-            let body = json!({
-                "user_id": session.user_id,
-                "name": profile.name,
-                "avatar": profile.avatar,
-                "adult_ok": profile.adult_ok,
-                "pin_hash": profile.pin_hash,
-                "updated_at": now,
-            });
-            match client.upsert(&session, "profiles", "", &body).await {
-                Ok(rows) => {
-                    if let Some(remote_id) = rows.first().and_then(|r| r.get("id")).and_then(Value::as_str) {
-                        let remote_id = remote_id.to_string();
-                        with_db(db_path, move |conn| queries::set_profile_remote_id(conn, local_profile_id, &remote_id)).await;
+/// Avisa al motor de que hay algo nuevo (un cambio encolado, una sesión recién
+/// iniciada) para que no espere al siguiente ciclo. Sin motor arrancado (tests), nada.
+pub fn wake() {
+    if let Some(engine) = ENGINE.get() {
+        engine.wake.notify_one();
+    }
+}
+
+pub fn status() -> EngineStatus {
+    ENGINE.get().and_then(|e| e.status.lock().ok().map(|s| s.clone())).unwrap_or_default()
+}
+
+impl Engine {
+    async fn run(self: Arc<Self>) {
+        let mut last_pull: Option<Instant> = None;
+        loop {
+            if let Some(result) = self.tick(&mut last_pull).await {
+                if let Ok(mut status) = self.status.lock() {
+                    match result {
+                        Ok(()) => *status = EngineStatus { last_synced_at: Some(now_epoch()), last_error: None },
+                        Err(err) => {
+                            tracing::info!(error = %err, "la sincronización con la nube se reintentará");
+                            status.last_error = Some(err.to_string());
+                        }
                     }
                 }
-                Err(err) => tracing::warn!(error = %err, "no se pudo crear el perfil en Supabase"),
+            }
+            tokio::select! {
+                _ = self.wake.notified() => {}
+                _ = tokio::time::sleep(TICK) => {}
             }
         }
     }
-}
 
-/// Borra el espejo remoto de un perfil ya borrado localmente. `remote_id` viene del
-/// llamador porque, para cuando esto se ejecuta, la fila local ya no existe.
-pub async fn push_profile_delete(remote_id: String) {
-    let Some(session) = session::get_valid().await else { return };
-    let client = SupabaseClient::new();
-    let filter = format!("id=eq.{remote_id}");
-    if let Err(err) = client.delete_rows(&session, "profiles", &filter).await {
-        tracing::warn!(error = %err, "no se pudo borrar el perfil en Supabase");
-    }
-}
-
-// ─────────────── Favoritos ───────────────
-
-/// `None` si el perfil no está sincronizado todavía (sin sesión, o no le ha tocado su
-/// primer `push_profile_upsert`) — sin un `remote_id` de perfil no hay bajo qué colgar
-/// el favorito en Supabase.
-async fn remote_profile_id(db_path: &Path, local_profile_id: i64) -> Option<String> {
-    with_db(db_path.to_path_buf(), move |conn| {
-        conn.query_row("SELECT remote_id FROM profiles WHERE id = ?1", rusqlite::params![local_profile_id], |r| r.get::<_, Option<String>>(0))
-            .map_err(Into::into)
-    })
-    .await
-    .flatten()
-}
-
-/// Canales fuera a propósito: sin `item_key` portable entre proveedores distintos (ver
-/// `db::reads`, comentario de la sección "Sincronización"), así que un favorito de
-/// directo se queda solo en este PC.
-pub async fn push_favorite_add(db_path: PathBuf, local_profile_id: i64, item_kind: String, local_item_id: i64) {
-    if item_kind == "channel" {
-        return;
-    }
-    let Some(session) = session::get_valid().await else { return };
-    let Some(remote_profile_id) = remote_profile_id(&db_path, local_profile_id).await else { return };
-    let Some(item_key) = with_db(db_path, {
-        let item_kind = item_kind.clone();
-        move |conn| reads::item_key_for(conn, &item_kind, local_item_id)
-    })
-    .await
-    .flatten() else {
-        return;
-    };
-
-    let client = SupabaseClient::new();
-    let body = json!({ "profile_id": remote_profile_id, "item_kind": item_kind, "item_key": item_key, "added_at": epoch_to_iso8601(crate::db::now_epoch()) });
-    if let Err(err) = client.upsert(&session, "favorites", "on_conflict=profile_id,item_kind,item_key", &body).await {
-        tracing::warn!(error = %err, "no se pudo subir el favorito a Supabase");
-    }
-}
-
-/// El `item_key` debe resolverse ANTES de borrar la fila local (`server::api::delete_favorite`
-/// lo hace así): una vez borrada, ya no habría de dónde sacar el `match_key`.
-pub async fn push_favorite_remove_by_key(db_path: PathBuf, local_profile_id: i64, item_kind: String, item_key: String) {
-    if item_kind == "channel" {
-        return;
-    }
-    let Some(session) = session::get_valid().await else { return };
-    let Some(remote_profile_id) = remote_profile_id(&db_path, local_profile_id).await else { return };
-    let client = SupabaseClient::new();
-    let filter = format!("profile_id=eq.{remote_profile_id}&item_kind=eq.{item_kind}&item_key=eq.{item_key}");
-    if let Err(err) = client.delete_rows(&session, "favorites", &filter).await {
-        tracing::warn!(error = %err, "no se pudo borrar el favorito en Supabase");
-    }
-}
-
-// ─────────────── Progreso de reproducción ───────────────
-
-pub async fn push_playback_progress(db_path: PathBuf, local_profile_id: i64, item_kind: String, local_item_id: i64, position_s: i64, duration_s: Option<i64>) {
-    if item_kind == "channel" {
-        return; // el directo no tiene "continuar viendo" real, ver db::queries.
-    }
-    let Some(session) = session::get_valid().await else { return };
-    let Some(remote_profile_id) = remote_profile_id(&db_path, local_profile_id).await else { return };
-    let Some(item_key) = with_db(db_path, {
-        let item_kind = item_kind.clone();
-        move |conn| reads::item_key_for(conn, &item_kind, local_item_id)
-    })
-    .await
-    .flatten() else {
-        return;
-    };
-
-    let finished = duration_s.is_some_and(|d| d > 0 && (position_s as f64 / d as f64) >= 0.9);
-    let client = SupabaseClient::new();
-    let body = json!({
-        "profile_id": remote_profile_id,
-        "item_kind": item_kind,
-        "item_key": item_key,
-        "position_s": position_s,
-        "duration_s": duration_s,
-        "finished": finished,
-        "played_at": epoch_to_iso8601(crate::db::now_epoch()),
-    });
-    if let Err(err) = client.upsert(&session, "playback_state", "on_conflict=profile_id,item_kind,item_key", &body).await {
-        tracing::warn!(error = %err, "no se pudo subir el progreso a Supabase");
-    }
-}
-
-/// Igual que `push_favorite_remove_by_key`: el `item_key` hace falta ANTES de borrar la
-/// fila local (`server::api::delete_playback_progress` lo hace así). "Quitar de
-/// continuar viendo" (F "premium") debe quitarse también del resto de dispositivos, no
-/// solo de este.
-pub async fn push_playback_remove_by_key(db_path: PathBuf, local_profile_id: i64, item_kind: String, item_key: String) {
-    if item_kind == "channel" {
-        return;
-    }
-    let Some(session) = session::get_valid().await else { return };
-    let Some(remote_profile_id) = remote_profile_id(&db_path, local_profile_id).await else { return };
-    let client = SupabaseClient::new();
-    let filter = format!("profile_id=eq.{remote_profile_id}&item_kind=eq.{item_kind}&item_key=eq.{item_key}");
-    if let Err(err) = client.delete_rows(&session, "playback_state", &filter).await {
-        tracing::warn!(error = %err, "no se pudo borrar el progreso en Supabase");
-    }
-}
-
-// ─────────────── Bajada + fusión al iniciar sesión ───────────────
-
-/// Se llama justo después de un login/registro con éxito. Recorre los perfiles del
-/// usuario en Supabase, los fusiona con los locales (por `remote_id`; última escritura
-/// gana comparando `updated_at`), sube los perfiles locales que todavía no tuvieran
-/// pareja remota, y por cada perfil ya emparejado fusiona sus favoritos y su progreso.
-///
-/// Todo esto es best-effort: un fallo a media fusión no deja nada corrupto (cada
-/// `INSERT`/`UPDATE` local es una operación pequeña e idempotente), solo dejaría el
-/// resto por sincronizar hasta el próximo intento.
-pub async fn pull_and_merge(db_path: PathBuf) {
-    let Some(session) = session::get_valid().await else { return };
-    let client = SupabaseClient::new();
-
-    let remote_profiles = match client.select(&session, "profiles", "select=*").await {
-        Ok(rows) => rows,
-        Err(err) => {
-            tracing::warn!(error = %err, "no se pudo bajar la lista de perfiles de Supabase");
-            return;
+    /// `None` si no hay sesión: lo encolado espera a que el usuario inicie sesión.
+    async fn tick(&self, last_pull: &mut Option<Instant>) -> Option<Result<(), SyncError>> {
+        let session = session::get_valid(self.cloud.as_ref()).await?;
+        // Recién arrancada la app no hay token de acceso en memoria; si renovarlo falló
+        // por algo pasajero, no tiene sentido mandar peticiones con un token vacío.
+        if session.access_token.is_empty() {
+            return Some(Err(CloudError::Unavailable.into()));
         }
-    };
-
-    for remote in &remote_profiles {
-        merge_one_profile(&db_path, &session, &client, remote).await;
+        let cloud = self.cloud.as_ref();
+        Some(
+            async {
+                initial_merge_if_needed(&self.db_path, cloud, &session).await?;
+                flush_outbox(&self.db_path, cloud, &session).await?;
+                if last_pull.is_none_or(|t| t.elapsed() >= PULL_EVERY) {
+                    pull_changes(&self.db_path, cloud, &session).await?;
+                    *last_pull = Some(Instant::now());
+                }
+                Ok(())
+            }
+            .await,
+        )
     }
+}
 
-    // Perfiles locales que nunca se habían sincronizado (creados sin sesión, o antes de
-    // que existiera la cuenta): se suben ahora que hay con quién.
-    let unsynced = with_db(db_path.clone(), |conn| {
-        let mut stmt = conn.prepare("SELECT id FROM profiles WHERE remote_id IS NULL")?;
-        let ids = stmt.query_map([], |r| r.get::<_, i64>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(ids)
+async fn with_db<T, F>(db_path: &Path, f: F) -> Result<T, SyncError>
+where
+    T: Send + 'static,
+    F: FnOnce(&Connection) -> crate::db::Result<T> + Send + 'static,
+{
+    let db_path = db_path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let conn = schema::open_connection_at(&db_path)?;
+        f(&conn)
     })
     .await
-    .unwrap_or_default();
-    for local_id in unsynced {
-        push_profile_upsert(db_path.clone(), local_id).await;
-    }
+    .map_err(|err| SyncError::Local(err.to_string()))?
+    .map_err(|err| SyncError::Local(err.to_string()))
 }
 
-fn get_str(value: &Value, key: &str) -> Option<String> {
-    value.get(key).and_then(Value::as_str).map(str::to_string)
+/// Cambios locales todavía sin llegar a la nube.
+pub async fn pending_changes(db_path: &Path) -> i64 {
+    with_db(db_path, cloud::pending_count).await.unwrap_or(0)
 }
 
-fn get_bool(value: &Value, key: &str) -> bool {
-    value.get(key).and_then(Value::as_bool).unwrap_or(false)
+/// Al cerrar sesión: lo pendiente y los cursores eran de esa cuenta, no de la próxima.
+pub async fn forget_account(db_path: &Path) -> Result<(), SyncError> {
+    with_db(db_path, |conn| {
+        cloud::clear_outbox(conn)?;
+        cloud::delete_settings_with_prefix(conn, SETTINGS_PREFIX)
+    })
+    .await
 }
 
-/// `"2026-08-31T12:00:00+00:00"` -> epoch. Solo hace falta comparar "¿cuál es más
-/// reciente?", así que basta un parseo simple de los primeros campos numéricos — no se
-/// necesita una librería de fechas para esto.
-fn iso8601_to_epoch(value: &str) -> Option<i64> {
-    let digits: Vec<i64> = value
-        .split(|c: char| !c.is_ascii_digit())
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse().ok())
-        .collect();
-    let [y, mo, d, h, mi, s, ..] = digits[..] else { return None };
-    let days = crate::util::civil_time::days_from_civil(y as i32, mo as u32, d as u32)?;
-    Some(days * 86_400 + h * 3600 + mi * 60 + s)
+/// Espera antes de reintentar una entrada que ya falló `attempts` veces: 30 s, 1 min,
+/// 2 min... hasta una hora como mucho.
+fn backoff_seconds(attempts: i64) -> i64 {
+    (30_i64 << attempts.clamp(0, 10)).min(MAX_BACKOFF_S)
 }
 
-async fn merge_one_profile(db_path: &Path, session: &Session, client: &SupabaseClient, remote: &Value) {
-    let Some(remote_id) = get_str(remote, "id") else { return };
-    let name = get_str(remote, "name").unwrap_or_else(|| "Perfil".to_string());
-    let avatar = get_str(remote, "avatar");
-    let adult_ok = get_bool(remote, "adult_ok");
-    let pin_hash = get_str(remote, "pin_hash");
-    let remote_updated = remote.get("updated_at").and_then(Value::as_str).and_then(iso8601_to_epoch).unwrap_or(0);
+/// Envía todo lo que ya toca de la cola de salida.
+pub async fn flush_outbox(db_path: &Path, cloud: &dyn CloudBackend, session: &Session) -> Result<usize, SyncError> {
+    flush_outbox_at(db_path, cloud, session, now_epoch()).await
+}
 
-    let db_path_owned = db_path.to_path_buf();
-    let local_match = with_db(db_path_owned.clone(), {
-        let remote_id = remote_id.clone();
-        move |conn| {
-            conn.query_row("SELECT id, updated_at FROM profiles WHERE remote_id = ?1", rusqlite::params![remote_id], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))
-            })
-            .optional()
-            .map_err(Into::into)
+async fn flush_outbox_at(db_path: &Path, cloud: &dyn CloudBackend, session: &Session, now: i64) -> Result<usize, SyncError> {
+    let mut sent = 0;
+    loop {
+        let entries = with_db(db_path, move |conn| cloud::due_entries(conn, now, BATCH)).await?;
+        if entries.is_empty() {
+            break;
         }
-    })
-    .await
-    .flatten();
+        let batch_was_full = entries.len() as i64 == BATCH;
 
-    let local_profile_id = match local_match {
-        Some((local_id, local_updated)) => {
-            if remote_updated > local_updated {
-                let (name, avatar, pin_hash) = (name.clone(), avatar.clone(), pin_hash.clone());
-                with_db(db_path_owned.clone(), move |conn| {
-                    queries::update_profile(conn, local_id, &name, avatar.as_deref(), adult_ok)?;
-                    queries::set_profile_pin_hash(conn, local_id, pin_hash.as_deref())
+        let mut docs = Vec::with_capacity(entries.len());
+        let mut sending = Vec::with_capacity(entries.len());
+        let mut unreadable = Vec::new();
+        for entry in entries {
+            match serde_json::from_str::<RemoteDoc>(&entry.payload) {
+                Ok(doc) => {
+                    docs.push(doc);
+                    sending.push(entry);
+                }
+                Err(_) => {
+                    // Nunca debería pasar (lo escribe `sync::outbox`); si pasa, una entrada
+                    // ilegible no puede bloquear para siempre a las demás.
+                    tracing::warn!(target = %entry.target, "entrada ilegible en la cola de sincronización; se descarta");
+                    unreadable.push((entry.id, entry.revision));
+                }
+            }
+        }
+        if !unreadable.is_empty() {
+            with_db(db_path, move |conn| unreadable.iter().try_for_each(|(id, revision)| cloud::ack(conn, *id, *revision))).await?;
+        }
+
+        match cloud.write(session, &docs).await {
+            Ok(()) => {
+                sent += docs.len();
+                with_db(db_path, move |conn| sending.iter().try_for_each(|e| cloud::ack(conn, e.id, e.revision))).await?;
+            }
+            Err(err) => {
+                let message = err.to_string();
+                with_db(db_path, move |conn| {
+                    sending.iter().try_for_each(|e| cloud::record_failure(conn, e.id, e.revision, &message, now + backoff_seconds(e.attempts)))
                 })
-                .await;
+                .await?;
+                return Err(err.into());
             }
-            local_id
         }
-        None => {
-            // No existía en este PC todavía: viene de otro dispositivo.
-            let (name2, avatar2, pin_hash2, remote_id2) = (name.clone(), avatar.clone(), pin_hash.clone(), remote_id.clone());
-            let Some(new_id) = with_db(db_path_owned.clone(), move |conn| {
-                let id = queries::insert_profile(conn, &name2, avatar2.as_deref(), adult_ok)?;
-                queries::set_profile_pin_hash(conn, id, pin_hash2.as_deref())?;
-                queries::set_profile_remote_id(conn, id, &remote_id2)?;
-                Ok(id)
-            })
-            .await
-            else {
-                return;
-            };
-            new_id
-        }
-    };
-
-    merge_favorites(db_path, session, client, &remote_id, local_profile_id).await;
-    merge_playback_state(db_path, session, client, &remote_id, local_profile_id).await;
-}
-
-async fn merge_favorites(db_path: &Path, session: &Session, client: &SupabaseClient, remote_profile_id: &str, local_profile_id: i64) {
-    let query = format!("select=*&profile_id=eq.{remote_profile_id}");
-    let remote_favorites = match client.select(session, "favorites", &query).await {
-        Ok(rows) => rows,
-        Err(err) => {
-            tracing::warn!(error = %err, "no se pudieron bajar los favoritos de este perfil");
-            return;
-        }
-    };
-
-    for fav in &remote_favorites {
-        let (Some(item_kind), Some(item_key)) = (get_str(fav, "item_kind"), get_str(fav, "item_key")) else { continue };
-        let db_path_owned = db_path.to_path_buf();
-        let local_item_id = with_db(db_path_owned.clone(), {
-            let item_kind = item_kind.clone();
-            let item_key = item_key.clone();
-            move |conn| reads::item_id_for_key(conn, &item_kind, &item_key)
-        })
-        .await
-        .flatten();
-        // Si el contenido no existe en el catálogo de este PC (proveedor distinto), se
-        // deja tal cual: sigue en Supabase, se resolverá el día que este PC sí lo tenga.
-        if let Some(local_item_id) = local_item_id {
-            with_db(db_path_owned, move |conn| reads::add_favorite(conn, local_profile_id, &item_kind, local_item_id)).await;
+        if !batch_was_full {
+            break;
         }
     }
-
-    // Favoritos locales que Supabase todavía no conoce (se marcaron sin conexión, o
-    // antes del primer login): se suben ahora.
-    let local_favorites = with_db(db_path.to_path_buf(), move |conn| reads::list_favorites(conn, local_profile_id)).await.unwrap_or_default();
-    for fav in local_favorites {
-        push_favorite_add(db_path.to_path_buf(), local_profile_id, fav.item_kind, fav.item_id).await;
-    }
+    Ok(sent)
 }
 
-async fn merge_playback_state(db_path: &Path, session: &Session, client: &SupabaseClient, remote_profile_id: &str, local_profile_id: i64) {
-    let query = format!("select=*&profile_id=eq.{remote_profile_id}");
-    let remote_rows = match client.select(session, "playback_state", &query).await {
-        Ok(rows) => rows,
-        Err(err) => {
-            tracing::warn!(error = %err, "no se pudo bajar el progreso de este perfil");
-            return;
-        }
-    };
-
-    for row in &remote_rows {
-        let (Some(item_kind), Some(item_key)) = (get_str(row, "item_kind"), get_str(row, "item_key")) else { continue };
-        let position_s = row.get("position_s").and_then(Value::as_i64).unwrap_or(0);
-        let duration_s = row.get("duration_s").and_then(Value::as_i64);
-        let remote_played_at = row.get("played_at").and_then(Value::as_str).and_then(iso8601_to_epoch).unwrap_or(0);
-
-        let db_path_owned = db_path.to_path_buf();
-        let local_item_id = with_db(db_path_owned.clone(), {
-            let item_kind = item_kind.clone();
-            let item_key = item_key.clone();
-            move |conn| reads::item_id_for_key(conn, &item_kind, &item_key)
+/// Baja y aplica lo cambiado en la nube desde la última vez, colección a colección
+/// (perfiles primero: favoritos y progreso cuelgan de ellos).
+pub async fn pull_changes(db_path: &Path, cloud: &dyn CloudBackend, session: &Session) -> Result<(), SyncError> {
+    for collection in Collection::ALL {
+        let key = cursor_key(collection);
+        let cursor = with_db(db_path, {
+            let key = key.clone();
+            move |conn| reads::get_setting(conn, &key)
         })
-        .await
-        .flatten();
-        let Some(local_item_id) = local_item_id else { continue };
-
-        let local_played_at = with_db(db_path_owned.clone(), {
-            let item_kind = item_kind.clone();
-            move |conn| {
-                conn.query_row(
-                    "SELECT played_at FROM playback_state WHERE profile_id = ?1 AND item_kind = ?2 AND item_id = ?3",
-                    rusqlite::params![local_profile_id, item_kind, local_item_id],
-                    |r| r.get::<_, i64>(0),
-                )
-                .optional()
-                .map_err(Into::into)
-            }
-        })
-        .await
-        .flatten()
+        .await?
+        .and_then(|v| v.parse::<i64>().ok())
         .unwrap_or(0);
 
-        // Última escritura gana: si lo de Supabase es más reciente que lo local, se
-        // aplica aquí; si no, ya se subirá lo local por su cuenta (o en el bucle de
-        // abajo, si nunca se había sincronizado este ítem).
-        if remote_played_at > local_played_at {
-            with_db(db_path_owned, move |conn| reads::upsert_playback_progress(conn, local_profile_id, &item_kind, local_item_id, position_s as i64, duration_s)).await;
+        let changes = cloud.changes_since(session, collection, (cursor - PULL_OVERLAP_S).max(0)).await?;
+        let new_cursor = changes.max_server_ts.map_or(cursor, |ts| ts.max(cursor));
+        let docs = changes.docs;
+        with_db(db_path, move |conn| {
+            let tx = conn.unchecked_transaction()?;
+            for doc in &docs {
+                apply_remote(&tx, doc)?;
+            }
+            queries::set_setting(&tx, &key, &new_cursor.to_string())?;
+            tx.commit()?;
+            Ok(())
+        })
+        .await?;
+    }
+    Ok(())
+}
+
+/// La primera vez que una cuenta se usa en este PC: baja todo lo que hay en la nube, lo
+/// aplica, y encola lo local que la nube no tenga (o tenga más viejo). Cubre también la
+/// migración desde Supabase: la nube nueva empieza vacía y recibe todo lo de este PC.
+pub async fn initial_merge_if_needed(db_path: &Path, cloud: &dyn CloudBackend, session: &Session) -> Result<(), SyncError> {
+    let merged_uid = with_db(db_path, |conn| reads::get_setting(conn, MERGED_UID_KEY)).await?;
+    if merged_uid.as_deref() == Some(session.user_id.as_str()) {
+        return Ok(());
+    }
+
+    let mut remote = Vec::new();
+    let mut cursors = Vec::new();
+    for collection in Collection::ALL {
+        let changes = cloud.changes_since(session, collection, 0).await?;
+        cursors.push((cursor_key(collection), changes.max_server_ts.unwrap_or(0)));
+        remote.extend(changes.docs);
+    }
+
+    let user_id = session.user_id.clone();
+    with_db(db_path, move |conn| {
+        let tx = conn.unchecked_transaction()?;
+        for doc in &remote {
+            apply_remote(&tx, doc)?;
+        }
+        enqueue_local_missing_from_cloud(&tx, &remote)?;
+        for (key, ts) in &cursors {
+            queries::set_setting(&tx, key, &ts.to_string())?;
+        }
+        queries::set_setting(&tx, MERGED_UID_KEY, &user_id)?;
+        tx.commit()?;
+        Ok(())
+    })
+    .await?;
+    tracing::info!("primera fusión con la nube completada");
+    Ok(())
+}
+
+/// Tras aplicar lo de la nube, todo lo local que siga sin pareja arriba (o con una más
+/// vieja) se encola. Si un borrado remoto sobrevivió a `apply_remote`, es que lo local es
+/// más nuevo, así que también se sube.
+fn enqueue_local_missing_from_cloud(conn: &Connection, remote: &[RemoteDoc]) -> crate::db::Result<()> {
+    let by_target: HashMap<String, &RemoteDoc> = remote.iter().map(|doc| (doc.target(), doc)).collect();
+
+    for profile in cloud::sync_profiles(conn)? {
+        let Some(remote_id) = outbox::ensure_profile_remote_id(conn, profile.id)? else { continue };
+        let needs_upload = match by_target.get(&RemoteDoc::profile_target(&remote_id)) {
+            Some(RemoteDoc::Profile(r)) => r.deleted || r.updated_at < profile.updated_at,
+            _ => true,
+        };
+        if needs_upload {
+            outbox::enqueue_profile(conn, profile.id)?;
+        }
+
+        for favorite in cloud::sync_favorites(conn, profile.id)? {
+            let Some(item_key) = reads::item_key_for(conn, &favorite.item_kind, favorite.item_id)? else { continue };
+            let needs_upload = match by_target.get(&RemoteDoc::favorite_target(&remote_id, &favorite.item_kind, &item_key)) {
+                Some(RemoteDoc::Favorite(r)) => r.deleted,
+                _ => true,
+            };
+            if needs_upload {
+                outbox::enqueue_favorite(conn, profile.id, &favorite.item_kind, favorite.item_id)?;
+            }
+        }
+
+        for progress in cloud::sync_playback(conn, profile.id)? {
+            let Some(item_key) = reads::item_key_for(conn, &progress.item_kind, progress.item_id)? else { continue };
+            let needs_upload = match by_target.get(&RemoteDoc::playback_target(&remote_id, &progress.item_kind, &item_key)) {
+                Some(RemoteDoc::Playback(r)) => r.deleted || r.played_at < progress.played_at,
+                _ => true,
+            };
+            if needs_upload {
+                outbox::enqueue_playback(conn, profile.id, &progress.item_kind, progress.item_id, false)?;
+            }
         }
     }
+    Ok(())
+}
+
+/// Aplica un documento de la nube sobre la base local. Gana la escritura más reciente
+/// (marca del cliente que la hizo), y un cambio local todavía en la cola gana siempre:
+/// se enviará y sobrescribirá lo de arriba. Lo que el catálogo de este PC no tiene
+/// (otro proveedor) se ignora.
+fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
+    if cloud::has_pending_target(conn, &doc.target())? {
+        return Ok(());
+    }
+    match doc {
+        RemoteDoc::Profile(r) => {
+            let local = cloud::profile_by_remote_id(conn, &r.id)?;
+            if r.deleted {
+                // Nunca se borra el último perfil: la app siempre necesita al menos uno.
+                if let Some(local) = local {
+                    if r.updated_at >= local.updated_at && reads::count_profiles(conn)? > 1 {
+                        queries::delete_profile(conn, local.id)?;
+                    }
+                }
+            } else if local.is_none_or(|l| r.updated_at > l.updated_at) {
+                cloud::upsert_profile_from_remote(conn, &r.id, &r.name, r.avatar.as_deref(), r.adult_ok, r.pin_hash.as_deref(), r.updated_at)?;
+            }
+        }
+        RemoteDoc::Favorite(f) => {
+            let Some(profile) = cloud::profile_by_remote_id(conn, &f.profile_id)? else { return Ok(()) };
+            let Some(item_id) = reads::item_id_for_key(conn, &f.item_kind, &f.item_key)? else { return Ok(()) };
+            let local_added_at = cloud::favorite_added_at(conn, profile.id, &f.item_kind, item_id)?;
+            if f.deleted {
+                if local_added_at.is_some_and(|added_at| f.updated_at >= added_at) {
+                    reads::remove_favorite(conn, profile.id, &f.item_kind, item_id)?;
+                }
+            } else if local_added_at.is_none() {
+                cloud::put_favorite_from_remote(conn, profile.id, &f.item_kind, item_id, f.added_at)?;
+            }
+        }
+        RemoteDoc::Playback(p) => {
+            let Some(profile) = cloud::profile_by_remote_id(conn, &p.profile_id)? else { return Ok(()) };
+            let Some(item_id) = reads::item_id_for_key(conn, &p.item_kind, &p.item_key)? else { return Ok(()) };
+            let local = reads::get_playback_progress(conn, profile.id, &p.item_kind, item_id)?;
+            if p.deleted {
+                if local.is_some_and(|l| p.updated_at >= l.played_at) {
+                    reads::remove_playback_progress(conn, profile.id, &p.item_kind, item_id)?;
+                }
+            } else if local.is_none_or(|l| p.played_at > l.played_at) {
+                cloud::put_playback_from_remote(conn, profile.id, &p.item_kind, item_id, p.position_s, p.duration_s, p.finished, p.played_at)?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::backend::{RemoteFavorite, RemotePlayback};
+    use crate::sync::memory::MemoryBackend;
 
-    #[test]
-    fn epoch_to_iso8601_matches_a_known_instant() {
-        // 1_700_000_000 = 2023-11-14T22:13:20Z (mismo instante usado en otros tests del
-        // proyecto para esta conversión, ver sources::xtream).
-        assert_eq!(epoch_to_iso8601(1_700_000_000), "2023-11-14T22:13:20Z");
+    /// Un "dispositivo": su propia base SQLite con el mismo catálogo mínimo (una
+    /// película y un episodio con `match_key` estables) y un perfil.
+    struct Device {
+        db: PathBuf,
+        profile_id: i64,
+    }
+
+    impl Device {
+        fn new(label: &str) -> Self {
+            use rand::RngExt;
+            let suffix: u64 = rand::rng().random();
+            let db = std::env::temp_dir().join(format!("vibe-iptv-engine-test-{label}-{}-{suffix:x}.sqlite3", std::process::id()));
+            let conn = schema::open_connection_at(&db).unwrap();
+            conn.execute_batch(
+                "INSERT INTO providers (id, name, kind, base_url, created_at) VALUES (1, 'P', 'xtream', 'http://x', 0);
+                 INSERT INTO movies (id, clean_title, match_key) VALUES (10, 'Matrix', 'matrix-1999');
+                 INSERT INTO series (id, clean_title, match_key) VALUES (20, 'Serie', 'serie-2020');
+                 INSERT INTO series_sources (id, series_id, provider_id, remote_id, raw_title) VALUES (30, 20, 1, 's1', 'Serie');
+                 INSERT INTO episodes (id, series_source_id, remote_id, season, number) VALUES (40, 30, 'e1', 1, 2);",
+            )
+            .unwrap();
+            let profile_id = queries::insert_profile(&conn, "Ana", None, true).unwrap();
+            Self { db, profile_id }
+        }
+
+        fn conn(&self) -> Connection {
+            schema::open_connection_at(&self.db).unwrap()
+        }
+
+        fn favorite_movie(&self) {
+            let conn = self.conn();
+            reads::add_favorite(&conn, self.profile_id, "movie", 10).unwrap();
+            outbox::enqueue_favorite(&conn, self.profile_id, "movie", 10).unwrap();
+        }
+
+        fn unfavorite_movie(&self) {
+            let conn = self.conn();
+            reads::remove_favorite(&conn, self.profile_id, "movie", 10).unwrap();
+            outbox::enqueue_favorite(&conn, self.profile_id, "movie", 10).unwrap();
+        }
+
+        fn watch_episode(&self, position_s: i64) {
+            let conn = self.conn();
+            reads::upsert_playback_progress(&conn, self.profile_id, "episode", 40, position_s, Some(1_800)).unwrap();
+            outbox::enqueue_playback(&conn, self.profile_id, "episode", 40, true).unwrap();
+        }
+
+        /// En cualquier perfil: tras bajar, el favorito cuelga del perfil espejo del otro
+        /// dispositivo, no del propio.
+        fn has_favorite_movie(&self) -> bool {
+            self.conn()
+                .query_row("SELECT EXISTS(SELECT 1 FROM favorites WHERE item_kind = 'movie' AND item_id = 10)", [], |r| r.get(0))
+                .unwrap()
+        }
+
+        fn episode_progress(&self) -> Option<reads::PlaybackItem> {
+            let conn = self.conn();
+            let profile_id: Option<i64> = conn
+                .query_row("SELECT profile_id FROM playback_state WHERE item_kind = 'episode' AND item_id = 40", [], |r| r.get(0))
+                .ok();
+            reads::get_playback_progress(&conn, profile_id?, "episode", 40).unwrap()
+        }
+
+        fn pending(&self) -> i64 {
+            cloud::pending_count(&self.conn()).unwrap()
+        }
+    }
+
+    /// Envía lo pendiente como si ya hubieran pasado `hours` horas: más que la agrupación
+    /// del progreso y que cualquier espera tras un fallo.
+    async fn flush_after_hours(device: &Device, cloud: &MemoryBackend, hours: i64) -> Result<usize, SyncError> {
+        flush_outbox_at(&device.db, cloud, &cloud.session(), now_epoch() + hours * 3_600).await
+    }
+
+    async fn flush_everything(device: &Device, cloud: &MemoryBackend) -> Result<usize, SyncError> {
+        flush_after_hours(device, cloud, 2).await
+    }
+
+    #[tokio::test]
+    async fn changes_made_while_the_cloud_is_down_are_delivered_when_it_returns() {
+        let cloud = MemoryBackend::new();
+        let pc = Device::new("offline");
+        pc.favorite_movie();
+        pc.watch_episode(300);
+
+        cloud.fail_everything(Some(CloudError::Unavailable));
+        assert!(flush_after_hours(&pc, &cloud, 2).await.is_err());
+        assert_eq!(pc.pending(), 2, "nada se pierde mientras la nube está caída");
+        assert_eq!(flush_after_hours(&pc, &cloud, 2).await.unwrap(), 0, "tras un fallo se espera antes de reintentar");
+
+        cloud.fail_everything(None);
+        assert_eq!(flush_after_hours(&pc, &cloud, 4).await.unwrap(), 2);
+        assert_eq!(pc.pending(), 0);
+        assert_eq!(cloud.docs(Collection::Favorites).len(), 1);
+        let [RemoteDoc::Playback(progress)] = &cloud.docs(Collection::Playback)[..] else { panic!("se esperaba un progreso") };
+        assert_eq!(progress.position_s, 300);
+        assert_eq!(progress.item_key, "serie-2020:1:2");
+    }
+
+    #[tokio::test]
+    async fn frequent_progress_saves_collapse_into_one_write() {
+        let cloud = MemoryBackend::new();
+        let pc = Device::new("debounce");
+        for position in [10, 20, 30, 40] {
+            pc.watch_episode(position);
+        }
+        assert_eq!(pc.pending(), 1);
+        assert_eq!(flush_outbox(&pc.db, &cloud, &cloud.session()).await.unwrap(), 0, "aún dentro del minuto de agrupación");
+
+        flush_everything(&pc, &cloud).await.unwrap();
+        assert_eq!(cloud.write_calls(), 1);
+        let [RemoteDoc::Playback(progress)] = &cloud.docs(Collection::Playback)[..] else { panic!("se esperaba un progreso") };
+        assert_eq!(progress.position_s, 40, "llega el último estado");
+    }
+
+    #[tokio::test]
+    async fn initial_merge_uploads_local_profiles_favorites_and_progress() {
+        let cloud = MemoryBackend::new();
+        let session = cloud.session();
+        let pc = Device::new("merge");
+        // Estado creado antes de existir la cola (o antes de iniciar sesión): no hay nada
+        // encolado, solo filas locales.
+        {
+            let conn = pc.conn();
+            reads::add_favorite(&conn, pc.profile_id, "movie", 10).unwrap();
+            reads::upsert_playback_progress(&conn, pc.profile_id, "movie", 10, 120, Some(7_200)).unwrap();
+        }
+        initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+
+        assert_eq!(cloud.docs(Collection::Profiles).len(), 1);
+        assert_eq!(cloud.docs(Collection::Favorites).len(), 1);
+        assert_eq!(cloud.docs(Collection::Playback).len(), 1, "el progreso local también sube (antes no)");
+
+        // Una segunda vez con la misma cuenta no repite la fusión.
+        let writes = cloud.write_calls();
+        initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+        assert_eq!(cloud.write_calls(), writes);
+    }
+
+    #[tokio::test]
+    async fn another_device_sees_additions_and_removals_without_signing_in_again() {
+        let cloud = MemoryBackend::new();
+        let session = cloud.session();
+        let pc = Device::new("pc");
+        initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+
+        // El segundo dispositivo entra con la misma cuenta y baja el perfil del PC.
+        let laptop = Device::new("laptop");
+        initial_merge_if_needed(&laptop.db, &cloud, &session).await.unwrap();
+        flush_everything(&laptop, &cloud).await.unwrap();
+
+        pc.favorite_movie();
+        pc.watch_episode(900);
+        flush_everything(&pc, &cloud).await.unwrap();
+        pull_changes(&laptop.db, &cloud, &session).await.unwrap();
+        assert!(laptop.has_favorite_movie());
+        assert_eq!(laptop.episode_progress().unwrap().position_s, 900);
+
+        pc.unfavorite_movie();
+        flush_everything(&pc, &cloud).await.unwrap();
+        pull_changes(&laptop.db, &cloud, &session).await.unwrap();
+        assert!(!laptop.has_favorite_movie(), "el borrado lógico llega al otro dispositivo");
+    }
+
+    #[tokio::test]
+    async fn pulled_progress_keeps_its_original_date() {
+        let cloud = MemoryBackend::new();
+        let session = cloud.session();
+        let pc = Device::new("dates");
+        initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+        let profile_remote_id = cloud::sync_profiles(&pc.conn()).unwrap()[0].remote_id.clone().unwrap();
+
+        cloud.put_from_other_device(RemoteDoc::Playback(RemotePlayback {
+            profile_id: profile_remote_id,
+            item_kind: "episode".into(),
+            item_key: "serie-2020:1:2".into(),
+            position_s: 50,
+            duration_s: Some(1_800),
+            finished: false,
+            played_at: 1_000,
+            updated_at: 1_000,
+            deleted: false,
+        }));
+        pull_changes(&pc.db, &cloud, &session).await.unwrap();
+        let progress = pc.episode_progress().unwrap();
+        assert_eq!(progress.played_at, 1_000, "visto hace tiempo en otro sitio no salta al principio de Continuar viendo");
+        assert_eq!(pc.pending(), 0, "aplicar lo bajado no genera subidas");
+    }
+
+    #[tokio::test]
+    async fn a_pending_local_change_wins_over_the_cloud() {
+        let cloud = MemoryBackend::new();
+        let session = cloud.session();
+        let pc = Device::new("pending");
+        initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+        let profile_remote_id = cloud::sync_profiles(&pc.conn()).unwrap()[0].remote_id.clone().unwrap();
+
+        // Marcado sin conexión aquí, y a la vez quitado desde otro dispositivo.
+        pc.favorite_movie();
+        cloud.put_from_other_device(RemoteDoc::Favorite(RemoteFavorite {
+            profile_id: profile_remote_id,
+            item_kind: "movie".into(),
+            item_key: "matrix-1999".into(),
+            added_at: now_epoch() + 3_600,
+            updated_at: now_epoch() + 3_600,
+            deleted: true,
+        }));
+        pull_changes(&pc.db, &cloud, &session).await.unwrap();
+        assert!(pc.has_favorite_movie(), "lo encolado aquí todavía no se ha enviado: no se pisa");
+    }
+
+    #[tokio::test]
+    async fn a_profile_deleted_elsewhere_is_deleted_here_but_never_the_last_one() {
+        let cloud = MemoryBackend::new();
+        let session = cloud.session();
+        let pc = Device::new("profiles");
+        let second = queries::insert_profile(&pc.conn(), "Niños", None, false).unwrap();
+        initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+        assert_eq!(cloud.docs(Collection::Profiles).len(), 2);
+
+        let remote_ids: Vec<String> = cloud::sync_profiles(&pc.conn()).unwrap().into_iter().filter_map(|p| p.remote_id).collect();
+        for remote_id in &remote_ids {
+            outbox::enqueue_profile_deleted(&pc.conn(), remote_id).unwrap();
+            let doc = serde_json::from_str::<RemoteDoc>(&cloud::due_entries(&pc.conn(), i64::MAX, 10).unwrap()[0].payload).unwrap();
+            cloud::clear_outbox(&pc.conn()).unwrap();
+            cloud.put_from_other_device(doc);
+        }
+        pull_changes(&pc.db, &cloud, &session).await.unwrap();
+        let left = cloud::sync_profiles(&pc.conn()).unwrap();
+        assert_eq!(left.len(), 1, "se borra uno, pero el último se queda");
+        assert!(left[0].id == pc.profile_id || left[0].id == second);
     }
 
     #[test]
-    fn iso8601_to_epoch_roundtrips_epoch_to_iso8601() {
-        let epoch = 1_700_000_000;
-        assert_eq!(iso8601_to_epoch(&epoch_to_iso8601(epoch)), Some(epoch));
-    }
-
-    #[test]
-    fn iso8601_to_epoch_ignores_fractional_seconds_and_timezone_suffix() {
-        // Forma real que devuelve Postgres para un `timestamptz`: microsegundos y
-        // desplazamiento horario, ninguno de los dos debe desviar el resultado — los
-        // primeros seis grupos de dígitos son siempre año/mes/día/hora/min/seg.
-        let epoch = iso8601_to_epoch("2023-11-14T22:13:20.123456+00:00").unwrap();
-        assert_eq!(epoch, 1_700_000_000);
-    }
-
-    #[test]
-    fn iso8601_to_epoch_rejects_garbage() {
-        assert_eq!(iso8601_to_epoch("no es una fecha"), None);
-        assert_eq!(iso8601_to_epoch(""), None);
-    }
-
-    #[test]
-    fn get_str_and_get_bool_read_json_fields_defensively() {
-        let value = serde_json::json!({ "name": "Jorge", "adult_ok": true });
-        assert_eq!(get_str(&value, "name"), Some("Jorge".to_string()));
-        assert_eq!(get_str(&value, "missing"), None);
-        assert!(get_bool(&value, "adult_ok"));
-        assert!(!get_bool(&value, "missing"));
+    fn backoff_grows_and_is_capped_at_an_hour() {
+        assert_eq!(backoff_seconds(0), 30);
+        assert_eq!(backoff_seconds(1), 60);
+        assert_eq!(backoff_seconds(3), 240);
+        assert_eq!(backoff_seconds(10), MAX_BACKOFF_S);
+        assert_eq!(backoff_seconds(1_000), MAX_BACKOFF_S);
     }
 }

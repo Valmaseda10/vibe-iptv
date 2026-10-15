@@ -2,7 +2,7 @@
 
 export type AccountStatus = { auth_ok: boolean, status: string, expires_at: number | null, max_connections: number, };
 
-export type AccountStatusResponse = { logged_in: boolean, email: string | null, };
+export type AccountStatusResponse = { logged_in: boolean, email: string | null, sync: CloudSyncStatus | null, };
 
 export type AddProviderInput = { kind: ProviderKind, name: string, base_url: string, username: string | null, password: string | null, m3u_url: string | null, user_agent: string | null, };
 
@@ -20,6 +20,23 @@ export type CategorySummary = { id: number, name: string, };
 export type ChannelSummary = { id: number, display_name: string, logo_url: string | null, category_id: number | null, has_catchup: boolean, };
 
 export type ChannelsPage = { items: Array<ChannelSummary>, next_cursor: number | null, };
+
+/**
+ * Cómo va la sincronización con la nube, para Ajustes.
+ */
+export type CloudSyncStatus = { 
+/**
+ * Cambios hechos en este PC que todavía no han llegado a la nube.
+ */
+pending_changes: number, 
+/**
+ * Epoch de la última vuelta completa sin errores, si la hubo desde que arrancó la app.
+ */
+last_synced_at: number | null, 
+/**
+ * Último error, en español, si la última vuelta falló.
+ */
+last_error: string | null, };
 
 export type ContinueWatchingItem = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, title: string, subtitle: string | null, poster_path: string | null, };
 
@@ -223,8 +240,7 @@ export type RecommendedSeriesSummary = { id: number, clean_title: string, year: 
 
 export type ResetPasswordInput = { email: string, 
 /**
- * El enlace completo del correo, o solo el valor de su parámetro `token=` — la app
- * no tiene página web propia que lo reciba, así que el usuario lo pega a mano.
+ * El enlace completo del correo, o solo su código (`oobCode`).
  */
 token_or_link: string, new_password: string, };
 
