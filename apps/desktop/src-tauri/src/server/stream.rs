@@ -392,8 +392,9 @@ async fn handle_stream(
     match tier {
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
         2 => {
-            let transcode_audio = probe::audio_needs_transcode(audio_codec.as_deref());
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), transcode_audio, start_seconds, audio_track, permit, Arc::clone(&state.stream_guard))
+            let codec = selected_track_codec(&state.db_path, &resolved_url, audio_track).await.or(audio_codec);
+            let live = matches!(item.kind, MediaKind::Live);
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), codec.as_deref(), live, start_seconds, audio_track, permit, Arc::clone(&state.stream_guard))
                 .await
         }
         _ => Err(StreamError::NeedsMpv),
@@ -495,8 +496,8 @@ async fn handle_catchup(
     match tier {
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
         2 => {
-            let transcode_audio = probe::audio_needs_transcode(audio_codec.as_deref());
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), transcode_audio, None, None, permit, Arc::clone(&state.stream_guard))
+            // Un programa ya emitido tiene principio y fin: como una película, sin `nobuffer`.
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), audio_codec.as_deref(), false, None, None, permit, Arc::clone(&state.stream_guard))
                 .await
         }
         _ => Err(StreamError::NeedsMpv),
@@ -699,6 +700,17 @@ async fn proxy_passthrough(url: Url, range: Option<HeaderValue>, permit: StreamP
     builder.body(body).map_err(|_| StreamError::Internal)
 }
 
+/// Códec de la pista de audio elegida en el selector, si se eligió una y la sonda la
+/// conoce. Puede no coincidir con el de la primera pista (`probe_cache.audio_codec`),
+/// y es el que decide cómo tratar el audio en el remux.
+async fn selected_track_codec(db_path: &Path, url: &Url, audio_track: Option<i64>) -> Option<String> {
+    let track = audio_track?;
+    let cache_key = probe::stream_cache_key(url.as_str());
+    let row = with_db(db_path.to_path_buf(), move |conn| queries::get_probe_cache(conn, &cache_key)).await.ok().flatten()?;
+    let tracks: Vec<probe::AudioTrack> = serde_json::from_str(row.audio_tracks_json.as_deref()?).ok()?;
+    tracks.into_iter().find(|t| t.index == track)?.codec_name
+}
+
 /// Nivel 2: remux a fMP4 con ffmpeg, un proceso vivo por sesión (ver
 /// `util::stream_guard`). `start_seconds` implementa la búsqueda en VOD: el cliente pide
 /// un stream nuevo con `?start=<segundos>` y aquí se traduce a un `-ss` de entrada.
@@ -706,13 +718,14 @@ async fn proxy_passthrough(url: Url, range: Option<HeaderValue>, permit: StreamP
 async fn spawn_remux_response(
     ffmpeg_path: &Path,
     url: &str,
-    transcode_audio: bool,
+    audio_codec: Option<&str>,
+    live: bool,
     start_seconds: Option<f64>,
     audio_track: Option<i64>,
     permit: StreamPermit,
     guard: Arc<StreamGuard>,
 ) -> Result<Response, StreamError> {
-    let mut child = ffmpeg::spawn_remux(ffmpeg_path, url, DEFAULT_USER_AGENT, transcode_audio, start_seconds, audio_track).map_err(|err| {
+    let mut child = ffmpeg::spawn_remux(ffmpeg_path, url, DEFAULT_USER_AGENT, audio_codec, live, start_seconds, audio_track).map_err(|err| {
         tracing::error!(error = %err, "no se pudo lanzar ffmpeg para el remux");
         StreamError::BinariesMissing
     })?;
@@ -770,8 +783,8 @@ mod tests {
     async fn generate_sample(ffmpeg_path: &Path, dir: &Path, filename: &str, container: &str) -> PathBuf {
         let out = dir.join(filename);
         let status = tokio::process::Command::new(ffmpeg_path)
-            .args(["-y", "-f", "lavfi", "-i", "testsrc=duration=2:size=64x64:rate=10", "-f", "lavfi", "-i", "sine=duration=2"])
-            .args(["-c:v", "libx264", "-c:a", "aac", "-t", "2", "-f", container])
+            .args(["-y", "-f", "lavfi", "-i", "testsrc=duration=6:size=64x64:rate=10", "-f", "lavfi", "-i", "sine=duration=6"])
+            .args(["-c:v", "libx264", "-c:a", "aac", "-t", "6", "-f", container])
             .arg(&out)
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -914,7 +927,7 @@ mod tests {
         assert_eq!(tier, 1, "un MP4 progresivo H.264/AAC debe resolverse a nivel 1");
         // La duración real (VOD) se guarda para que el reproductor pueda pintar una
         // barra de búsqueda aunque TMDB no tenga la duración editorial del título.
-        assert!(duration.is_some_and(|d| d > 1.5 && d < 3.0), "duración inesperada: {duration:?}");
+        assert!(duration.is_some_and(|d| d > 5.5 && d < 7.0), "duración inesperada: {duration:?}");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);
@@ -958,7 +971,7 @@ mod tests {
             conn.query_row("SELECT id FROM channels WHERE remote_id = '1'", [], |r| r.get(0)).unwrap()
         };
 
-        let state = base_state(db_path.clone(), Some(ffmpeg_path), Some(ffprobe_path));
+        let state = base_state(db_path.clone(), Some(ffmpeg_path), Some(ffprobe_path.clone()));
         let response = stream_router(state)
             .oneshot(Request::builder().uri(format!("/stream/channel/{channel_id}?profile_id=1")).body(Body::empty()).unwrap())
             .await
@@ -968,6 +981,11 @@ mod tests {
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert!(!body.is_empty());
         assert_eq!(&body[4..8], b"ftyp");
+        // La cabecera sola no prueba nada (ver `media::count_packets`).
+        let remuxed = dir.join("remuxed-live.mp4");
+        std::fs::write(&remuxed, &body).unwrap();
+        assert!(crate::media::count_packets(&ffprobe_path, &remuxed, "v") > 0, "el remux del directo no lleva vídeo");
+        assert!(crate::media::count_packets(&ffprobe_path, &remuxed, "a") > 0, "el remux del directo no lleva audio");
 
         let conn = open_connection_at(&db_path).unwrap();
         let (tier, duration): (i64, Option<f64>) =
@@ -1023,6 +1041,7 @@ mod tests {
         let probed = probe::probe_url(&ffprobe_path, &remuxed_path.to_string_lossy(), "vibe-iptv-test").await.unwrap();
         assert_eq!(probed.audio_tracks.len(), 1, "el remux con una pista elegida debe llevar solo esa, no las dos originales");
         assert_eq!(probed.audio_tracks[0].channels, Some(2), "se pidió audio_track=1 (la estéreo) y no llegó");
+        assert!(crate::media::count_packets(&ffprobe_path, &remuxed_path, "a") > 0, "la pista elegida está declarada pero vacía");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);

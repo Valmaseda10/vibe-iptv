@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiDelete, apiGet, apiPatch, apiPost } from "../../lib/api-client";
+import { apiDelete, apiGet, apiPatch, apiPost, errorMessage } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import { AVATAR_COLORS, AVATAR_ICONS, formatAvatar, parseAvatar } from "../../lib/avatar";
 import type { ProfileSummary } from "../../lib/api-types";
@@ -63,11 +63,12 @@ export function ProfilesScreen() {
       <div className="flex h-full min-h-screen flex-col items-center justify-center gap-6 bg-neutral-950 px-6 py-10 text-white">
         <h1 className="text-3xl font-semibold sm:text-4xl">Crea tu primer perfil</h1>
         <p className="max-w-sm text-center text-neutral-400">
-          Cada perfil tiene sus propios favoritos, su "seguir viendo" y su control de contenido para adultos.
+          Cada perfil tiene sus propios favoritos, su "Continuar viendo" y su control de contenido para adultos.
         </p>
         <button
           type="button"
           onClick={() => setEditing("new")}
+          aria-label="Añadir perfil"
           className="flex h-28 w-28 items-center justify-center rounded-lg border-2 border-dashed border-neutral-700 text-4xl text-neutral-500 outline-none hover:border-neutral-500 hover:text-neutral-300 focus-visible:border-red-600 sm:h-36 sm:w-36"
         >
           +
@@ -88,6 +89,7 @@ export function ProfilesScreen() {
               <button
                 type="button"
                 onClick={() => selectProfile(profile)}
+                aria-label={managing ? `Editar el perfil ${profile.name}` : `Entrar como ${profile.name}`}
                 className="group relative flex h-28 w-28 items-center justify-center rounded-lg text-4xl font-semibold outline-none ring-offset-4 ring-offset-neutral-950 transition hover:ring-4 hover:ring-white focus-visible:ring-4 focus-visible:ring-red-600 sm:h-36 sm:w-36"
                 style={{ backgroundColor: color }}
               >
@@ -130,6 +132,7 @@ export function ProfilesScreen() {
             <button
               type="button"
               onClick={() => setEditing("new")}
+              aria-label="Añadir perfil"
               className="flex h-28 w-28 items-center justify-center rounded-lg border-2 border-dashed border-neutral-700 text-4xl text-neutral-500 outline-none hover:border-neutral-500 hover:text-neutral-300 focus-visible:border-red-600 sm:h-36 sm:w-36"
             >
               +
@@ -195,7 +198,7 @@ function ProfileEditForm({
       onSaved();
       onClose();
     },
-    onError: (err) => setError(String(err)),
+    onError: (err) => setError(errorMessage(err)),
   });
 
   const deleteMutation = useMutation({

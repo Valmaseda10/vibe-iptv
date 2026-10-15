@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { apiGet, apiPost } from "../../lib/api-client";
+import { apiGet, apiPost, errorMessage } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type {
   AccountStatus,
@@ -474,7 +474,7 @@ function AccountSection() {
       invalidate();
       forgetActiveProfile();
     },
-    onError: (err) => setError(String(err).replace(/^Error:\s*/, "")),
+    onError: (err) => setError(errorMessage(err)),
   });
 
   const logoutMutation = useMutation({
@@ -600,7 +600,7 @@ function ChangePasswordForm() {
     },
     onError: (err) => {
       setSuccess(false);
-      setError(String(err).replace(/^Error:\s*/, ""));
+      setError(errorMessage(err));
     },
   });
 

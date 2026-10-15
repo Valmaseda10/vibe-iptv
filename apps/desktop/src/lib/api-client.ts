@@ -25,6 +25,12 @@ export class ApiError extends Error {
   }
 }
 
+/** Texto de un error para enseñarlo al usuario, sin el prefijo "Error: " que añade
+ * `String(err)`. */
+export function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
 /** El núcleo manda mensajes de error pensados para enseñarse tal cual (p. ej.
  * "email rate limit exceeded", "PIN incorrecto") — antes se perdían y solo llegaba el
  * número de estado (`502`, `401`...) a quien mostraba el error, un fallo real

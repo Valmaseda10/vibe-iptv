@@ -1220,9 +1220,9 @@ renueva al arrancar. Test de regresión con tamaños reales.
   la app real para comprobar F11, su base de datos se creó vacía (0 proveedores, 0
   perfiles), igual que faltaban Rust y Visual Studio. Lo que hubiera en Supabase
   (perfiles, favoritos y progreso; nunca el catálogo ni el proveedor) no se migra solo.
-  Hace falta volver a dar de alta el proveedor, y decidir si merece la pena importar lo
-  de Supabase.
-- El proyecto de Supabase ya no lo usa nada. No borrarlo hasta decidir lo anterior.
+  Hace falta volver a dar de alta el proveedor. **Decidido con el usuario: no se recupera
+  nada de Supabase**, se empieza de cero con la cuenta nueva.
+- El proyecto de Supabase ya no lo usa nada: el usuario puede borrarlo desde su panel.
 - Ver "Límites conocidos" en `docs/CLOUD-SYNC.md` (lo que el catálogo local no tiene al
   bajar se pierde para este PC; conflictos por reloj del cliente).
 

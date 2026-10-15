@@ -65,3 +65,17 @@ mod tests {
         assert_eq!(found, Some(path));
     }
 }
+
+/// Paquetes que `ffprobe` cuenta de verdad en un fichero, para un selector de stream
+/// (`"v"`, `"a"`). Para los tests de remux: que la salida empiece por `ftyp`, o incluso
+/// que tenga algún fragmento, no prueba nada — sin `aac_adtstoasc`, ffmpeg 8 escribía la
+/// cabecera y un fragmento de vídeo y abortaba en el primer paquete de audio.
+#[cfg(test)]
+pub(crate) fn count_packets(ffprobe: &std::path::Path, file: &std::path::Path, selector: &str) -> usize {
+    let output = std::process::Command::new(ffprobe)
+        .args(["-v", "error", "-select_streams", selector, "-count_packets", "-show_entries", "stream=nb_read_packets", "-of", "csv=p=0"])
+        .arg(file)
+        .output()
+        .expect("no se pudo ejecutar ffprobe");
+    String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| line.trim().trim_end_matches(',').parse::<usize>().ok()).sum()
+}

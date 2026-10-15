@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError, apiGet, apiPost } from "../../lib/api-client";
+import { ApiError, apiGet, apiPost, errorMessage } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type { AccountStatusResponse } from "../../lib/api-types";
 
@@ -67,7 +67,7 @@ function AccountForm({ onLoggedIn, onEnterOffline }: { onLoggedIn: () => void; o
       onLoggedIn();
     },
     onError: (err) => {
-      setError(String(err));
+      setError(errorMessage(err));
       setCloudDown(err instanceof ApiError && err.status === 503);
     },
   });
@@ -177,7 +177,7 @@ function ForgotPasswordForm({ email: initialEmail, onSent, onBack }: { email: st
       setError(null);
       onSent(email);
     },
-    onError: (err) => setError(String(err)),
+    onError: (err) => setError(errorMessage(err)),
   });
 
   return (
@@ -230,7 +230,7 @@ function ResetPasswordForm({ email: initialEmail, onDone, onBack }: { email: str
       setError(null);
       onDone();
     },
-    onError: (err) => setError(String(err)),
+    onError: (err) => setError(errorMessage(err)),
   });
 
   const canSubmit = email && tokenOrLink.trim() && newPassword.length >= 6;

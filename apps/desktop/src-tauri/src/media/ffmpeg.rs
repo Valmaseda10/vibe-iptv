@@ -1,6 +1,7 @@
 //! Remux a fMP4 sobre el proxy local (nivel 2 de la cascada). Flags exactos de
 //! `docs/ARCHITECTURE.md`: el vídeo nunca se recodifica, el audio solo si el WebView no
-//! lo soporta (AC3, E-AC3, DTS — ver `media::probe::audio_needs_transcode`).
+//! lo soporta (AC3, E-AC3, DTS — ver `media::probe::audio_needs_transcode`). El AAC que
+//! llega dentro de MPEG-TS se copia con `aac_adtstoasc` (ver `build_remux_command`).
 
 use std::path::Path;
 use std::process::Stdio;
@@ -17,15 +18,21 @@ pub fn build_remux_command(
     ffmpeg_path: &Path,
     url: &str,
     user_agent: &str,
-    transcode_audio: bool,
+    audio_codec: Option<&str>,
+    live: bool,
     start_seconds: Option<f64>,
     audio_track: Option<i64>,
 ) -> Command {
     let mut command = Command::new(ffmpeg_path);
-    command
-        .args(["-hide_banner", "-loglevel", "error"])
-        .args(["-user_agent", user_agent])
-        .args(["-fflags", "nobuffer", "-flags", "low_delay", "-probesize", "2M", "-analyzeduration", "2M"]);
+    command.args(["-hide_banner", "-loglevel", "error"]).args(["-user_agent", user_agent]);
+    // `nobuffer` arranca antes descartando los paquetes leídos mientras se analiza la
+    // entrada. En directo da igual (no hay principio que perder); en una película o un
+    // episodio se comía los primeros segundos, también después de cada búsqueda (medido:
+    // el vídeo empezaba en el segundo 10 con un MKV de bitrate bajo).
+    if live {
+        command.args(["-fflags", "nobuffer", "-flags", "low_delay"]);
+    }
+    command.args(["-probesize", "2M", "-analyzeduration", "2M"]);
 
     // Búsqueda para VOD: `-ss` antes de `-i` es "seek de entrada" (rápido, a la
     // keyframe más cercana), la única opción viable con `-c:v copy` — no hay fotogramas
@@ -46,10 +53,18 @@ pub fn build_remux_command(
 
     command.args(["-c:v", "copy"]);
 
-    if transcode_audio {
+    if crate::media::probe::audio_needs_transcode(audio_codec) {
         command.args(["-c:a", "aac", "-b:a", "192k"]);
     } else {
         command.args(["-c:a", "copy"]);
+        // El AAC de un MPEG-TS (el directo de casi cualquier proveedor) viaja con
+        // cabeceras ADTS, que MP4 no admite. ffmpeg antiguo añadía este filtro solo; el
+        // 8.x aborta con "Malformed AAC bitstream" tras escribir solo la cabecera, y el
+        // `<video>` recibía un vídeo de duración cero que daba por terminado al instante.
+        // Solo con AAC: aplicado a otro códec, ffmpeg falla.
+        if audio_codec == Some("aac") {
+            command.args(["-bsf:a", "aac_adtstoasc"]);
+        }
     }
 
     command
@@ -72,11 +87,12 @@ pub fn spawn_remux(
     ffmpeg_path: &Path,
     url: &str,
     user_agent: &str,
-    transcode_audio: bool,
+    audio_codec: Option<&str>,
+    live: bool,
     start_seconds: Option<f64>,
     audio_track: Option<i64>,
 ) -> std::io::Result<Child> {
-    let mut child = build_remux_command(ffmpeg_path, url, user_agent, transcode_audio, start_seconds, audio_track).spawn()?;
+    let mut child = build_remux_command(ffmpeg_path, url, user_agent, audio_codec, live, start_seconds, audio_track).spawn()?;
 
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(async move {
@@ -100,23 +116,35 @@ mod tests {
 
     #[test]
     fn video_is_always_copied_never_recoded() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None);
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:v").unwrap();
         assert_eq!(args[pos + 1], "copy");
     }
 
     #[test]
-    fn audio_is_copied_when_transcode_not_needed() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
+    fn aac_is_copied_with_the_adts_to_mp4_filter() {
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("aac"), true, None, None);
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "copy");
+        assert!(args.windows(2).any(|w| w[0] == "-bsf:a" && w[1] == "aac_adtstoasc"));
+    }
+
+    #[test]
+    fn other_compatible_audio_is_copied_without_the_aac_filter() {
+        for codec in [Some("mp3"), Some("opus"), None] {
+            let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", codec, true, None, None);
+            let args = args_of(&command);
+            let pos = args.iter().position(|a| a == "-c:a").unwrap();
+            assert_eq!(args[pos + 1], "copy");
+            assert!(!args.iter().any(|a| a == "aac_adtstoasc"), "{codec:?}");
+        }
     }
 
     #[test]
     fn audio_transcodes_to_aac_at_192k_when_incompatible() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", true, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("ac3"), true, None, None);
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "aac");
@@ -126,7 +154,7 @@ mod tests {
 
     #[test]
     fn output_uses_fragmented_mp4_over_stdout() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None);
         let args = args_of(&command);
         assert!(args.windows(2).any(|w| w[0] == "-f" && w[1] == "mp4"));
         assert!(args.iter().any(|a| a == "frag_keyframe+empty_moov+default_base_moof+delay_moov"));
@@ -134,16 +162,22 @@ mod tests {
     }
 
     #[test]
-    fn low_latency_flags_are_present() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
+    fn low_latency_flags_are_present_only_for_live() {
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None);
         let args = args_of(&command);
         assert!(args.iter().any(|a| a == "nobuffer"));
         assert!(args.iter().any(|a| a == "low_delay"));
+
+        // En VOD, `nobuffer` descarta los primeros segundos del contenido.
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, false, None, None);
+        let args = args_of(&command);
+        assert!(!args.iter().any(|a| a == "nobuffer"));
+        assert!(!args.iter().any(|a| a == "low_delay"));
     }
 
     #[test]
     fn user_agent_and_input_url_are_forwarded() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "MiAgente/1.0", false, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "MiAgente/1.0", None, true, None, None);
         let args = args_of(&command);
         let ua_pos = args.iter().position(|a| a == "-user_agent").unwrap();
         assert_eq!(args[ua_pos + 1], "MiAgente/1.0");
@@ -153,7 +187,7 @@ mod tests {
 
     #[test]
     fn start_seconds_inserts_input_seek_before_input_url() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", false, Some(125.5), None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, false, Some(125.5), None);
         let args = args_of(&command);
         let ss_pos = args.iter().position(|a| a == "-ss").unwrap();
         assert_eq!(args[ss_pos + 1], "125.5");
@@ -163,7 +197,7 @@ mod tests {
 
     #[test]
     fn no_seek_flag_when_start_seconds_is_none() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", false, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, false, None, None);
         let args = args_of(&command);
         assert!(!args.iter().any(|a| a == "-ss"));
     }
@@ -172,14 +206,14 @@ mod tests {
     fn no_explicit_map_without_an_audio_track_choice() {
         // Comportamiento de siempre: sin pista elegida, ffmpeg decide solo qué pistas
         // incluir — pedir `-map` sin necesidad rompería eso (dejaría de incluir vídeo).
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None);
         let args = args_of(&command);
         assert!(!args.iter().any(|a| a == "-map"));
     }
 
     #[test]
     fn selecting_an_audio_track_maps_video_and_that_track_explicitly() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, Some(1));
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, Some(1));
         let args = args_of(&command);
         let map_positions: Vec<usize> = args.iter().enumerate().filter(|(_, a)| *a == "-map").map(|(i, _)| i).collect();
         assert_eq!(map_positions.len(), 2, "hacen falta los dos -map (vídeo y audio) o ffmpeg deja de incluir vídeo");
@@ -191,7 +225,7 @@ mod tests {
     fn selecting_audio_track_zero_still_maps_explicitly() {
         // Track 0 es "falsy" en muchos lenguajes — confirma que Some(0) no se confunde
         // con None y se sigue mapeando de forma explícita.
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", false, None, Some(0));
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, Some(0));
         let args = args_of(&command);
         assert!(args.iter().any(|a| a == "-map"));
         let last_map = args.iter().enumerate().filter(|(_, a)| *a == "-map").last().unwrap().0;
@@ -230,7 +264,7 @@ mod tests {
         // fichero por HTTP en localhost para que la prueba ejercite exactamente los
         // mismos flags que se usan contra un proveedor real.
         let url = serve_file_over_http(sample.clone()).await;
-        let mut child = spawn_remux(&ffmpeg_path, &url, "vibe-iptv-test", false, None, None).unwrap();
+        let mut child = spawn_remux(&ffmpeg_path, &url, "vibe-iptv-test", Some("aac"), false, None, None).unwrap();
         let mut stdout = child.stdout.take().expect("stdout debería estar conectado");
 
         let mut buf = vec![0u8; 65536];
@@ -241,8 +275,8 @@ mod tests {
                 break;
             }
             total.extend_from_slice(&buf[..n]);
-            if total.len() > 32768 {
-                break; // suficiente para confirmar que hay una caja fMP4 válida al principio.
+            if total.len() > 1_000_000 {
+                break;
             }
         }
 
@@ -252,6 +286,14 @@ mod tests {
         assert!(!total.is_empty(), "el remux no produjo ningún byte");
         // Un MP4/fMP4 empieza con una caja `ftyp` (tamaño de 4 bytes + "ftyp" en ASCII).
         assert_eq!(&total[4..8], b"ftyp", "los primeros bytes no son una caja ftyp de fMP4 válida");
+        // La cabecera sola no prueba nada (ver `media::count_packets`): tiene que haber
+        // audio y vídeo de verdad dentro.
+        if let Ok(ffprobe_path) = which_on_path("ffprobe") {
+            let remuxed = dir.join("remuxed.mp4");
+            std::fs::write(&remuxed, &total).unwrap();
+            assert!(crate::media::count_packets(&ffprobe_path, &remuxed, "v") > 0, "el remux no lleva vídeo");
+            assert!(crate::media::count_packets(&ffprobe_path, &remuxed, "a") > 0, "el remux no lleva audio");
+        }
 
         let _ = std::fs::remove_dir_all(&dir);
     }

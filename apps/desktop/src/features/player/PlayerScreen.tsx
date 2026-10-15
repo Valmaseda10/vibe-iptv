@@ -109,7 +109,6 @@ export function PlayerScreen() {
   const tierQuery = useQuery({
     queryKey: ["player-tier", kind, itemId, search.source],
     queryFn: () => apiGetOrNull<PlaybackTierResponse>(`/api/playback/tier/${kind}/${itemId}${search.source ? `?source=${search.source}` : ""}`),
-    enabled: kind !== "channel",
     // La primera petición puede llegar antes de que el propio /stream/* termine de
     // sondear (van en paralelo al montar) y encontrar la caché todavía vacía. En vez de
     // depender solo del refetch de `onLoadedMetadata` (que asume que loadedmetadata
@@ -181,7 +180,8 @@ export function PlayerScreen() {
   // para esto (ver comentario de cabecera). `metadataDurationSeconds` (ffprobe) es la
   // única fuente de duración que se usa: la del propio `<video>` puede ser una cifra de
   // un fragmento suelto mientras el fMP4 remuxeado sigue llegando.
-  const nativeSeekable = tierQuery.data?.tier === 1;
+  // Un directo nunca se busca de forma nativa, aunque llegue por HLS (nivel 1).
+  const nativeSeekable = kind !== "channel" && tierQuery.data?.tier === 1;
   const displayDuration = metadataDurationSeconds;
   const displayCurrentTime = nativeSeekable ? videoCurrentTime : appliedStart + videoCurrentTime;
 
@@ -485,7 +485,7 @@ export function PlayerScreen() {
             // de sondear el códec (van en paralelo al montar): al llegar hasta aquí, la
             // sonda ya ha terminado seguro, así que ahora sí va a acertar con el nivel y
             // la duración reales si la primera vez llegaron tarde.
-            if (kind !== "channel") tierQuery.refetch();
+            tierQuery.refetch();
           }}
           onTimeUpdate={(e) => setVideoCurrentTime(e.currentTarget.currentTime)}
           onPlaying={() => {
