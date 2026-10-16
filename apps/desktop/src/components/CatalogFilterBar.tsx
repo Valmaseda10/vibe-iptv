@@ -44,8 +44,35 @@ export function CatalogFilterBar({
     staleTime: Infinity, // apenas cambian; una recarga completa de la app ya los refresca.
   });
 
+  // Con un mando, las flechas sobre un <select> enfocado cambiaban el filtro sin querer
+  // (Chromium cambia el valor sin abrir la lista). Aquí mueven el foco: izquierda y
+  // derecha entre controles, abajo a la primera tarjeta. Enter (el OK del mando) abre la
+  // lista para elegir.
+  function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    const target = e.target as HTMLElement;
+    const controls = Array.from(e.currentTarget.querySelectorAll<HTMLElement>("select, input, button"));
+    const index = controls.indexOf(target);
+    if (index === -1) return;
+    const isSelect = target instanceof HTMLSelectElement;
+    if (e.key === "ArrowDown") {
+      const firstCard = document.querySelector<HTMLElement>('[data-grid-index="0"]');
+      if (firstCard) {
+        e.preventDefault();
+        firstCard.focus();
+      }
+    } else if (e.key === "ArrowUp" && isSelect) {
+      e.preventDefault();
+    } else if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && (isSelect || target instanceof HTMLButtonElement)) {
+      e.preventDefault();
+      controls[e.key === "ArrowRight" ? Math.min(index + 1, controls.length - 1) : Math.max(index - 1, 0)]?.focus();
+    } else if (e.key === "Enter" && isSelect) {
+      e.preventDefault();
+      target.showPicker?.();
+    }
+  }
+
   return (
-    <div className="flex flex-wrap items-center gap-3 px-6 sm:px-10">
+    <div data-filter-bar onKeyDown={onKeyDown} className="flex flex-wrap items-center gap-3 px-6 sm:px-10">
       <select
         aria-label="Género"
         className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none"

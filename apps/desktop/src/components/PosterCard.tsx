@@ -40,6 +40,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
     <div className="group relative w-40 shrink-0 sm:w-44">
       <button
         type="button"
+        data-card
         data-grid-index={gridIndex}
         onClick={onOpen}
         onKeyDown={(e) => {

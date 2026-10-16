@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useParams, useNavigate } from "@tanstack/react-router";
+import { useCanGoBack, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGet, apiPost, useApiBase, imagePath } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
@@ -13,6 +13,11 @@ import type { MovieDetailResponse } from "../../lib/api-types";
 export function MovieDetailScreen() {
   const { movieId } = useParams({ from: "/movies/$movieId" });
   const navigate = useNavigate();
+  const router = useRouter();
+  const canGoBack = useCanGoBack();
+  // Volver lleva a donde se estaba (Inicio, Buscar, Favoritos...), no siempre al listado;
+  // sin historial (p. ej. entrando por "Sorpréndeme" nada más abrir), al listado.
+  const goBack = () => (canGoBack ? router.history.back() : navigate({ to: "/movies" }));
   const { data: base } = useApiBase();
   const { profileId } = useActiveProfile();
   const { isFavorite, toggleFavorite } = useFavorites();
@@ -35,11 +40,12 @@ export function MovieDetailScreen() {
     function onKeyDown(e: KeyboardEvent) {
       // Con el tráiler abierto, Escape es cosa suya (cerrarlo) — si además volviera a
       // "Películas", el modal y la navegación se pisarían en la misma pulsación.
-      if (e.key === "Escape" && !trailerOpen) navigate({ to: "/movies" });
+      if (e.key === "Escape" && !trailerOpen) goBack();
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [navigate, trailerOpen]);
+    // `goBack` depende de `canGoBack`: sin él aquí, Escape usaría un valor viejo.
+  }, [navigate, trailerOpen, canGoBack, router]);
 
   if (isPending) return <DetailSkeleton />;
   if (isError || !data) return <p className="p-10 text-red-400">No se encontró la película.</p>;
@@ -69,7 +75,7 @@ export function MovieDetailScreen() {
       </div>
 
       <div className={`relative flex flex-col gap-5 px-6 pb-16 sm:px-10 ${backdrop ? "pt-[32vh]" : "pt-10"}`}>
-        <button type="button" onClick={() => navigate({ to: "/movies" })} className="w-fit text-sm text-neutral-400 outline-none hover:text-neutral-200">
+        <button type="button" onClick={goBack} className="w-fit text-sm text-neutral-400 outline-none hover:text-neutral-200">
           ← Volver (Esc)
         </button>
         {poster && <img src={poster} alt="" className="w-36 rounded-lg shadow-2xl ring-1 ring-white/10 sm:w-44" />}
@@ -114,6 +120,8 @@ export function MovieDetailScreen() {
                 search: activeSourceId ? { source: activeSourceId } : {},
               })
             }
+            // Con mando, abrir una ficha y pulsar OK debe reproducir: el foco llega aquí.
+            autoFocus
             className="rounded-lg bg-red-600 px-6 py-3 font-medium text-white outline-none hover:bg-red-500"
           >
             ▶ Reproducir

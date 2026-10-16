@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { ProfileSwitcher } from "../features/profiles/ProfileSwitcher";
 import { SyncStatusBanner } from "./SyncStatusBanner";
@@ -49,6 +49,22 @@ export function AppLayout({ children }: { children: ReactNode }) {
       target.focus();
     }
   }
+
+  // Al abrir la app, o tras una navegación que desmonta el elemento enfocado, el foco
+  // queda en <body> y las flechas no hacían nada: con un mando no hay Tab para empezar.
+  // La primera flecha enfoca el primer elemento del contenido.
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (!e.key.startsWith("Arrow")) return;
+      if (document.activeElement && document.activeElement !== document.body) return;
+      const target = mainRef.current?.querySelector<HTMLElement>("[data-card], a, button, input, select, textarea, [tabindex]");
+      if (!target) return;
+      e.preventDefault();
+      target.focus();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   // "Sorpréndeme" (F "premium"): lleva directo a la ficha de un título al azar, nunca
   // abre el reproductor solo — sigue siendo el usuario quien decide reproducir (R1).

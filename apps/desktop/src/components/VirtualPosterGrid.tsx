@@ -135,7 +135,27 @@ export function VirtualPosterGrid({
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
     const currentAttr = (document.activeElement as HTMLElement | null)?.dataset.gridIndex;
-    const current = focusedIndex ?? (currentAttr ? Number(currentAttr) : 0);
+    // La tarjeta enfocada de verdad manda sobre el foco lógico guardado: el usuario pudo
+    // llegar a otra con el ratón o con Tab.
+    const current = currentAttr ? Number(currentAttr) : (focusedIndex ?? 0);
+    // Bordes de la rejilla (mando a distancia): arriba desde la primera fila sube a los
+    // filtros, izquierda desde la primera columna vuelve a la barra lateral.
+    if (e.key === "ArrowUp" && current < columns) {
+      const filter = document.querySelector<HTMLElement>("[data-filter-bar] select, [data-filter-bar] input");
+      if (filter) {
+        e.preventDefault();
+        filter.focus();
+      }
+      return;
+    }
+    if (e.key === "ArrowLeft" && current % columns === 0) {
+      const navLink = document.querySelector<HTMLElement>('nav [aria-current="page"]') ?? document.querySelector<HTMLElement>("nav a");
+      if (navLink) {
+        e.preventDefault();
+        navLink.focus();
+      }
+      return;
+    }
     let next = current;
     if (e.key === "ArrowRight") next = current + 1;
     else if (e.key === "ArrowLeft") next = current - 1;

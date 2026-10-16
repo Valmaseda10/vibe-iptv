@@ -11,6 +11,15 @@ type RowProps = {
  * distancia no existe. */
 const ROW_TRACK_SELECTOR = "[data-row-track]";
 
+/** Lo que recorren las flechas dentro de una fila: la tarjeta, no sus botones
+ * secundarios (♥, ✕), que se alcanzan con Tab. Sin esto, la flecha derecha caía en el ✕
+ * de "Quitar de Continuar viendo" en vez de en la tarjeta siguiente. Filas cuyos hijos no
+ * son `PosterCard` recurren a cualquier botón. */
+function rowItems(track: HTMLElement): HTMLElement[] {
+  const cards = Array.from(track.querySelectorAll<HTMLElement>("[data-card]"));
+  return cards.length > 0 ? cards : Array.from(track.querySelectorAll<HTMLElement>("button"));
+}
+
 /** Salta desde la tarjeta `currentIndex` de `currentTrack` a la fila anterior/siguiente
  * (`direction`: 1 abajo, -1 arriba) del documento entero — deliberadamente global en vez
  * de recibir las filas vecinas como prop: así funciona igual entre `Row`s que no se
@@ -24,7 +33,7 @@ function focusVerticalNeighbor(currentTrack: HTMLElement, currentIndex: number, 
   if (trackIndex === -1) return;
   const targetTrack = tracks[trackIndex + direction];
   if (!targetTrack) return; // primera o última fila: sin salto, no hay a dónde ir.
-  const focusable = Array.from(targetTrack.querySelectorAll<HTMLElement>("button"));
+  const focusable = rowItems(targetTrack);
   if (focusable.length === 0) return;
   const target = focusable[Math.min(currentIndex, focusable.length - 1)];
   if (!target) return;
@@ -42,7 +51,7 @@ export function Row({ title, children }: RowProps) {
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
     const track = trackRef.current;
     if (!track) return;
-    const focusable = Array.from(track.querySelectorAll<HTMLElement>("button"));
+    const focusable = rowItems(track);
     const currentIndex = focusable.indexOf(document.activeElement as HTMLElement);
     if (currentIndex === -1) return;
 
