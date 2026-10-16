@@ -45,6 +45,9 @@ pub struct ProbeResult {
     /// de pista de audio). Casi siempre una sola, pero un canal o una película con varios
     /// idiomas puede traer dos o tres.
     pub audio_tracks: Vec<AudioTrack>,
+    /// Pistas de subtítulos incrustadas (F12). Solo las de texto se pueden ofrecer: se
+    /// convierten a WebVTT en el mismo remux (ver `media::ffmpeg`).
+    pub subtitle_tracks: Vec<SubtitleTrack>,
 }
 
 /// Una pista de audio del stream original (F "premium"). `index` es la posición
@@ -60,6 +63,22 @@ pub struct AudioTrack {
     pub language: Option<String>,
     pub codec_name: Option<String>,
     pub channels: Option<i64>,
+}
+
+/// Una pista de subtítulos del stream original. `index` es relativo entre pistas de
+/// subtítulos, lo que espera `-map 0:s:N`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SubtitleTrack {
+    pub index: i64,
+    pub language: Option<String>,
+    pub codec_name: Option<String>,
+    /// `false` para los de imagen (PGS, DVD, DVB), que no se pueden pasar a WebVTT.
+    pub text: bool,
+}
+
+/// Subtítulos de texto que ffmpeg sabe convertir a WebVTT.
+pub fn is_text_subtitle(codec: Option<&str>) -> bool {
+    matches!(codec, Some("subrip" | "srt" | "ass" | "ssa" | "mov_text" | "webvtt" | "text"))
 }
 
 /// Identificador estable de una URL de stream para la caché `probe_cache`, sin poder
@@ -169,10 +188,22 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
             channels: s.channels,
         })
         .collect();
+    let subtitle_tracks: Vec<SubtitleTrack> = parsed
+        .streams
+        .iter()
+        .filter(|s| s.codec_type.as_deref() == Some("subtitle"))
+        .enumerate()
+        .map(|(index, s)| SubtitleTrack {
+            index: index as i64,
+            language: s.tags.as_ref().and_then(|t| t.language.clone()),
+            codec_name: s.codec_name.clone(),
+            text: is_text_subtitle(s.codec_name.as_deref()),
+        })
+        .collect();
     let format = parsed.format?;
     let container = format.format_name?;
 
-    Some(ProbeResult { video_codec, audio_codec, container, duration_seconds: format.duration, audio_tracks })
+    Some(ProbeResult { video_codec, audio_codec, container, duration_seconds: format.duration, audio_tracks, subtitle_tracks })
 }
 
 /// Decide el nivel de la cascada (1, 2 o 3) a partir de contenedor y códecs, siguiendo
@@ -345,6 +376,30 @@ mod tests {
         // El códec/idioma "principal" (para decide_tier/audio_needs_transcode) sigue
         // siendo el de la PRIMERA pista, igual que antes de que existiera el selector.
         assert_eq!(result.audio_codec.as_deref(), Some("aac"));
+    }
+
+    #[test]
+    fn subtitle_tracks_keep_their_relative_index_and_flag_image_ones() {
+        // Un MKV típico de película: SRT en dos idiomas y un PGS (imagen, sin WebVTT).
+        let json = br#"{
+            "streams": [
+                {"codec_type": "video", "codec_name": "h264"},
+                {"codec_type": "audio", "codec_name": "aac", "channels": 2},
+                {"codec_type": "subtitle", "codec_name": "subrip", "tags": {"language": "spa"}},
+                {"codec_type": "subtitle", "codec_name": "hdmv_pgs_subtitle", "tags": {"language": "eng"}},
+                {"codec_type": "subtitle", "codec_name": "ass"}
+            ],
+            "format": {"format_name": "matroska,webm"}
+        }"#;
+        let result = parse_ffprobe_json(json).unwrap();
+        assert_eq!(
+            result.subtitle_tracks,
+            vec![
+                SubtitleTrack { index: 0, language: Some("spa".to_string()), codec_name: Some("subrip".to_string()), text: true },
+                SubtitleTrack { index: 1, language: Some("eng".to_string()), codec_name: Some("hdmv_pgs_subtitle".to_string()), text: false },
+                SubtitleTrack { index: 2, language: None, codec_name: Some("ass".to_string()), text: true },
+            ]
+        );
     }
 
     #[test]

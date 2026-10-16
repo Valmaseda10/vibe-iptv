@@ -105,6 +105,22 @@ Tres lecciones medidas (ver `DECISIONS.md`, 2026-10-16):
 Para directo, cada cambio de canal mata el proceso ffmpeg anterior antes de lanzar el
 nuevo. Un proceso vivo por sesión, sin excepciones.
 
+**Subtítulos incrustados (F12).** Si el cliente pide `?subtitle_track=N`, el **mismo**
+proceso añade una segunda salida, sin abrir otra conexión con el proveedor (R1):
+
+```
+  ... pipe:1 \
+  -map 0:s:N -c:s webvtt -ss 0 -flush_packets 1 -f webvtt <temporal>.vtt
+```
+
+La salida principal lleva entonces `-map` explícitos (vídeo y la pista de audio
+elegida, o la primera) y siempre `-sn`, para que ffmpeg no meta por su cuenta los
+subtítulos de texto como `mov_text` dentro del fMP4. La API lee el `.vtt` mientras se
+escribe y el reproductor añade las frases al `<video>` según llegan
+(`/api/playback/subtitles`). Solo los de texto: los de imagen (PGS, DVD) necesitarían
+OCR o quemarlos en el vídeo, y eso es recodificar. Ver los detalles medidos
+(`-ss 0`, frase en curso) en `DECISIONS.md`, F12.
+
 ### Nivel 3 — mpv como respaldo
 Para todo lo demás: H.265 sin soporte de hardware, VC-1, contenedores raros, o cuando
 el nivel 2 falla dos veces seguidas. En v1, mpv se lanza en su propia ventana y se

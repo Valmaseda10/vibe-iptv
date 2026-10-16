@@ -23,7 +23,7 @@ use tokio_util::io::ReaderStream;
 
 use crate::commands::build_source_for_provider;
 use crate::db::{queries, reads, schema, DbError};
-use crate::media::{ffmpeg, mpv, probe};
+use crate::media::{ffmpeg, mpv, probe, subtitles};
 use crate::sources::model::{CatchupRef, MediaKind, StreamRef};
 use crate::sources::xtream::DEFAULT_USER_AGENT;
 use crate::sources::Source;
@@ -46,9 +46,48 @@ pub struct StreamState {
     /// cuerpo de una respuesta de error; el reproductor lo consulta aquí para explicar qué
     /// pasó, sin volver a pedir el stream (que abriría otra sesión con el proveedor).
     pub last_errors: StreamErrorLog,
+    /// Subtítulos que va dejando el remux en curso (F12), si se pidió alguna pista.
+    pub subtitles: SubtitleSession,
 }
 
 pub type StreamErrorLog = Arc<std::sync::Mutex<std::collections::HashMap<String, StreamFailure>>>;
+
+pub type SubtitleSession = Arc<std::sync::Mutex<Option<ActiveSubtitles>>>;
+
+/// La pista de subtítulos de la sesión de remux vigente. Solo hay una a la vez, como
+/// solo hay un stream a la vez (regla R1).
+pub struct ActiveSubtitles {
+    /// Ver `subtitle_session_key`.
+    key: String,
+    path: PathBuf,
+}
+
+/// Identifica una sesión de subtítulos: ítem, pista y punto de arranque. Con el punto de
+/// arranque, un cliente que acaba de buscar no puede leer por error las frases del remux
+/// anterior (otra escala de tiempos) en el instante antes de que arranque el nuevo.
+fn subtitle_session_key(kind: &str, id: i64, track: i64, start_seconds: Option<f64>) -> String {
+    format!("{kind}:{id}:{track}:{}", start_seconds.unwrap_or(0.0))
+}
+
+/// Cierra la sesión de subtítulos anterior (borra su fichero) y, si se pide, abre otra.
+/// Se llama ya con el permiso de `StreamGuard`, es decir, con el ffmpeg anterior muerto.
+fn replace_subtitle_session(session: &SubtitleSession, key: Option<String>) -> Option<PathBuf> {
+    let Ok(mut current) = session.lock() else { return None };
+    if let Some(previous) = current.take() {
+        let _ = std::fs::remove_file(&previous.path);
+    }
+    let key = key?;
+    match subtitles::new_temp_file() {
+        Ok(path) => {
+            *current = Some(ActiveSubtitles { key, path: path.clone() });
+            Some(path)
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "no se pudo preparar el fichero de subtítulos; se reproduce sin ellos");
+            None
+        }
+    }
+}
 
 #[derive(Clone, serde::Serialize, ts_rs::TS)]
 #[ts(export, export_to = "api-types.ts")]
@@ -77,6 +116,7 @@ pub fn stream_router(state: StreamState) -> Router {
         .route("/api/playback/tier/:kind/:id", get(get_playback_tier))
         .route("/api/playback/binaries", get(get_binaries_status))
         .route("/api/playback/last-error/:kind/:id", get(get_last_error))
+        .route("/api/playback/subtitles/:kind/:id", get(get_subtitle_cues))
         .with_state(state)
 }
 
@@ -116,6 +156,18 @@ pub struct PlaybackTierResponse {
     /// Pistas de audio del stream (F "premium" — selector de pista de audio). Vacío si
     /// nunca se ha reproducido, o si solo tiene una (no hace falta selector para eso).
     pub audio_tracks: Vec<AudioTrackSummary>,
+    /// Pistas de subtítulos que se pueden enseñar (solo las de texto: las de imagen, como
+    /// PGS, no se pueden pasar a WebVTT). Vacío si nunca se ha reproducido.
+    pub subtitle_tracks: Vec<SubtitleTrackSummary>,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct SubtitleTrackSummary {
+    #[ts(type = "number")]
+    pub index: i64,
+    pub language: Option<String>,
+    pub codec_name: Option<String>,
 }
 
 /// Copia con derives de ts-rs de `media::probe::AudioTrack` — ese tipo vive en `media`,
@@ -170,6 +222,8 @@ async fn get_playback_tier(
         Some(row) => {
             let audio_tracks: Vec<probe::AudioTrack> =
                 row.audio_tracks_json.as_deref().and_then(|json| serde_json::from_str(json).ok()).unwrap_or_default();
+            let subtitle_tracks: Vec<probe::SubtitleTrack> =
+                row.subtitle_tracks_json.as_deref().and_then(|json| serde_json::from_str(json).ok()).unwrap_or_default();
             PlaybackTierResponse {
                 tier: Some(row.play_tier as u8),
                 video_codec: row.video_codec,
@@ -177,9 +231,22 @@ async fn get_playback_tier(
                 container: row.container,
                 duration_s: row.duration_s,
                 audio_tracks: audio_tracks.into_iter().map(Into::into).collect(),
+                subtitle_tracks: subtitle_tracks
+                    .into_iter()
+                    .filter(|t| t.text)
+                    .map(|t| SubtitleTrackSummary { index: t.index, language: t.language, codec_name: t.codec_name })
+                    .collect(),
             }
         }
-        None => PlaybackTierResponse { tier: None, video_codec: None, audio_codec: None, container: None, duration_s: None, audio_tracks: Vec::new() },
+        None => PlaybackTierResponse {
+            tier: None,
+            video_codec: None,
+            audio_codec: None,
+            container: None,
+            duration_s: None,
+            audio_tracks: Vec::new(),
+            subtitle_tracks: Vec::new(),
+        },
     }))
 }
 
@@ -252,6 +319,53 @@ async fn get_last_error(State(state): State<StreamState>, AxumPath((kind, id)): 
     }
 }
 
+#[derive(Deserialize)]
+struct SubtitleCuesQuery {
+    track: i64,
+    /// El `?start=` del stream al que pertenecen (0 o ausente si arrancó del principio).
+    start: Option<f64>,
+    /// Cuántas frases tiene ya el cliente: solo se devuelven las siguientes.
+    from: Option<usize>,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct SubtitleCue {
+    pub start: f64,
+    pub end: f64,
+    pub text: String,
+}
+
+#[derive(serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct SubtitleCuesResponse {
+    /// `false` si el remux en curso no es de este ítem con esta pista (p. ej. ya se
+    /// cambió de contenido): el cliente deja de preguntar.
+    pub active: bool,
+    pub cues: Vec<SubtitleCue>,
+}
+
+/// Frases de subtítulos que el remux en curso lleva escritas (F12). Lee el fichero
+/// temporal; no toca al proveedor.
+async fn get_subtitle_cues(
+    State(state): State<StreamState>,
+    AxumPath((kind, id)): AxumPath<(String, i64)>,
+    Query(query): Query<SubtitleCuesQuery>,
+) -> Result<axum::Json<SubtitleCuesResponse>, StreamError> {
+    let key = subtitle_session_key(&kind, id, query.track, query.start.filter(|s| *s > 0.0));
+    let path = state.subtitles.lock().ok().and_then(|current| current.as_ref().filter(|s| s.key == key).map(|s| s.path.clone()));
+    let Some(path) = path else {
+        return Ok(axum::Json(SubtitleCuesResponse { active: false, cues: Vec::new() }));
+    };
+    let cues = tokio::task::spawn_blocking(move || subtitles::read_cues(&path)).await.map_err(|_| StreamError::Internal)?;
+    let cues = cues
+        .into_iter()
+        .skip(query.from.unwrap_or(0))
+        .map(|cue| SubtitleCue { start: cue.start, end: cue.end, text: cue.text })
+        .collect();
+    Ok(axum::Json(SubtitleCuesResponse { active: true, cues }))
+}
+
 async fn with_db<T, F>(db_path: PathBuf, f: F) -> Result<T, StreamError>
 where
     T: Send + 'static,
@@ -280,6 +394,9 @@ struct StreamQuery {
     /// Audio que el cliente decodifica por sí mismo, separado por comas ("ac3,eac3"): ese
     /// se copia en el remux en vez de convertirse a AAC.
     audio_passthrough: Option<String>,
+    /// Índice relativo de la pista de subtítulos de texto que se quiere ver (F12). Obliga
+    /// a remuxear (nivel 2) aunque el fichero se pudiera servir tal cual.
+    subtitle_track: Option<i64>,
 }
 
 /// Códecs de `audio_passthrough` que se aceptan: solo los que el remux convertiría.
@@ -300,7 +417,8 @@ async fn get_stream(
     let range = headers.get(header::RANGE).cloned();
     let log = Arc::clone(&state.last_errors);
     let audio = client_audio(query.audio_passthrough.as_deref());
-    let result = handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, query.audio_track, &audio, range).await;
+    let tracks = TrackChoice { audio: query.audio_track, subtitles: query.subtitle_track };
+    let result = handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, tracks, &audio, range).await;
     remember_outcome(&log, format!("{kind}:{id}"), result.as_ref());
     match result {
         Ok(response) => response,
@@ -398,6 +516,13 @@ async fn record_tier(db_path: &PathBuf, profile_id: i64, item_kind: &str, item_i
     }
 }
 
+/// Pistas elegidas en el reproductor: de audio y de subtítulos, en índice relativo.
+#[derive(Clone, Copy, Default)]
+struct TrackChoice {
+    audio: Option<i64>,
+    subtitles: Option<i64>,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn handle_stream(
     state: StreamState,
@@ -406,7 +531,7 @@ async fn handle_stream(
     profile_id: i64,
     source_id: Option<i64>,
     start_seconds: Option<f64>,
-    audio_track: Option<i64>,
+    tracks: TrackChoice,
     client_audio: &[String],
     range_header: Option<HeaderValue>,
 ) -> Result<Response, StreamError> {
@@ -434,6 +559,8 @@ async fn handle_stream(
     // A partir de aquí se abre (o se reutiliza) LA conexión de stream: cierra la
     // anterior y espera su muerte real antes de devolver el permiso (regla R1).
     let permit = state.stream_guard.acquire().await;
+    // El ffmpeg anterior ya está muerto: sus subtítulos dejan de valer.
+    replace_subtitle_session(&state.subtitles, None);
 
     // Nivel 1a: HLS reconocido por la extensión, sin necesidad de sonda. No reescribe
     // las URIs internas del manifiesto (ver docs/DECISIONS.md): no se ha podido probar
@@ -450,18 +577,35 @@ async fn handle_stream(
 
     let (resolved_url, tier, audio_codec) =
         resolve_tier_and_url(&source, &item, primary_url, &ffprobe_path, &state.db_path).await?;
+    // Solo una pista que la sonda vio y que es de texto: con un índice que no existe,
+    // ffmpeg abortaría el remux entero, vídeo incluido.
+    let subtitle_track = text_subtitle_track(&state.db_path, &resolved_url, tracks.subtitles).await;
+    // Los subtítulos salen del remux: un MP4 que iría tal cual (nivel 1) pasa por él.
+    let tier = if tier == 1 && subtitle_track.is_some() { 2 } else { tier };
     record_tier(&state.db_path, profile_id, &kind_str, id, tier).await;
 
     match tier {
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
         2 => {
-            let codec = selected_track_codec(&state.db_path, &resolved_url, audio_track).await.or(audio_codec);
+            let codec = selected_track_codec(&state.db_path, &resolved_url, tracks.audio).await.or(audio_codec);
             let live = matches!(item.kind, MediaKind::Live);
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), codec.as_deref(), client_audio, live, start_seconds, audio_track, permit, Arc::clone(&state.stream_guard))
-                .await
+            let subtitles_path =
+                subtitle_track.and_then(|track| replace_subtitle_session(&state.subtitles, Some(subtitle_session_key(&kind_str, id, track, start_seconds.filter(|s| *s > 0.0)))));
+            let subtitles = subtitle_track.zip(subtitles_path.as_deref());
+            let remux = RemuxRequest { audio_codec: codec.as_deref(), client_audio, live, start_seconds, audio_track: tracks.audio, subtitles };
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), remux, permit, Arc::clone(&state.stream_guard)).await
         }
         _ => Err(StreamError::NeedsMpv),
     }
+}
+
+/// La pista de subtítulos pedida, si la sonda la conoce y es de texto.
+async fn text_subtitle_track(db_path: &Path, url: &Url, requested: Option<i64>) -> Option<i64> {
+    let track = requested?;
+    let cache_key = probe::stream_cache_key(url.as_str());
+    let row = with_db(db_path.to_path_buf(), move |conn| queries::get_probe_cache(conn, &cache_key)).await.ok().flatten()?;
+    let tracks: Vec<probe::SubtitleTrack> = serde_json::from_str(row.subtitle_tracks_json.as_deref()?).ok()?;
+    tracks.into_iter().any(|t| t.index == track && t.text).then_some(track)
 }
 
 /// Nivel 3 (F9): lanza mpv en su propia ventana con la URL real del proveedor (no la de
@@ -547,6 +691,7 @@ async fn handle_catchup(
     let primary_url = source.catchup_url(&item).map_err(|err| StreamError::Source(err.to_string()))?;
 
     let permit = state.stream_guard.acquire().await;
+    replace_subtitle_session(&state.subtitles, None);
 
     let (ffmpeg_path, ffprobe_path) = match (&state.ffmpeg_path, &state.ffprobe_path) {
         (Some(ffmpeg), Some(ffprobe)) => (ffmpeg.clone(), ffprobe.clone()),
@@ -561,8 +706,8 @@ async fn handle_catchup(
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
         2 => {
             // Un programa ya emitido tiene principio y fin: como una película, sin `nobuffer`.
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), audio_codec.as_deref(), client_audio, false, None, None, permit, Arc::clone(&state.stream_guard))
-                .await
+            let remux = RemuxRequest { audio_codec: audio_codec.as_deref(), client_audio, live: false, start_seconds: None, audio_track: None, subtitles: None };
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), remux, permit, Arc::clone(&state.stream_guard)).await
         }
         _ => Err(StreamError::NeedsMpv),
     }
@@ -613,11 +758,22 @@ async fn resolve_catchup_tier_and_url(
     let audio = probe_result.audio_codec.clone();
     let container = probe_result.container.clone();
     let audio_tracks_json = serde_json::to_string(&probe_result.audio_tracks).ok();
+    let subtitle_tracks_json = serde_json::to_string(&probe_result.subtitle_tracks).ok();
     // Catch-up es contenido con fin (el bloque pedido), pero su "duración" no es la del
     // programa: no tiene sentido pintarla como barra de búsqueda editorial, así que no
     // se guarda (igual que el directo en `resolve_tier_and_url`).
     with_db(db_path.clone(), move |conn| {
-        queries::set_probe_cache(conn, &store_key, video.as_deref(), audio.as_deref(), Some(&container), tier as i64, None, audio_tracks_json.as_deref())
+        queries::set_probe_cache(
+            conn,
+            &store_key,
+            video.as_deref(),
+            audio.as_deref(),
+            Some(&container),
+            tier as i64,
+            None,
+            audio_tracks_json.as_deref(),
+            subtitle_tracks_json.as_deref(),
+        )
     })
     .await?;
 
@@ -673,6 +829,7 @@ async fn resolve_tier_and_url(
     let audio = probe_result.audio_codec.clone();
     let container = probe_result.container.clone();
     let audio_tracks_json = serde_json::to_string(&probe_result.audio_tracks).ok();
+    let subtitle_tracks_json = serde_json::to_string(&probe_result.subtitle_tracks).ok();
     with_db(db_path.clone(), move |conn| {
         queries::set_probe_cache(
             conn,
@@ -683,6 +840,7 @@ async fn resolve_tier_and_url(
             tier as i64,
             duration_s,
             audio_tracks_json.as_deref(),
+            subtitle_tracks_json.as_deref(),
         )
     })
     .await?;
@@ -775,22 +933,38 @@ async fn selected_track_codec(db_path: &Path, url: &Url, audio_track: Option<i64
     tracks.into_iter().find(|t| t.index == track)?.codec_name
 }
 
-/// Nivel 2: remux a fMP4 con ffmpeg, un proceso vivo por sesión (ver
-/// `util::stream_guard`). `start_seconds` implementa la búsqueda en VOD: el cliente pide
-/// un stream nuevo con `?start=<segundos>` y aquí se traduce a un `-ss` de entrada.
-#[allow(clippy::too_many_arguments)]
-async fn spawn_remux_response(
-    ffmpeg_path: &Path,
-    url: &str,
-    audio_codec: Option<&str>,
-    client_audio: &[String],
+/// Lo que decide cómo se remuxea, aparte de la URL (ver `ffmpeg::build_remux_command`).
+struct RemuxRequest<'a> {
+    audio_codec: Option<&'a str>,
+    client_audio: &'a [String],
     live: bool,
     start_seconds: Option<f64>,
     audio_track: Option<i64>,
+    subtitles: Option<(i64, &'a Path)>,
+}
+
+/// Nivel 2: remux a fMP4 con ffmpeg, un proceso vivo por sesión (ver
+/// `util::stream_guard`). `start_seconds` implementa la búsqueda en VOD: el cliente pide
+/// un stream nuevo con `?start=<segundos>` y aquí se traduce a un `-ss` de entrada.
+async fn spawn_remux_response(
+    ffmpeg_path: &Path,
+    url: &str,
+    remux: RemuxRequest<'_>,
     permit: StreamPermit,
     guard: Arc<StreamGuard>,
 ) -> Result<Response, StreamError> {
-    let mut child = ffmpeg::spawn_remux(ffmpeg_path, url, DEFAULT_USER_AGENT, audio_codec, client_audio, live, start_seconds, audio_track).map_err(|err| {
+    let mut child = ffmpeg::spawn_remux(
+        ffmpeg_path,
+        url,
+        DEFAULT_USER_AGENT,
+        remux.audio_codec,
+        remux.client_audio,
+        remux.live,
+        remux.start_seconds,
+        remux.audio_track,
+        remux.subtitles,
+    )
+    .map_err(|err| {
         tracing::error!(error = %err, "no se pudo lanzar ffmpeg para el remux");
         StreamError::BinariesMissing
     })?;
@@ -914,7 +1088,15 @@ mod tests {
     }
 
     fn base_state(db_path: PathBuf, ffmpeg_path: Option<PathBuf>, ffprobe_path: Option<PathBuf>) -> StreamState {
-        StreamState { db_path, stream_guard: StreamGuard::new(), ffmpeg_path, ffprobe_path, mpv_path: None, last_errors: Default::default() }
+        StreamState {
+            db_path,
+            stream_guard: StreamGuard::new(),
+            ffmpeg_path,
+            ffprobe_path,
+            mpv_path: None,
+            last_errors: Default::default(),
+            subtitles: Default::default(),
+        }
     }
 
     #[tokio::test]
@@ -1138,6 +1320,147 @@ mod tests {
         assert_eq!(probed.audio_tracks.len(), 1, "el remux con una pista elegida debe llevar solo esa, no las dos originales");
         assert_eq!(probed.audio_tracks[0].channels, Some(2), "se pidió audio_track=1 (la estéreo) y no llegó");
         assert!(crate::media::count_packets(&ffprobe_path, &remuxed_path, "a") > 0, "la pista elegida está declarada pero vacía");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Subtítulos de punta a punta (F12): un MKV con dos pistas SRT; se pide la segunda y
+    /// sus frases llegan por la API con sus tiempos, mientras el vídeo sigue saliendo por
+    /// el mismo remux (una sola conexión con el proveedor, regla R1).
+    #[tokio::test]
+    async fn a_text_subtitle_track_comes_out_of_the_same_remux_as_cues() {
+        let Some(ffmpeg_path) = which_on_path("ffmpeg") else {
+            eprintln!("ffmpeg no está en el PATH: prueba omitida");
+            return;
+        };
+        let Some(ffprobe_path) = which_on_path("ffprobe") else {
+            eprintln!("ffprobe no está en el PATH: prueba omitida");
+            return;
+        };
+
+        let dir = std::env::temp_dir().join(format!("vibe-iptv-stream-subs-{}-{}", std::process::id(), rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("es.srt"), "1\n00:00:01,000 --> 00:00:02,500\nHola mundo\n\n2\n00:00:03,000 --> 00:00:04,000\nAdiós\n\n").unwrap();
+        std::fs::write(dir.join("en.srt"), "1\n00:00:01,000 --> 00:00:02,500\nHello world\n\n2\n00:00:03,000 --> 00:00:04,000\nBye\n\n").unwrap();
+        let sample = dir.join("sample.mkv");
+        let status = tokio::process::Command::new(&ffmpeg_path)
+            .args(["-y", "-f", "lavfi", "-i", "testsrc=duration=6:size=64x64:rate=10", "-f", "lavfi", "-i", "sine=duration=6"])
+            .arg("-i")
+            .arg(dir.join("es.srt"))
+            .arg("-i")
+            .arg(dir.join("en.srt"))
+            .args(["-map", "0:v", "-map", "1:a", "-map", "2:s", "-map", "3:s", "-c:v", "libx264", "-c:a", "aac", "-c:s", "srt"])
+            .args(["-metadata:s:s:0", "language=spa", "-metadata:s:s:1", "language=eng", "-t", "6", "-f", "matroska"])
+            .arg(&sample)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "no se pudo generar el MKV con subtítulos");
+        let base_url = spawn_file_server("/movie/user/pass/1.mkv", sample).await;
+
+        let db_path = temp_db_path("subs");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "subs").await;
+        let movie_id: i64 = {
+            let conn = open_connection_at(&db_path).unwrap();
+            let raw = RawMovie {
+                remote_id: "1".into(),
+                category_remote_id: None,
+                raw_title: "Peli".into(),
+                container_extension: Some("mkv".into()),
+                logo_url: None,
+                added_at: None,
+                rating: None,
+                tmdb_id: None,
+            };
+            let fields = TitleFields { clean_title: "Peli", year: Some(2020), match_key: "peli-2020", quality: None, language: None };
+            write_queries::upsert_movie(&conn, provider_id, &HashMap::new(), &raw, &fields).unwrap();
+            conn.query_row("SELECT id FROM movies WHERE match_key = 'peli-2020'", [], |r| r.get(0)).unwrap()
+        };
+
+        let state = base_state(db_path.clone(), Some(ffmpeg_path), Some(ffprobe_path.clone()));
+        let response = get_oneshot(state.clone(), &format!("/stream/movie/{movie_id}?profile_id=1&subtitle_track=1")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let remuxed = dir.join("remuxed-subs.mp4");
+        std::fs::write(&remuxed, &body).unwrap();
+        assert!(crate::media::count_packets(&ffprobe_path, &remuxed, "v") > 0, "con subtítulos el remux no lleva vídeo");
+        assert!(crate::media::count_packets(&ffprobe_path, &remuxed, "a") > 0, "con subtítulos el remux no lleva audio");
+        assert_eq!(crate::media::count_packets(&ffprobe_path, &remuxed, "s"), 0, "los subtítulos no van dentro del fMP4");
+
+        // El fichero lo escribe otro hilo de ffmpeg: se le da un momento por si acaso.
+        let mut cues = serde_json::Value::Null;
+        for _ in 0..30 {
+            let response = get_oneshot(state.clone(), &format!("/api/playback/subtitles/movie/{movie_id}?track=1")).await;
+            cues = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+            if cues["cues"].as_array().is_some_and(|c| c.len() == 2) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(cues["active"], true);
+        let list = cues["cues"].as_array().unwrap();
+        assert_eq!(list.len(), 2, "frases inesperadas: {cues}");
+        assert_eq!(list[0]["text"], "Hello world", "se pidió la pista 1 (inglés)");
+        assert!((list[0]["start"].as_f64().unwrap() - 1.0).abs() < 0.01);
+        assert!((list[0]["end"].as_f64().unwrap() - 2.5).abs() < 0.01);
+
+        let from_one: serde_json::Value = serde_json::from_slice(
+            &get_oneshot(state.clone(), &format!("/api/playback/subtitles/movie/{movie_id}?track=1&from=1")).await.into_body().collect().await.unwrap().to_bytes(),
+        )
+        .unwrap();
+        assert_eq!(from_one["cues"].as_array().unwrap().len(), 1);
+        assert_eq!(from_one["cues"][0]["text"], "Bye");
+
+        let other_track: serde_json::Value = serde_json::from_slice(
+            &get_oneshot(state.clone(), &format!("/api/playback/subtitles/movie/{movie_id}?track=0")).await.into_body().collect().await.unwrap().to_bytes(),
+        )
+        .unwrap();
+        assert_eq!(other_track["active"], false, "la pista 0 no es la de la sesión en curso");
+
+        // Tras una búsqueda (`?start=2`) el cero de los subtítulos es el punto pedido,
+        // igual que el del vídeo: "Bye" (3 s en el original) cae en el segundo 1. La
+        // frase que estaba en pantalla en el segundo 2 se pierde.
+        let response = get_oneshot(state.clone(), &format!("/stream/movie/{movie_id}?profile_id=1&start=2&subtitle_track=1")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = response.into_body().collect().await.unwrap().to_bytes();
+        let mut seeked = serde_json::Value::Null;
+        for _ in 0..30 {
+            let response = get_oneshot(state.clone(), &format!("/api/playback/subtitles/movie/{movie_id}?track=1&start=2")).await;
+            seeked = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+            if seeked["cues"].as_array().is_some_and(|c| !c.is_empty()) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert_eq!(seeked["cues"][0]["text"], "Bye", "frases tras buscar: {seeked}");
+        assert!((seeked["cues"][0]["start"].as_f64().unwrap() - 1.0).abs() < 0.05, "subtítulos desplazados tras buscar: {seeked}");
+        let before_seek: serde_json::Value = serde_json::from_slice(
+            &get_oneshot(state.clone(), &format!("/api/playback/subtitles/movie/{movie_id}?track=1")).await.into_body().collect().await.unwrap().to_bytes(),
+        )
+        .unwrap();
+        assert_eq!(before_seek["active"], false, "las frases de antes de buscar (otra escala de tiempos) ya no se sirven");
+
+        let tier: serde_json::Value = serde_json::from_slice(
+            &get_oneshot(state.clone(), &format!("/api/playback/tier/movie/{movie_id}")).await.into_body().collect().await.unwrap().to_bytes(),
+        )
+        .unwrap();
+        let tracks = tier["subtitle_tracks"].as_array().unwrap();
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(tracks[1]["language"], "eng");
+
+        // Una pista que la sonda no vio se ignora: el vídeo sale igual, sin subtítulos.
+        let response = get_oneshot(state.clone(), &format!("/stream/movie/{movie_id}?profile_id=1&subtitle_track=7")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(&body[4..8], b"ftyp");
+        let after: serde_json::Value = serde_json::from_slice(
+            &get_oneshot(state.clone(), &format!("/api/playback/subtitles/movie/{movie_id}?track=1")).await.into_body().collect().await.unwrap().to_bytes(),
+        )
+        .unwrap();
+        assert_eq!(after["active"], false, "abrir otro stream cierra la sesión de subtítulos anterior");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);

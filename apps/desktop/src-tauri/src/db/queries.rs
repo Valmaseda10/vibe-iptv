@@ -565,6 +565,8 @@ pub struct ProbeCacheRow {
     /// audio), sin deserializar aquí: `queries` no conoce el tipo de `media::probe`,
     /// igual que el resto de columnas JSON de este fichero (p. ej. `movies.genres`).
     pub audio_tracks_json: Option<String>,
+    /// JSON de `Vec<media::probe::SubtitleTrack>` (F12), mismo criterio que el anterior.
+    pub subtitle_tracks_json: Option<String>,
 }
 
 /// `stream_key` es `media::probe::stream_cache_key(url)`: un hash, nunca la URL en sí
@@ -572,7 +574,7 @@ pub struct ProbeCacheRow {
 /// resultado se cachea por ítem".
 pub fn get_probe_cache(conn: &Connection, stream_key: &str) -> Result<Option<ProbeCacheRow>> {
     conn.query_row(
-        "SELECT video_codec, audio_codec, container, play_tier, duration_s, audio_tracks_json FROM probe_cache WHERE stream_key = ?1",
+        "SELECT video_codec, audio_codec, container, play_tier, duration_s, audio_tracks_json, subtitle_tracks_json FROM probe_cache WHERE stream_key = ?1",
         params![stream_key],
         |row| {
             Ok(ProbeCacheRow {
@@ -582,6 +584,7 @@ pub fn get_probe_cache(conn: &Connection, stream_key: &str) -> Result<Option<Pro
                 play_tier: row.get(3)?,
                 duration_s: row.get(4)?,
                 audio_tracks_json: row.get(5)?,
+                subtitle_tracks_json: row.get(6)?,
             })
         },
     )
@@ -599,16 +602,18 @@ pub fn set_probe_cache(
     play_tier: i64,
     duration_s: Option<f64>,
     audio_tracks_json: Option<&str>,
+    subtitle_tracks_json: Option<&str>,
 ) -> Result<()> {
     conn.execute(
-        "INSERT INTO probe_cache (stream_key, video_codec, audio_codec, container, play_tier, duration_s, audio_tracks_json, probed_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO probe_cache (stream_key, video_codec, audio_codec, container, play_tier, duration_s, audio_tracks_json, subtitle_tracks_json, probed_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT(stream_key) DO UPDATE SET
             video_codec = excluded.video_codec, audio_codec = excluded.audio_codec,
             container = excluded.container, play_tier = excluded.play_tier,
             duration_s = excluded.duration_s, audio_tracks_json = excluded.audio_tracks_json,
+            subtitle_tracks_json = excluded.subtitle_tracks_json,
             probed_at = excluded.probed_at",
-        params![stream_key, video_codec, audio_codec, container, play_tier, duration_s, audio_tracks_json, now_epoch()],
+        params![stream_key, video_codec, audio_codec, container, play_tier, duration_s, audio_tracks_json, subtitle_tracks_json, now_epoch()],
     )?;
     Ok(())
 }
@@ -1151,7 +1156,7 @@ mod tests {
         assert!(get_probe_cache(&conn, "probe:abc").unwrap().is_none());
 
         let audio_tracks = r#"[{"index":0,"language":"spa","codec_name":"aac","channels":2}]"#;
-        set_probe_cache(&conn, "probe:abc", Some("h264"), Some("aac"), Some("mpegts"), 2, Some(1425.0), Some(audio_tracks)).unwrap();
+        set_probe_cache(&conn, "probe:abc", Some("h264"), Some("aac"), Some("mpegts"), 2, Some(1425.0), Some(audio_tracks), None).unwrap();
         let cached = get_probe_cache(&conn, "probe:abc").unwrap().unwrap();
         assert_eq!(cached.video_codec.as_deref(), Some("h264"));
         assert_eq!(cached.play_tier, 2);
@@ -1159,7 +1164,7 @@ mod tests {
         assert_eq!(cached.audio_tracks_json.as_deref(), Some(audio_tracks));
 
         // Reprobar el mismo stream (p. ej. el proveedor cambió de códec) actualiza, no duplica.
-        set_probe_cache(&conn, "probe:abc", Some("hevc"), Some("aac"), Some("mpegts"), 3, None, None).unwrap();
+        set_probe_cache(&conn, "probe:abc", Some("hevc"), Some("aac"), Some("mpegts"), 3, None, None, None).unwrap();
         let updated = get_probe_cache(&conn, "probe:abc").unwrap().unwrap();
         assert_eq!(updated.video_codec.as_deref(), Some("hevc"));
         assert_eq!(updated.play_tier, 3);

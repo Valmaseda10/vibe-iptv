@@ -81,10 +81,32 @@ Todos los programas de esos canales que se solapan con `[from, to)`. `400` si
 
 ### `GET /stream/:kind/:id`
 El vídeo en sí — `<video src>` apunta aquí directamente. `kind` es `channel`, `movie` o
-`episode`. `?source=<id>` elige una fuente concreta si la película tiene varias
-calidades; `?start=<segundos>` pide un remux empezando en ese punto (así se busca en
-VOD servido a nivel 2). Devuelve directamente los bytes de vídeo (nivel 1: passthrough
-con Range; nivel 2: fMP4 fragmentado) o un error (ver más abajo) si hace falta nivel 3.
+`episode`. Devuelve directamente los bytes de vídeo (nivel 1: passthrough con Range;
+nivel 2: fMP4 fragmentado) o un error (ver más abajo) si hace falta nivel 3. Parámetros:
+
+| Parámetro | Para qué |
+|---|---|
+| `profile_id` | Obligatorio. De quién es la sesión (registro de nivel, progreso). |
+| `source=<id>` | Una fuente concreta si la película tiene varias calidades. |
+| `start=<segundos>` | Remux empezando en ese punto: así se busca en VOD de nivel 2. |
+| `audio_track=<n>` | Índice relativo de pista de audio (de `tier.audio_tracks`). |
+| `audio_passthrough=ac3,eac3` | Audio que el cliente decodifica él mismo: se copia en vez de convertirse a AAC. Solo se aceptan `ac3`, `eac3` y `dts`. |
+| `subtitle_track=<n>` | Pista de subtítulos de texto (de `tier.subtitle_tracks`). Fuerza el nivel 2 aunque el fichero admitiera el 1; un índice que la sonda no conoce se ignora. |
+
+### `GET /api/playback/subtitles/:kind/:id?track=<n>&start=<segundos>&from=<k>`
+Frases de subtítulos que el remux en curso lleva extraídas (F12): `{ active, cues: [{
+start, end, text }] }`. Salen del **mismo** ffmpeg que sirve el vídeo, a medida que
+avanza, así que se piden cada poco y `from` es cuántas tiene ya el cliente. Los tiempos
+están en la escala del vídeo servido: cero en el punto de `?start=`. `active: false` si
+el stream en curso no es ese ítem con esa pista y ese `start` (p. ej. el usuario ya
+buscó o cambió de contenido): las frases de esa sesión ya no existen. `text` puede
+llevar las etiquetas de WebVTT (`<i>`, `<b>`).
+
+### `GET /api/playback/last-error/:kind/:id`
+Por qué falló el último intento de abrir ese stream (`kind` también puede ser
+`catchup`): `{ status, message }`, o `204` si abrió bien. Existe porque un `<video>`
+nunca ve el cuerpo de una respuesta de error, y volver a pedir el stream para leerlo
+abriría otra sesión con el proveedor (R1).
 
 ### `GET /stream/catchup/:channel_id?start=<epoch>&duration_min=<min>`
 Igual que el directo pero de un bloque pasado, solo si el canal anuncia catch-up
@@ -98,7 +120,10 @@ en la ventana de la app. Responde `204` en cuanto mpv arranca (no cuando termina
 ### `GET /api/playback/tier/:kind/:id`
 Qué nivel de la cascada sirvió (o serviría) este ítem, según la sonda ya cacheada — no
 abre ninguna conexión nueva. `{ tier: 1|2|3|null, video_codec, audio_codec, container,
-duration_s }`. `tier: null` significa "nunca se ha reproducido, no hay sonda todavía".
+duration_s, audio_tracks, subtitle_tracks }`. `tier: null` significa "nunca se ha
+reproducido, no hay sonda todavía", y entonces las listas de pistas van vacías: no se
+sabe qué pistas tiene un fichero hasta abrirlo de verdad. `subtitle_tracks` solo lista
+las de texto (SRT, ASS, mov_text, WebVTT); las de imagen (PGS, DVD) no se ofrecen.
 
 ### `GET /api/playback/binaries`
 `{ ffmpeg: bool, ffprobe: bool, mpv: bool }` — si falta alguno, los endpoints que lo

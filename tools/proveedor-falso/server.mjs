@@ -8,7 +8,7 @@
 
 import { createServer } from "node:http";
 import { spawnSync } from "node:child_process";
-import { createReadStream, existsSync, mkdirSync, statSync, openSync, readSync, closeSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, statSync, openSync, readSync, closeSync, writeFileSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,10 +30,16 @@ const MEDIA = {
   liveAc3: { file: "directo-ac3.ts", seconds: 300, args: ["-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-b:v", "600k", "-c:a", "ac3", "-b:a", "192k", "-f", "mpegts"] },
   // Película MP4 H.264 + AAC con moov al principio: nivel 1 (proxy con Range).
   mp4: { file: "pelicula.mp4", seconds: 180, args: ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4"] },
-  // Película MKV con dos pistas de audio: nivel 2 (remux) y selector de pista.
-  mkv: { file: "pelicula.mkv", seconds: 180, twoAudio: true, args: ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "128k", "-f", "matroska"] },
+  // Película MKV con dos pistas de audio y dos de subtítulos SRT: nivel 2 (remux) y los
+  // selectores de pista. `testsrc` pinta un contador de segundos, y cada frase dice en qué
+  // segundo debería verse: así se comprueba a ojo que los subtítulos van a tiempo.
+  mkv: { file: "pelicula-subtitulada.mkv", seconds: 180, source: "testsrc", twoAudio: true, subtitles: true, args: ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "128k", "-c:s", "srt", "-f", "matroska"] },
   // Película en H.265/HEVC: la WebView sin decodificación HEVC no la abre (nivel 3, mpv).
   hevc: { file: "pelicula-hevc.mkv", seconds: 60, args: ["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-c:a", "aac", "-b:a", "128k", "-f", "matroska"] },
+  // Película en H.264 de 10 bits (habitual en anime): la sonda solo ve "h264" y la manda al
+  // remux. La WebView2 de Windows la decodifica (medido en F12); queda para comprobar que
+  // sigue siendo así, porque si no, nada la mandaría a mpv.
+  hi10: { file: "pelicula-h264-10bit.mkv", seconds: 60, args: ["-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p10le", "-c:a", "aac", "-b:a", "128k", "-f", "matroska"] },
 };
 
 function ensureMedia() {
@@ -43,7 +49,7 @@ function ensureMedia() {
     if (existsSync(out)) continue;
     console.log(`generando ${spec.file} (${spec.seconds} s)…`);
     const inputs = [
-      "-f", "lavfi", "-i", `testsrc2=size=640x360:rate=25:duration=${spec.seconds}`,
+      "-f", "lavfi", "-i", `${spec.source ?? "testsrc2"}=size=640x360:rate=25:duration=${spec.seconds}`,
       "-f", "lavfi", "-i", `sine=frequency=440:sample_rate=48000:duration=${spec.seconds}`,
     ];
     const maps = ["-map", "0:v", "-map", "1:a"];
@@ -51,12 +57,29 @@ function ensureMedia() {
       inputs.push("-f", "lavfi", "-i", `sine=frequency=880:sample_rate=48000:duration=${spec.seconds}`);
       maps.push("-map", "2:a", "-metadata:s:a:0", "language=spa", "-metadata:s:a:1", "language=eng");
     }
+    if (spec.subtitles) {
+      const first = inputs.filter((arg) => arg === "-i").length;
+      for (const [lang, word] of [["spa", "Segundo"], ["eng", "Second"]]) {
+        const srt = join(MEDIA_DIR, `subtitulos-${lang}.srt`);
+        writeFileSync(srt, srtEvery(5, spec.seconds, (t) => `${word} ${t}`));
+        inputs.push("-i", srt);
+      }
+      maps.push("-map", `${first}:s`, "-map", `${first + 1}:s`, "-metadata:s:s:0", "language=spa", "-metadata:s:s:1", "language=eng");
+    }
     const result = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", ...inputs, ...maps, ...spec.args, out], { stdio: "inherit" });
     if (result.status !== 0) {
       console.error(`ffmpeg falló generando ${name}; ¿está ffmpeg en el PATH?`);
       process.exit(1);
     }
   }
+}
+
+/** Una frase de 3 s cada `step` segundos, con el texto que dé `text(segundo)`. */
+function srtEvery(step, seconds, text) {
+  const time = (t) => `${String(Math.floor(t / 3600)).padStart(2, "0")}:${String(Math.floor((t % 3600) / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")},000`;
+  const cues = [];
+  for (let t = step, n = 1; t + 3 <= seconds; t += step, n++) cues.push(`${n}\n${time(t)} --> ${time(t + 3)}\n${text(t)}\n`);
+  return cues.join("\n");
 }
 
 // ─────────────── Catálogo sintético ───────────────
@@ -110,7 +133,7 @@ const movieSpecs = [
   ["ES| Matrix (1999) 1080p", "10", "mkv"], ["Gladiator [2000] FHD", "10", "mp4"], ["Origen (2010) 4K HDR", "10", "mkv"],
   ["Interstellar (2014)", "10", "mp4"], ["Blade Runner 2049 (2017) 4K", "10", "mkv"], ["1917 (2019)", "10", "mp4"],
   ["Dune (2021) MULTI", "10", "mkv"], ["Oppenheimer (2023) CASTELLANO", "10", "mp4"],
-  ["Planeta Tierra II (2016) 4K HEVC", "10", "mkv"],
+  ["Planeta Tierra II (2016) 4K HEVC", "10", "mkv"], ["Akira (1988)", "12", "mkv"],
   ["Toy Story (1995)", "12", "mp4"], ["Buscando a Nemo (2003)", "12", "mp4"], ["Up (2009) HD", "12", "mkv"],
   ["Del revés (2015)", "12", "mp4"], ["XXX| Película Adulta (2020)", "19", "mp4"],
 ];
@@ -347,6 +370,7 @@ createServer((req, res) => {
     const isMkv = vod[3] === "mkv";
     const movie = movies.find((m) => String(m.stream_id) === vod[2]);
     if (movie && /HEVC/.test(movie.name)) return sendFile(req, res, join(MEDIA_DIR, MEDIA.hevc.file), "video/x-matroska");
+    if (movie && /^Akira/.test(movie.name)) return sendFile(req, res, join(MEDIA_DIR, MEDIA.hi10.file), "video/x-matroska");
     return sendFile(req, res, join(MEDIA_DIR, isMkv ? MEDIA.mkv.file : MEDIA.mp4.file), isMkv ? "video/x-matroska" : "video/mp4");
   }
   res.writeHead(404);

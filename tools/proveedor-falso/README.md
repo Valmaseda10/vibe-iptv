@@ -15,7 +15,7 @@ usuario `qa`, contraseña `qa`. El puerto se cambia con la variable `PORT`.
 - **16 canales** en 5 categorías, con los casos difíciles de un panel real: prefijos
   (`ES|`, `DEP|`, `XXX|`), feeds duplicados del mismo canal (`La 1 HD` / `La 1 FHD`),
   catch-up en algunos, uno sin EPG y una categoría de adultos.
-- **23 películas** con títulos "sucios" (año entre paréntesis o corchetes, calidades,
+- **25 películas** con títulos "sucios" (año entre paréntesis o corchetes, calidades,
   idioma) y duplicados en varias calidades que deben agruparse en una sola ficha.
 - **4 series** con varias temporadas, que se piden con `get_series_info` al abrir la
   ficha.
@@ -25,8 +25,11 @@ usuario `qa`, contraseña `qa`. El puerto se cambia con la variable `PORT`.
   `%TEMP%\vibe-proveedor-falso`):
   - directo en MPEG-TS con AAC (los canales de deportes, con AC3), enviado al ritmo de
     reproducción como un canal de verdad;
-  - películas en MP4 (nivel 1), en MKV con dos pistas de audio (nivel 2) y una en
-    H.265/HEVC ("Planeta Tierra II"), que una WebView sin HEVC manda a mpv (nivel 3).
+  - películas en MP4 (nivel 1); en MKV con dos pistas de audio y dos de subtítulos SRT
+    (nivel 2). En el MKV, `testsrc` pinta un contador de segundos y cada frase dice en qué
+    segundo debe verse ("Segundo 30"), así que una captura enseña si van a tiempo;
+  - una en H.265/HEVC ("Planeta Tierra II"), que una WebView sin HEVC manda a mpv
+    (nivel 3), y una en H.264 de 10 bits ("Akira"), que la WebView2 sí decodifica.
 
 En la consola avisa si en algún momento hay más de una conexión de directo abierta a la
 vez: la app nunca debería abrir dos (regla R1).

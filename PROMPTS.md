@@ -20,7 +20,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F9 mpv, catch-up y pulido (construido de manera autónoma — mpv y catch-up sin verificar contra software/proveedor real, ver DECISIONS.md)
 - [x] F10 Empaquetado y apertura a la LAN (construido de manera autónoma — modo LAN sin verificar contra un dispositivo real, instalador sin firmar, ver DECISIONS.md)
 - [x] F11 Nube sin pausas y app local-first (Firebase en lugar de Supabase — verificada contra el proyecto real; la interfaz nueva sin ver en pantalla, ver DECISIONS.md)
-- [ ] F12 Cerrar la deuda de v1
+- [x] F12 Cerrar la deuda de v1 (logos en disco, hls.js y LGPL quedan como pendientes documentados)
 - [ ] F13 Directo de nivel TiviMate
 - [ ] F14 Detalles premium en VOD y perfiles
 - [ ] F15 Cliente iOS

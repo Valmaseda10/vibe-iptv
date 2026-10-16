@@ -13,6 +13,7 @@ import type {
   PlaybackTierResponse,
   StreamFailure,
   SeriesDetailResponse,
+  SubtitleCuesResponse,
 } from "../../lib/api-types";
 import { ArrowDownIcon, ArrowUpIcon, FullscreenIcon, MuteIcon, PauseIcon, PlayIcon, VolumeIcon } from "../../components/icons";
 
@@ -33,6 +34,13 @@ const RECONNECT_DELAY_MS = 2_000;
 /** Códigos que no se arreglan reintentando: se enseña el error real de inmediato en vez
  * de gastar los reintentos en algo que va a fallar igual las tres veces. */
 const DEFINITIVE_ERROR_STATUSES = new Set([400, 402, 403, 404, 501, 503]);
+/** Cada cuánto se piden las frases nuevas de subtítulos. Es el núcleo local leyendo un
+ * fichero, no el proveedor: puede ser frecuente. */
+const SUBTITLE_POLL_MS = 1_500;
+/** Línea de los subtítulos contando desde abajo: despegados del borde, y por encima de
+ * la barra de controles mientras se ve (si no, la tapa). */
+const SUBTITLE_LINE_HIDDEN_CONTROLS = -2;
+const SUBTITLE_LINE_VISIBLE_CONTROLS = -4;
 
 /** Cascada de reproducción de F6: un `<video>` nativo apuntando a `/stream/:kind/:id`.
  *
@@ -81,6 +89,10 @@ export function PlayerScreen() {
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
+  // Pista de subtítulos elegida, ligada al ítem: al pasar al siguiente episodio no se
+  // arrastra un índice que en ese fichero puede ser otro idioma (o no existir).
+  const [subtitleChoice, setSubtitleChoice] = useState<{ item: string; track: number } | null>(null);
+  const subtitleTrack = kind !== "channel" && subtitleChoice?.item === `${kind}:${itemId}` ? subtitleChoice.track : null;
 
   const movieQuery = useQuery({
     queryKey: ["player-movie", itemId],
@@ -183,8 +195,10 @@ export function PlayerScreen() {
   // para esto (ver comentario de cabecera). `metadataDurationSeconds` (ffprobe) es la
   // única fuente de duración que se usa: la del propio `<video>` puede ser una cifra de
   // un fragmento suelto mientras el fMP4 remuxeado sigue llegando.
-  // Un directo nunca se busca de forma nativa, aunque llegue por HLS (nivel 1).
-  const nativeSeekable = kind !== "channel" && tierQuery.data?.tier === 1;
+  // Un directo nunca se busca de forma nativa, aunque llegue por HLS (nivel 1). Con
+  // subtítulos tampoco: salen del remux, así que el núcleo sirve el nivel 2 aunque el
+  // fichero admitiera el 1.
+  const nativeSeekable = kind !== "channel" && tierQuery.data?.tier === 1 && subtitleTrack == null;
   const displayDuration = metadataDurationSeconds;
   const displayCurrentTime = nativeSeekable ? videoCurrentTime : appliedStart + videoCurrentTime;
 
@@ -198,7 +212,7 @@ export function PlayerScreen() {
     ? `/stream/catchup/${itemId}?profile_id=${profileId}&start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}${passthrough}`
     : kind === "channel"
       ? `/stream/channel/${itemId}?profile_id=${profileId}${passthrough}`
-      : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}${search.source ? `&source=${search.source}` : ""}${search.audioTrack != null ? `&audio_track=${search.audioTrack}` : ""}${passthrough}`;
+      : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}${search.source ? `&source=${search.source}` : ""}${search.audioTrack != null ? `&audio_track=${search.audioTrack}` : ""}${subtitleTrack != null ? `&subtitle_track=${subtitleTrack}` : ""}${passthrough}`;
   const streamUrl = base && profileId !== null ? `${base}${streamPath}` : undefined;
 
   // Cambiar de stream de verdad (zapping, o abrir otro título) es un intento nuevo:
@@ -393,6 +407,66 @@ export function PlayerScreen() {
     [kind, id, search, navigate],
   );
 
+  // Activar o cambiar subtítulos reabre el remux (es él quien los extrae), así que se
+  // retoma justo donde se estaba en vez de volver al último punto de arranque.
+  const chooseSubtitles = useCallback(
+    (track: number | null) => {
+      setAppliedStart(Math.floor(latestRef.current.displayCurrentTime));
+      setVideoCurrentTime(0);
+      setSubtitleChoice(track == null ? null : { item: `${kind}:${itemId}`, track });
+    },
+    [kind, itemId],
+  );
+
+  // Las frases las va escribiendo el remux en un fichero según avanza; aquí se piden las
+  // nuevas cada poco y se añaden al `<video>` como pista de texto. Sus tiempos ya están
+  // en la escala del `<video>`: cero en el punto pedido con `?start=`, como el vídeo.
+  const textTrackRef = useRef<TextTrack | null>(null);
+  const subtitleLineRef = useRef(SUBTITLE_LINE_VISIBLE_CONTROLS);
+  useEffect(() => {
+    const video = videoRef.current;
+    if (subtitleTrack == null || !video) return;
+    const textTrack = video.addTextTrack("subtitles", "Subtítulos");
+    textTrack.mode = "showing";
+    textTrackRef.current = textTrack;
+    let received = 0;
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      try {
+        const response = await apiGetOrNull<SubtitleCuesResponse>(
+          `/api/playback/subtitles/${kind}/${itemId}?track=${subtitleTrack}&start=${appliedStart}&from=${received}`,
+        );
+        if (cancelled) return;
+        for (const cue of response?.cues ?? []) {
+          const vttCue = new VTTCue(cue.start, cue.end, cue.text);
+          vttCue.line = subtitleLineRef.current;
+          textTrack.addCue(vttCue);
+        }
+        received += response?.cues.length ?? 0;
+      } catch {
+        // El núcleo local no respondió esta vez: se vuelve a pedir en la siguiente vuelta.
+      }
+      if (!cancelled) timer = window.setTimeout(poll, SUBTITLE_POLL_MS);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+      textTrack.mode = "disabled";
+      if (textTrackRef.current === textTrack) textTrackRef.current = null;
+    };
+    // La URL y `retryNonce` deciden la `key` del `<video>`: cada cambio es un elemento nuevo.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [streamUrl, retryNonce, subtitleTrack, resumeReady]);
+
+  useEffect(() => {
+    subtitleLineRef.current = controlsVisible ? SUBTITLE_LINE_VISIBLE_CONTROLS : SUBTITLE_LINE_HIDDEN_CONTROLS;
+    for (const cue of Array.from(textTrackRef.current?.cues ?? [])) {
+      if (cue instanceof VTTCue) cue.line = subtitleLineRef.current;
+    }
+  }, [controlsVisible]);
+
   const seekTo = useCallback(
     (targetSeconds: number) => {
       const clamped = Math.max(0, displayDuration ? Math.min(targetSeconds, displayDuration - 1) : targetSeconds);
@@ -426,6 +500,12 @@ export function PlayerScreen() {
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
+      // En un selector de pista, flechas y espacio son para elegir opción, no para
+      // volumen/búsqueda/pausa; Escape sí sigue saliendo del reproductor.
+      if (e.target instanceof HTMLSelectElement && e.key !== "Escape") {
+        resetHideTimer();
+        return;
+      }
       if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "d") {
         e.preventDefault();
         setStatsVisible((v) => !v);
@@ -708,19 +788,40 @@ export function PlayerScreen() {
           />
 
           {kind !== "channel" && (tierQuery.data?.audio_tracks.length ?? 0) > 1 && (
-            <select
-              value={search.audioTrack ?? 0}
-              onChange={(e) => setAudioTrack(Number(e.target.value))}
-              className="rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none"
-              aria-label="Pista de audio"
-              title="Pista de audio"
-            >
-              {tierQuery.data!.audio_tracks.map((track) => (
-                <option key={track.index} value={track.index}>
-                  {audioTrackLabel(track)}
-                </option>
-              ))}
-            </select>
+            <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+              Audio
+              <select
+                value={search.audioTrack ?? 0}
+                onChange={(e) => setAudioTrack(Number(e.target.value))}
+                className="rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-2 focus:ring-white/60"
+                aria-label="Pista de audio"
+              >
+                {tierQuery.data!.audio_tracks.map((track) => (
+                  <option key={track.index} value={track.index}>
+                    {audioTrackLabel(track)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {kind !== "channel" && (tierQuery.data?.subtitle_tracks.length ?? 0) > 0 && (
+            <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+              Subtítulos
+              <select
+                value={subtitleTrack ?? -1}
+                onChange={(e) => chooseSubtitles(Number(e.target.value) < 0 ? null : Number(e.target.value))}
+                className="rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-2 focus:ring-white/60"
+                aria-label="Subtítulos"
+              >
+                <option value={-1}>No</option>
+                {tierQuery.data!.subtitle_tracks.map((track) => (
+                  <option key={track.index} value={track.index}>
+                    {track.language ? languageName(track.language) : `Pista ${track.index + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>
           )}
 
           <button type="button" onClick={goBack} className="ml-auto text-sm text-neutral-300 outline-none hover:text-white">
@@ -771,8 +872,12 @@ const LANGUAGE_NAMES: Record<string, string> = {
   und: "Sin idioma",
 };
 
+function languageName(code: string): string {
+  return LANGUAGE_NAMES[code.toLowerCase()] ?? code.toUpperCase();
+}
+
 function audioTrackLabel(track: { index: number; language: string | null; channels: number | null }): string {
-  const language = track.language ? (LANGUAGE_NAMES[track.language.toLowerCase()] ?? track.language.toUpperCase()) : `Pista ${track.index + 1}`;
+  const language = track.language ? languageName(track.language) : `Pista ${track.index + 1}`;
   return track.channels === 6 ? `${language} 5.1` : language;
 }
 

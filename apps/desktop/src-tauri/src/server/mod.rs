@@ -64,6 +64,7 @@ pub async fn serve(
     };
     let lan_state = lan::LanState { db_path: db_path.clone(), enabled: Arc::new(AtomicBool::new(lan_enabled)), pairing: PairingState::new() };
 
+    crate::media::subtitles::clear_temp_dir();
     let stream_state = stream::StreamState {
         db_path: db_path.clone(),
         stream_guard,
@@ -73,6 +74,7 @@ pub async fn serve(
         ffprobe_path: crate::media::resolve_binary("ffprobe"),
         mpv_path: crate::media::resolve_binary("mpv"),
         last_errors: Default::default(),
+        subtitles: Default::default(),
     };
     if stream_state.ffmpeg_path.is_none() || stream_state.ffprobe_path.is_none() {
         tracing::warn!("ffmpeg y/o ffprobe no están en el PATH: el nivel 2 de reproducción no funcionará hasta F10");
@@ -144,6 +146,7 @@ mod tests {
             ffprobe_path: None,
             mpv_path: None,
             last_errors: Default::default(),
+            subtitles: Default::default(),
         };
         let lan_state = lan::LanState {
             db_path: std::env::temp_dir(),
@@ -194,7 +197,7 @@ mod tests {
 
         let cloud: Arc<dyn CloudBackend> = Arc::new(FirebaseBackend::new(FirebaseConfig::production()));
         engine::start(db_path.clone(), cloud.clone());
-        let stream_state = stream::StreamState { db_path: db_path.clone(), stream_guard: StreamGuard::new(), ffmpeg_path: None, ffprobe_path: None, mpv_path: None, last_errors: Default::default() };
+        let stream_state = stream::StreamState { db_path: db_path.clone(), stream_guard: StreamGuard::new(), ffmpeg_path: None, ffprobe_path: None, mpv_path: None, last_errors: Default::default(), subtitles: Default::default() };
         let lan_state = lan::LanState { db_path: db_path.clone(), enabled: Arc::new(AtomicBool::new(false)), pairing: PairingState::new() };
         let router = full_router(std::env::temp_dir(), db_path.clone(), stream_state, lan_state, cloud.clone());
 

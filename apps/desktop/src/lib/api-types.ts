@@ -223,7 +223,12 @@ duration_s: number | null,
  * Pistas de audio del stream (F "premium" — selector de pista de audio). Vacío si
  * nunca se ha reproducido, o si solo tiene una (no hace falta selector para eso).
  */
-audio_tracks: Array<AudioTrackSummary>, };
+audio_tracks: Array<AudioTrackSummary>, 
+/**
+ * Pistas de subtítulos que se pueden enseñar (solo las de texto: las de imagen, como
+ * PGS, no se pueden pasar a WebVTT). Vacío si nunca se ha reproducido.
+ */
+subtitle_tracks: Array<SubtitleTrackSummary>, };
 
 export type ProfileInput = { name: string, avatar: string | null, adult_ok: boolean, };
 
@@ -273,6 +278,17 @@ pin: string | null, };
 export type SimilarTitleSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, };
 
 export type StreamFailure = { status: number, message: string, };
+
+export type SubtitleCue = { start: number, end: number, text: string, };
+
+export type SubtitleCuesResponse = { 
+/**
+ * `false` si el remux en curso no es de este ítem con esta pista (p. ej. ya se
+ * cambió de contenido): el cliente deja de preguntar.
+ */
+active: boolean, cues: Array<SubtitleCue>, };
+
+export type SubtitleTrackSummary = { index: number, language: string | null, codec_name: string | null, };
 
 /**
  * Progreso emitido al frontend por eventos de Tauri (`sync://progress`).

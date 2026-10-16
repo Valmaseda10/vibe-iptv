@@ -1299,6 +1299,82 @@ reiniciar la app. `cargo test`: 433 pasan, 6 ejecuciones seguidas sin intermiten
 
 ---
 
+## 2026-10-16 — F12 Cerrar la deuda de v1
+
+Commits `b50b87a`, `24371e2`, `6f3d966` y el de subtítulos. Criterio de aceptación
+cumplido: una película MKV con subtítulos SRT incrustados los muestra y deja elegirlos,
+con una sola conexión al proveedor.
+
+**Hecho.**
+- **Sincronización sola cada hora** mientras la app está abierta (antes solo al
+  arrancar), en pausa durante la reproducción y sin duplicarse.
+- **Favorito de canal** en Directo y **categorías de adultos a mano** (migración 013):
+  la heurística por nombre queda como valor por defecto y la resincronización respeta
+  lo que decida el usuario. Solo un perfil de adulto las ve o las cambia.
+- **Audio Dolby sin convertir** cuando la WebView lo decodifica (R3 corregida, ver
+  `ARCHITECTURE.md`): se conserva el 5.1.
+- **mpv se abre solo** cuando el contenido lo necesita, con aviso en la app.
+- **Subtítulos incrustados de texto** (SRT, ASS, mov_text, WebVTT).
+
+**Subtítulos: diseño y lo que se midió.**
+- **Misma conexión (R1).** Son una segunda salida del ffmpeg del remux, a un WebVTT
+  temporal que la API lee mientras se escribe. El proveedor falso no registró ningún
+  solapamiento de conexiones en toda la prueba.
+- **La frase más reciente no puede esperar a la siguiente.** El muxer WebVTT escribe la
+  línea en blanco que cierra una frase junto con la frase siguiente. Esperar a esa
+  línea retrasaba cada frase hasta que llegara otra, que en una película pueden ser
+  minutos. Cuenta como completa toda frase terminada en salto de línea.
+- **`-ss 0` en la salida de subtítulos.** Con `-ss` de entrada y vídeo copiado, la
+  lectura empieza en el fotograma clave anterior al punto pedido. La frase que cae entre
+  los dos sale con tiempo negativo, y el muxer desplazaba la pista entera: tras buscar,
+  los subtítulos iban de 1 a 3 s por delante del vídeo (medido con un GOP de 5 s).
+  `-ss 0` descarta lo anterior al punto pedido y deja el cero de los dos en el mismo
+  sitio. Coste: se pierde la frase que estaba en pantalla en el momento de buscar.
+- **La sesión de subtítulos incluye el punto de arranque.** Si no, un sondeo justo
+  después de buscar podía leer las frases del remux anterior, que van en otra escala de
+  tiempos.
+- **Fuerzan el nivel 2.** Un MP4 que iría tal cual (nivel 1) pasa por el remux si se
+  piden subtítulos. La salida principal lleva siempre `-sn`: sin él, ffmpeg metía por
+  su cuenta los SRT como `mov_text` dentro del fMP4.
+- **La migración 014 vacía `probe_cache`.** Lo sondeado antes no sabe qué subtítulos
+  tiene y no los ofrecería nunca. Cada ítem se vuelve a sondear la próxima vez que se
+  reproduce de verdad, dentro del permiso de `StreamGuard`, así que no es prefetch.
+- **Unos 2 s de retraso respecto a la salida de vídeo**, medidos con la entrada a
+  velocidad real. No se nota, porque el remux va por delante de lo que se ve (búfer del
+  `<video>`). El reproductor pide frases nuevas cada 1,5 s.
+- **Interfaz.**
+  - Selectores "Audio" y "Subtítulos" con etiqueta visible (antes había dos "Español"
+    seguidos).
+  - Las frases suben por encima de la barra de controles mientras se ve.
+  - Cambiar de pista retoma donde se estaba.
+  - En un selector, las flechas eligen opción en vez de cambiar el volumen.
+
+Verificado en la app real con el proveedor falso. Su MKV pinta un contador de segundos
+y cada frase dice en qué segundo debe verse; cuadraron en los segundos 15, 20, 95, 105
+y 130, antes y después de buscar y al cambiar entre español, inglés y ninguno.
+`cargo test`: 448 pasan.
+
+**Decidido no hacer: escalar solo de nivel 2 a mpv tras dos fallos.** La decisión de
+nivel ya es conservadora: solo el H.264 entra en la WebView; todo lo demás va a mpv
+desde la sonda, y ahora se abre solo. El candidato obvio para fallar pese a eso, el
+H.264 de 10 bits (habitual en anime), se probó y la WebView2 lo decodifica. Lo que
+queda por fallar en nivel 2 son cortes del proveedor o de red, y ahí mpv tampoco ayuda.
+El proveedor falso conserva esa película ("Akira") para notar si deja de ser así.
+
+**Pendiente.**
+- Caché en disco de los logos de canal servida por `/img`. Hoy los carga la WebView
+  directamente del proveedor, con su caché HTTP.
+- hls.js con reescritura del manifiesto: ninguno de los proveedores del usuario sirve
+  HLS. Antes de hacerlo, el proveedor falso debería servirlo para poder probarlo.
+- ffmpeg en build LGPL y firma del instalador. Necesita decisión del usuario: la firma
+  pide un certificado de pago.
+- HEVC dentro de la app donde la WebView lo decodifique (este PC no lo hace).
+- Subtítulos: recordar el idioma por perfil y seguir con ellos en el siguiente
+  episodio. Hoy la elección vale para el ítem en curso. Los de imagen (PGS) no se
+  ofrecen.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la
