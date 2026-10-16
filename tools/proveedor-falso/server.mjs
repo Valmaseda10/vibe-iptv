@@ -32,6 +32,8 @@ const MEDIA = {
   mp4: { file: "pelicula.mp4", seconds: 180, args: ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4"] },
   // Película MKV con dos pistas de audio: nivel 2 (remux) y selector de pista.
   mkv: { file: "pelicula.mkv", seconds: 180, twoAudio: true, args: ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "128k", "-f", "matroska"] },
+  // Película en H.265/HEVC: la WebView sin decodificación HEVC no la abre (nivel 3, mpv).
+  hevc: { file: "pelicula-hevc.mkv", seconds: 60, args: ["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-c:a", "aac", "-b:a", "128k", "-f", "matroska"] },
 };
 
 function ensureMedia() {
@@ -108,6 +110,7 @@ const movieSpecs = [
   ["ES| Matrix (1999) 1080p", "10", "mkv"], ["Gladiator [2000] FHD", "10", "mp4"], ["Origen (2010) 4K HDR", "10", "mkv"],
   ["Interstellar (2014)", "10", "mp4"], ["Blade Runner 2049 (2017) 4K", "10", "mkv"], ["1917 (2019)", "10", "mp4"],
   ["Dune (2021) MULTI", "10", "mkv"], ["Oppenheimer (2023) CASTELLANO", "10", "mp4"],
+  ["Planeta Tierra II (2016) 4K HEVC", "10", "mkv"],
   ["Toy Story (1995)", "12", "mp4"], ["Buscando a Nemo (2003)", "12", "mp4"], ["Up (2009) HD", "12", "mkv"],
   ["Del revés (2015)", "12", "mp4"], ["XXX| Película Adulta (2020)", "19", "mp4"],
 ];
@@ -342,6 +345,8 @@ createServer((req, res) => {
   const vod = new RegExp(`^/(movie|series)${credentials}(\\d+)\\.(mp4|mkv)$`).exec(path);
   if (vod) {
     const isMkv = vod[3] === "mkv";
+    const movie = movies.find((m) => String(m.stream_id) === vod[2]);
+    if (movie && /HEVC/.test(movie.name)) return sendFile(req, res, join(MEDIA_DIR, MEDIA.hevc.file), "video/x-matroska");
     return sendFile(req, res, join(MEDIA_DIR, isMkv ? MEDIA.mkv.file : MEDIA.mp4.file), isMkv ? "video/x-matroska" : "video/mp4");
   }
   res.writeHead(404);

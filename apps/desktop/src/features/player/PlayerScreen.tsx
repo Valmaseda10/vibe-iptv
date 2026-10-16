@@ -76,6 +76,7 @@ export function PlayerScreen() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [needsMpv, setNeedsMpv] = useState(false);
   const [mpvLaunching, setMpvLaunching] = useState(false);
+  const [playingInMpv, setPlayingInMpv] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -208,6 +209,7 @@ export function PlayerScreen() {
     setReconnectAttempt(0);
     setErrorMessage(null);
     setNeedsMpv(false);
+    setPlayingInMpv(false);
     if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
   }, [streamPath]);
 
@@ -275,6 +277,7 @@ export function PlayerScreen() {
       if (response.ok) {
         setErrorMessage(null);
         setNeedsMpv(false);
+        setPlayingInMpv(true);
       } else {
         setErrorMessage((await response.text()) || "No se pudo abrir mpv.");
       }
@@ -284,6 +287,16 @@ export function PlayerScreen() {
       setMpvLaunching(false);
     }
   }, [base, kind, itemId, profileId, search.source]);
+
+  // Si el contenido necesita mpv (códec que este reproductor no abre), se abre solo: va
+  // empaquetado con la app. El botón queda únicamente como reintento si falla. Una vez
+  // por stream, para no relanzarlo en bucle.
+  const autoMpvTriedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (!needsMpv || autoMpvTriedFor.current === streamPath) return;
+    autoMpvTriedFor.current = streamPath;
+    void launchMpv();
+  }, [needsMpv, streamPath, launchMpv]);
 
   // `saveProgress` necesita ser estable de verdad: si cambiara en cada `timeupdate` (como
   // pasaría si dependiera directamente de `displayCurrentTime`), el intervalo de guardado
@@ -556,6 +569,23 @@ export function PlayerScreen() {
           ) : (
             <p className="mt-0.5 text-sm text-neutral-500">Sin guía disponible</p>
           )}
+        </div>
+      )}
+
+      {playingInMpv && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-black px-10 text-center text-neutral-200">
+          <p className="max-w-md text-lg">Se está reproduciendo en una ventana aparte (mpv).</p>
+          <p className="max-w-md text-sm text-neutral-400">
+            Este contenido usa un formato que el reproductor de la app no abre. Cierra esa ventana para terminar.
+          </p>
+          <button
+            type="button"
+            autoFocus
+            onClick={goBack}
+            className="rounded-lg bg-neutral-700 px-5 py-2.5 font-medium text-white outline-none hover:bg-neutral-600"
+          >
+            Volver
+          </button>
         </div>
       )}
 

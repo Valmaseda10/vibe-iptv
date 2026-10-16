@@ -25,7 +25,8 @@ usuario `qa`, contraseña `qa`. El puerto se cambia con la variable `PORT`.
   `%TEMP%\vibe-proveedor-falso`):
   - directo en MPEG-TS con AAC (los canales de deportes, con AC3), enviado al ritmo de
     reproducción como un canal de verdad;
-  - películas en MP4 (nivel 1) y en MKV con dos pistas de audio (nivel 2).
+  - películas en MP4 (nivel 1), en MKV con dos pistas de audio (nivel 2) y una en
+    H.265/HEVC ("Planeta Tierra II"), que una WebView sin HEVC manda a mpv (nivel 3).
 
 En la consola avisa si en algún momento hay más de una conexión de directo abierta a la
 vez: la app nunca debería abrir dos (regla R1).
