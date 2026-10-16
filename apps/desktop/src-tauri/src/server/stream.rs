@@ -277,6 +277,18 @@ struct StreamQuery {
     /// `media::probe::AudioTrack`). Solo tiene efecto en nivel 2 (remux): en nivel 1 el
     /// proxy pasa el fichero tal cual, sin ninguna decisión de pistas que tomar aquí.
     audio_track: Option<i64>,
+    /// Audio que el cliente decodifica por sí mismo, separado por comas ("ac3,eac3"): ese
+    /// se copia en el remux en vez de convertirse a AAC.
+    audio_passthrough: Option<String>,
+}
+
+/// Códecs de `audio_passthrough` que se aceptan: solo los que el remux convertiría.
+fn client_audio(list: Option<&str>) -> Vec<String> {
+    list.unwrap_or_default()
+        .split(',')
+        .map(|codec| codec.trim().to_ascii_lowercase())
+        .filter(|codec| matches!(codec.as_str(), "ac3" | "eac3" | "dts"))
+        .collect()
 }
 
 async fn get_stream(
@@ -287,7 +299,8 @@ async fn get_stream(
 ) -> Response {
     let range = headers.get(header::RANGE).cloned();
     let log = Arc::clone(&state.last_errors);
-    let result = handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, query.audio_track, range).await;
+    let audio = client_audio(query.audio_passthrough.as_deref());
+    let result = handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, query.audio_track, &audio, range).await;
     remember_outcome(&log, format!("{kind}:{id}"), result.as_ref());
     match result {
         Ok(response) => response,
@@ -317,6 +330,7 @@ struct CatchupQuery {
     /// Minutos a pedir desde `start`. Por defecto 60: suficiente para un episodio típico
     /// sin arriesgarse a pedir un bloque tan largo que el panel lo rechace.
     duration_min: Option<u32>,
+    audio_passthrough: Option<String>,
 }
 
 async fn get_catchup(
@@ -327,7 +341,8 @@ async fn get_catchup(
 ) -> Response {
     let range = headers.get(header::RANGE).cloned();
     let log = Arc::clone(&state.last_errors);
-    let result = handle_catchup(state, channel_id, query.profile_id, query.start, query.duration_min.unwrap_or(60), range).await;
+    let audio = client_audio(query.audio_passthrough.as_deref());
+    let result = handle_catchup(state, channel_id, query.profile_id, query.start, query.duration_min.unwrap_or(60), &audio, range).await;
     remember_outcome(&log, format!("catchup:{channel_id}"), result.as_ref());
     match result {
         Ok(response) => response,
@@ -392,6 +407,7 @@ async fn handle_stream(
     source_id: Option<i64>,
     start_seconds: Option<f64>,
     audio_track: Option<i64>,
+    client_audio: &[String],
     range_header: Option<HeaderValue>,
 ) -> Result<Response, StreamError> {
     let media_kind = parse_kind(&kind_str)?;
@@ -441,7 +457,7 @@ async fn handle_stream(
         2 => {
             let codec = selected_track_codec(&state.db_path, &resolved_url, audio_track).await.or(audio_codec);
             let live = matches!(item.kind, MediaKind::Live);
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), codec.as_deref(), live, start_seconds, audio_track, permit, Arc::clone(&state.stream_guard))
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), codec.as_deref(), client_audio, live, start_seconds, audio_track, permit, Arc::clone(&state.stream_guard))
                 .await
         }
         _ => Err(StreamError::NeedsMpv),
@@ -500,6 +516,7 @@ async fn handle_catchup(
     profile_id: i64,
     start_epoch: i64,
     duration_min: u32,
+    client_audio: &[String],
     range_header: Option<HeaderValue>,
 ) -> Result<Response, StreamError> {
     let channel = with_db(state.db_path.clone(), move |conn| reads::resolve_channel_catchup(conn, channel_id))
@@ -544,7 +561,7 @@ async fn handle_catchup(
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
         2 => {
             // Un programa ya emitido tiene principio y fin: como una película, sin `nobuffer`.
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), audio_codec.as_deref(), false, None, None, permit, Arc::clone(&state.stream_guard))
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), audio_codec.as_deref(), client_audio, false, None, None, permit, Arc::clone(&state.stream_guard))
                 .await
         }
         _ => Err(StreamError::NeedsMpv),
@@ -766,13 +783,14 @@ async fn spawn_remux_response(
     ffmpeg_path: &Path,
     url: &str,
     audio_codec: Option<&str>,
+    client_audio: &[String],
     live: bool,
     start_seconds: Option<f64>,
     audio_track: Option<i64>,
     permit: StreamPermit,
     guard: Arc<StreamGuard>,
 ) -> Result<Response, StreamError> {
-    let mut child = ffmpeg::spawn_remux(ffmpeg_path, url, DEFAULT_USER_AGENT, audio_codec, live, start_seconds, audio_track).map_err(|err| {
+    let mut child = ffmpeg::spawn_remux(ffmpeg_path, url, DEFAULT_USER_AGENT, audio_codec, client_audio, live, start_seconds, audio_track).map_err(|err| {
         tracing::error!(error = %err, "no se pudo lanzar ffmpeg para el remux");
         StreamError::BinariesMissing
     })?;

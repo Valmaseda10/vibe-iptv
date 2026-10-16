@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { apiGetOrNull, apiPost, useApiBase } from "../../lib/api-client";
+import { AUDIO_PASSTHROUGH } from "../../lib/codecSupport";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type {
   ChannelsPage,
@@ -190,11 +191,13 @@ export function PlayerScreen() {
   // pasó. Solo se distingue por la presencia de `catchupStart` en la URL de la ruta, no
   // por un `kind` aparte: sigue siendo el mismo canal, solo cambia a qué momento apunta.
   const isCatchup = kind === "channel" && search.catchupStart !== undefined;
+  // El audio que la WebView decodifica ella misma no se convierte en el núcleo.
+  const passthrough = AUDIO_PASSTHROUGH ? `&audio_passthrough=${AUDIO_PASSTHROUGH}` : "";
   const streamPath = isCatchup
-    ? `/stream/catchup/${itemId}?profile_id=${profileId}&start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}`
+    ? `/stream/catchup/${itemId}?profile_id=${profileId}&start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}${passthrough}`
     : kind === "channel"
-      ? `/stream/channel/${itemId}?profile_id=${profileId}`
-      : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}${search.source ? `&source=${search.source}` : ""}${search.audioTrack != null ? `&audio_track=${search.audioTrack}` : ""}`;
+      ? `/stream/channel/${itemId}?profile_id=${profileId}${passthrough}`
+      : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}${search.source ? `&source=${search.source}` : ""}${search.audioTrack != null ? `&audio_track=${search.audioTrack}` : ""}${passthrough}`;
   const streamUrl = base && profileId !== null ? `${base}${streamPath}` : undefined;
 
   // Cambiar de stream de verdad (zapping, o abrir otro título) es un intento nuevo:

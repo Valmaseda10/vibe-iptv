@@ -47,7 +47,9 @@ fallo de Firebase puede bloquear el uso local. Ver `docs/CLOUD-SYNC.md`.
 
 ### R3. Los códecs mandan
 El directo IPTV llega en MPEG-TS crudo. El VOD en MKV o MP4. El WebView no reproduce
-TS ni MKV de forma nativa, y no soporta audio AC3/E-AC3. Por eso existe la cascada de
+TS ni MKV de forma nativa, y el audio que decodifica depende de la plataforma (la
+WebView2 de Windows sí reproduce AC-3/E-AC-3; otras no): el cliente informa de lo que
+decodifica y el núcleo convierte el resto. Por eso existe la cascada de
 reproducción de tres niveles descrita en `docs/ARCHITECTURE.md`. No intentes meter una
 URL `.ts` directamente en un `<video>`: no va a funcionar.
 

@@ -87,8 +87,11 @@ ffmpeg -hide_banner -loglevel error \
   pipe:1
 ```
 
-El audio se recodifica solo si es AC3, E-AC3 o DTS, que el WebView no soporta. Eso
-cuesta poca CPU. El vídeo **nunca** se recodifica en este nivel.
+El audio se recodifica solo si es AC3, E-AC3 o DTS **y el cliente no lo decodifica**:
+el reproductor manda `?audio_passthrough=ac3,eac3` con lo que su WebView reproduce
+(`canPlayType`). La WebView2 de Windows reproduce AC-3/E-AC-3, así que ahí el Dolby se
+copia tal cual y se conserva el 5.1; DTS se sigue convirtiendo. El vídeo **nunca** se
+recodifica en este nivel.
 
 Tres lecciones medidas (ver `DECISIONS.md`, 2026-10-16):
 - **Sin `-fflags nobuffer`.** Descarta lo leído mientras se analiza la entrada, que es

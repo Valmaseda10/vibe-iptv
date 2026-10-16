@@ -14,11 +14,13 @@ use crate::util::redact;
 /// Construye el comando ffmpeg de remux, sin lanzarlo todavía. Separado de
 /// [`spawn_remux`] para poder probar los flags exactos sin depender de tener ffmpeg
 /// instalado.
+#[allow(clippy::too_many_arguments)]
 pub fn build_remux_command(
     ffmpeg_path: &Path,
     url: &str,
     user_agent: &str,
     audio_codec: Option<&str>,
+    client_audio: &[String],
     live: bool,
     start_seconds: Option<f64>,
     audio_track: Option<i64>,
@@ -56,7 +58,11 @@ pub fn build_remux_command(
 
     command.args(["-c:v", "copy"]);
 
-    if crate::media::probe::audio_needs_transcode(audio_codec) {
+    // El cliente dice qué audio decodifica él mismo (`client_audio`, p. ej. "ac3"): la
+    // WebView2 de Windows reproduce AC-3/E-AC-3, y convertirlo a AAC estéreo perdía el
+    // 5.1 de las películas y gastaba CPU sin necesidad.
+    let client_decodes = audio_codec.is_some_and(|codec| client_audio.iter().any(|c| c == codec));
+    if crate::media::probe::audio_needs_transcode(audio_codec) && !client_decodes {
         command.args(["-c:a", "aac", "-b:a", "192k"]);
     } else {
         command.args(["-c:a", "copy"]);
@@ -88,16 +94,18 @@ pub fn build_remux_command(
 /// Lanza el remux y engancha un lector de `stderr` que registra cada línea con
 /// `tracing`, pasada siempre por `redact()` (regla R5: por si acaso ffmpeg llegara a
 /// ecoar la URL de entrada en un mensaje de error).
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_remux(
     ffmpeg_path: &Path,
     url: &str,
     user_agent: &str,
     audio_codec: Option<&str>,
+    client_audio: &[String],
     live: bool,
     start_seconds: Option<f64>,
     audio_track: Option<i64>,
 ) -> std::io::Result<Child> {
-    let mut child = build_remux_command(ffmpeg_path, url, user_agent, audio_codec, live, start_seconds, audio_track).spawn()?;
+    let mut child = build_remux_command(ffmpeg_path, url, user_agent, audio_codec, client_audio, live, start_seconds, audio_track).spawn()?;
 
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(async move {
@@ -121,7 +129,7 @@ mod tests {
 
     #[test]
     fn video_is_always_copied_never_recoded() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, None);
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:v").unwrap();
         assert_eq!(args[pos + 1], "copy");
@@ -129,7 +137,7 @@ mod tests {
 
     #[test]
     fn aac_is_copied_with_the_adts_to_mp4_filter() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("aac"), true, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("aac"), &[], true, None, None);
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "copy");
@@ -139,7 +147,7 @@ mod tests {
     #[test]
     fn other_compatible_audio_is_copied_without_the_aac_filter() {
         for codec in [Some("mp3"), Some("opus"), None] {
-            let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", codec, true, None, None);
+            let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", codec, &[], true, None, None);
             let args = args_of(&command);
             let pos = args.iter().position(|a| a == "-c:a").unwrap();
             assert_eq!(args[pos + 1], "copy");
@@ -148,8 +156,22 @@ mod tests {
     }
 
     #[test]
+    fn dolby_audio_is_copied_when_the_client_decodes_it() {
+        let client = ["ac3".to_string(), "eac3".to_string()];
+        for codec in ["ac3", "eac3"] {
+            let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some(codec), &client, true, None, None));
+            let pos = args.iter().position(|a| a == "-c:a").unwrap();
+            assert_eq!(args[pos + 1], "copy", "{codec} no debe convertirse si el cliente lo decodifica");
+        }
+        // DTS sigue convirtiéndose: el cliente no dijo que lo decodifique.
+        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("dts"), &client, true, None, None));
+        let pos = args.iter().position(|a| a == "-c:a").unwrap();
+        assert_eq!(args[pos + 1], "aac");
+    }
+
+    #[test]
     fn audio_transcodes_to_aac_at_192k_when_incompatible() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("ac3"), true, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("ac3"), &[], true, None, None);
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "aac");
@@ -159,7 +181,7 @@ mod tests {
 
     #[test]
     fn output_uses_fragmented_mp4_over_stdout() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, None);
         let args = args_of(&command);
         assert!(args.windows(2).any(|w| w[0] == "-f" && w[1] == "mp4"));
         assert!(args.iter().any(|a| a == "frag_keyframe+empty_moov+default_base_moof+delay_moov"));
@@ -168,8 +190,8 @@ mod tests {
 
     #[test]
     fn the_initial_burst_is_never_dropped_and_live_analyzes_less() {
-        let live = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None));
-        let vod = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, false, None, None));
+        let live = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, None));
+        let vod = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, &[], false, None, None));
         for args in [&live, &vod] {
             assert!(!args.iter().any(|a| a == "nobuffer"), "nobuffer tira la ráfaga inicial del panel");
             assert!(args.windows(2).any(|w| w[0] == "-frag_duration" && w[1] == "500000"));
@@ -180,7 +202,7 @@ mod tests {
 
     #[test]
     fn user_agent_and_input_url_are_forwarded() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "MiAgente/1.0", None, true, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "MiAgente/1.0", None, &[], true, None, None);
         let args = args_of(&command);
         let ua_pos = args.iter().position(|a| a == "-user_agent").unwrap();
         assert_eq!(args[ua_pos + 1], "MiAgente/1.0");
@@ -190,7 +212,7 @@ mod tests {
 
     #[test]
     fn start_seconds_inserts_input_seek_before_input_url() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, false, Some(125.5), None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, &[], false, Some(125.5), None);
         let args = args_of(&command);
         let ss_pos = args.iter().position(|a| a == "-ss").unwrap();
         assert_eq!(args[ss_pos + 1], "125.5");
@@ -200,7 +222,7 @@ mod tests {
 
     #[test]
     fn no_seek_flag_when_start_seconds_is_none() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, false, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, &[], false, None, None);
         let args = args_of(&command);
         assert!(!args.iter().any(|a| a == "-ss"));
     }
@@ -209,14 +231,14 @@ mod tests {
     fn no_explicit_map_without_an_audio_track_choice() {
         // Comportamiento de siempre: sin pista elegida, ffmpeg decide solo qué pistas
         // incluir — pedir `-map` sin necesidad rompería eso (dejaría de incluir vídeo).
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, None);
         let args = args_of(&command);
         assert!(!args.iter().any(|a| a == "-map"));
     }
 
     #[test]
     fn selecting_an_audio_track_maps_video_and_that_track_explicitly() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, Some(1));
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, Some(1));
         let args = args_of(&command);
         let map_positions: Vec<usize> = args.iter().enumerate().filter(|(_, a)| *a == "-map").map(|(i, _)| i).collect();
         assert_eq!(map_positions.len(), 2, "hacen falta los dos -map (vídeo y audio) o ffmpeg deja de incluir vídeo");
@@ -228,7 +250,7 @@ mod tests {
     fn selecting_audio_track_zero_still_maps_explicitly() {
         // Track 0 es "falsy" en muchos lenguajes — confirma que Some(0) no se confunde
         // con None y se sigue mapeando de forma explícita.
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, Some(0));
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, Some(0));
         let args = args_of(&command);
         assert!(args.iter().any(|a| a == "-map"));
         let last_map = args.iter().enumerate().filter(|(_, a)| *a == "-map").last().unwrap().0;
@@ -267,7 +289,7 @@ mod tests {
         // fichero por HTTP en localhost para que la prueba ejercite exactamente los
         // mismos flags que se usan contra un proveedor real.
         let url = serve_file_over_http(sample.clone()).await;
-        let mut child = spawn_remux(&ffmpeg_path, &url, "vibe-iptv-test", Some("aac"), false, None, None).unwrap();
+        let mut child = spawn_remux(&ffmpeg_path, &url, "vibe-iptv-test", Some("aac"), &[], false, None, None).unwrap();
         let mut stdout = child.stdout.take().expect("stdout debería estar conectado");
 
         let mut buf = vec![0u8; 65536];
