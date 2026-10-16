@@ -1228,6 +1228,77 @@ renueva al arrancar. Test de regresión con tamaños reales.
 
 ---
 
+## 2026-10-16 — Ronda de QA en la app real, pantalla a pantalla
+
+Hasta ahora, la interfaz de casi todas las fases se había construido sin poder verla
+(F5–F10: "no verificado: cómo se ve"). Esta ronda la recorre de verdad.
+
+**Método.**
+- **La app real controlada por Playwright.** `tauri dev` con
+  `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` expone la
+  WebView2 por CDP, y `playwright-core` se conecta a ella (`connectOverCDP`, sin
+  descargar navegadores). Es la app de verdad, comandos de Tauri incluidos: clics,
+  teclado, capturas y estado del `<video>`. Los guiones viven fuera del repositorio.
+- **Proveedor Xtream falso con vídeo de verdad** (`tools/proveedor-falso`): canales con
+  prefijos y feeds duplicados, catch-up, películas con títulos sucios, series, XMLTV en
+  gzip y streams generados con ffmpeg (TS con AAC y AC3, MP4, MKV con dos pistas). Mide
+  cuánto dura cualquier solapamiento de conexiones (R1).
+- **Cuenta de pruebas en Firebase** `claude-qa-app@vibeiptv.test` (contraseña fuera del
+  repositorio) y perfil "Claude QA".
+
+**Fallos graves encontrados y arreglados.**
+- **El directo no se veía con audio AAC**, es decir, casi ningún canal: ffmpeg 8 (también
+  el 8.1 del instalador) aborta el remux sin `aac_adtstoasc`. Solo escribía la cabecera y
+  el `<video>` daba el vídeo por terminado al instante (commit `1ca4ad9`).
+- **Las películas por remux perdían sus primeros segundos**, también tras cada búsqueda:
+  `-fflags nobuffer` descarta lo leído al analizar. Medido: empezaban en el segundo 10.
+- **Tras un fallo, el directo se quedaba bloqueado.** El reproductor volvía a pedir el
+  propio stream para leer el motivo del error: otra sesión con el proveedor, la que se
+  veía muerta y, en un directo, una respuesta que no terminaba nunca. Ahora el núcleo
+  guarda el último fallo (`/api/playback/last-error`) sin tocar al proveedor (`5ce49cd`).
+- **Zapping de ~6,3 s a 1,0–1,6 s** (objetivo del PRD: menos de 2 s). La causa también
+  era `nobuffer`, que tira la ráfaga de búfer que mandan los paneles al conectar.
+  Medidas en `docs/ARCHITECTURE.md`.
+- **Los tests de remux daban falsa confianza:** solo comprobaban la caja `ftyp`, que
+  ffmpeg escribía antes de fallar. Ahora cuentan paquetes de audio y vídeo, y se comprobó
+  que fallan sin el arreglo.
+
+**Resto de hallazgos arreglados** (commits `8abb3cd` y `9961dc5`):
+- Carátulas del proveedor cuando TMDB no tiene póster (migración 012); fichas con el
+  póster en vez de un hueco negro.
+- Miniaturas de episodio rotas (URL del proveedor enviada al proxy de TMDB).
+- Rejilla: el año quedaba tapado por la fila siguiente.
+- Títulos: "Origen HDR", "DEP| Deportes Uno", "XXX| ...".
+- La Guía repetía los canales con varios feeds.
+- Ajustes: la lista de proveedores al final de la página; aviso de mpv inexacto; en
+  desarrollo se usan ya los sidecars de `src-tauri/binaries`.
+- Inicio sin proveedor: bienvenida con botón a Ajustes. Fuera "PENDIENTE DE TMDB".
+- El panel de estadísticas del directo decía "nivel desconocido".
+- Accesibilidad: perfiles con nombre accesible, mensajes sin "Error:".
+- **Teclado / mando:** foco inicial, filas que no caen en el ✕, foco en "Reproducir" al
+  abrir una ficha, volver a la pantalla de origen, y filtros que ya no cambian de valor
+  con las flechas.
+- **Tests intermitentes desde F8**, resueltos: nombres de BD temporal por nanosegundo
+  (coincidían en paralelo) y credenciales de prueba en el keychain sin cerrojo.
+
+**Verificado en la app real**: login con error en español; crear perfil; añadir el
+proveedor y sincronizar (16 canales, 23 películas, 4 series, EPG); Inicio, Películas,
+Series, fichas, Directo, Guía y Buscar con datos; reproducción de MP4 (nivel 1), MKV
+(nivel 2, con selector de dos pistas de audio), directo AAC y directo AC3; zapping
+rápido sin bloquearse y con **una sola conexión al proveedor en todo momento**; un
+favorito marcado en la rejilla llega a Firestore en menos de 4 s; la sesión sobrevive a
+reiniciar la app. `cargo test`: 433 pasan, 6 ejecuciones seguidas sin intermitencias.
+
+**Pendiente de esta ronda.**
+- "Entrar sin conexión" y la bienvenida sin proveedor no se han visto en pantalla: sus
+  condiciones (nube caída, ningún proveedor) no se pueden provocar sin desmontar el
+  entorno de prueba. Su lógica sí está probada.
+- Sin clave de TMDB no se han visto géneros, banner ni recomendaciones.
+- Selector de pista de audio en directo: el núcleo lo admite, la interfaz lo oculta
+  hasta resolver qué pasa con la pista elegida al cambiar de canal.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la
