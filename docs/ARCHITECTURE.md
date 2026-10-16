@@ -79,15 +79,25 @@ recodificar vídeo:
 
 ```
 ffmpeg -hide_banner -loglevel error \
-  -fflags nobuffer -flags low_delay -probesize 2M -analyzeduration 2M \
+  -probesize <1M directo | 2M VOD> -analyzeduration <1M directo | 2M VOD> \
   -i <url> \
-  -c:v copy -c:a <copy|aac -b:a 192k> \
+  -c:v copy -c:a <copy [-bsf:a aac_adtstoasc si es AAC] | aac -b:a 192k> \
   -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof+delay_moov \
+  -frag_duration 500000 \
   pipe:1
 ```
 
 El audio se recodifica solo si es AC3, E-AC3 o DTS, que el WebView no soporta. Eso
 cuesta poca CPU. El vídeo **nunca** se recodifica en este nivel.
+
+Tres lecciones medidas (ver `DECISIONS.md`, 2026-10-16):
+- **Sin `-fflags nobuffer`.** Descarta lo leído mientras se analiza la entrada, que es
+  justo la ráfaga de búfer que mandan los paneles al conectar: el directo tardaba 4,3 s
+  en dar el primer fragmento (0,1 s sin él), y el VOD perdía sus primeros segundos.
+- **`aac_adtstoasc` al copiar AAC.** El AAC de un MPEG-TS va en ADTS; ffmpeg 8 ya no
+  añade el filtro solo y aborta el remux tras escribir solo la cabecera.
+- **Fragmentos de 0,5 s** además de en cada fotograma clave: con GOP largos, esperar al
+  siguiente clave retrasaba varios segundos el primer fotograma.
 
 Para directo, cada cambio de canal mata el proceso ffmpeg anterior antes de lanzar el
 nuevo. Un proceso vivo por sesión, sin excepciones.

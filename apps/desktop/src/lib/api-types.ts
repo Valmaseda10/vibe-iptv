@@ -262,6 +262,8 @@ pin: string | null, };
 
 export type SimilarTitleSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, };
 
+export type StreamFailure = { status: number, message: string, };
+
 /**
  * Progreso emitido al frontend por eventos de Tauri (`sync://progress`).
  */

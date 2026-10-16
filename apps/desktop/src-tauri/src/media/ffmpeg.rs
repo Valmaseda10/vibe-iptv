@@ -25,14 +25,17 @@ pub fn build_remux_command(
 ) -> Command {
     let mut command = Command::new(ffmpeg_path);
     command.args(["-hide_banner", "-loglevel", "error"]).args(["-user_agent", user_agent]);
-    // `nobuffer` arranca antes descartando los paquetes leídos mientras se analiza la
-    // entrada. En directo da igual (no hay principio que perder); en una película o un
-    // episodio se comía los primeros segundos, también después de cada búsqueda (medido:
-    // el vídeo empezaba en el segundo 10 con un MKV de bitrate bajo).
+    // Sin `-fflags nobuffer`: descarta lo leído mientras se analiza la entrada, y eso es
+    // justo la ráfaga de búfer que mandan los paneles al conectar. Medido contra el
+    // proveedor de pruebas: primer fragmento a los 4,3 s con él y a los 0,1 s sin él; en
+    // VOD además se comía los primeros segundos de cada película y tras cada búsqueda.
+    // En directo el análisis se acorta a 1 s: es lo que tarda el primer fotograma si el
+    // panel no manda ráfaga.
     if live {
-        command.args(["-fflags", "nobuffer", "-flags", "low_delay"]);
+        command.args(["-probesize", "1M", "-analyzeduration", "1M"]);
+    } else {
+        command.args(["-probesize", "2M", "-analyzeduration", "2M"]);
     }
-    command.args(["-probesize", "2M", "-analyzeduration", "2M"]);
 
     // Búsqueda para VOD: `-ss` antes de `-i` es "seek de entrada" (rápido, a la
     // keyframe más cercana), la única opción viable con `-c:v copy` — no hay fotogramas
@@ -68,7 +71,9 @@ pub fn build_remux_command(
     }
 
     command
-        .args(["-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof+delay_moov"])
+        // Fragmentos de medio segundo además de en cada fotograma clave: con canales de
+        // GOP largo, esperar al siguiente clave retrasaba el arranque varios segundos.
+        .args(["-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof+delay_moov", "-frag_duration", "500000"])
         .arg("pipe:1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -162,17 +167,15 @@ mod tests {
     }
 
     #[test]
-    fn low_latency_flags_are_present_only_for_live() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None);
-        let args = args_of(&command);
-        assert!(args.iter().any(|a| a == "nobuffer"));
-        assert!(args.iter().any(|a| a == "low_delay"));
-
-        // En VOD, `nobuffer` descarta los primeros segundos del contenido.
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, false, None, None);
-        let args = args_of(&command);
-        assert!(!args.iter().any(|a| a == "nobuffer"));
-        assert!(!args.iter().any(|a| a == "low_delay"));
+    fn the_initial_burst_is_never_dropped_and_live_analyzes_less() {
+        let live = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, true, None, None));
+        let vod = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, false, None, None));
+        for args in [&live, &vod] {
+            assert!(!args.iter().any(|a| a == "nobuffer"), "nobuffer tira la ráfaga inicial del panel");
+            assert!(args.windows(2).any(|w| w[0] == "-frag_duration" && w[1] == "500000"));
+        }
+        assert!(live.windows(2).any(|w| w[0] == "-analyzeduration" && w[1] == "1M"));
+        assert!(vod.windows(2).any(|w| w[0] == "-analyzeduration" && w[1] == "2M"));
     }
 
     #[test]

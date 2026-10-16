@@ -10,6 +10,7 @@ import type {
   MovieDetailResponse,
   PlaybackProgressResponse,
   PlaybackTierResponse,
+  StreamFailure,
   SeriesDetailResponse,
 } from "../../lib/api-types";
 import { ArrowDownIcon, ArrowUpIcon, FullscreenIcon, MuteIcon, PauseIcon, PlayIcon, VolumeIcon } from "../../components/icons";
@@ -30,7 +31,7 @@ const MAX_RECONNECT_ATTEMPTS = 3;
 const RECONNECT_DELAY_MS = 2_000;
 /** Códigos que no se arreglan reintentando: se enseña el error real de inmediato en vez
  * de gastar los reintentos en algo que va a fallar igual las tres veces. */
-const DEFINITIVE_ERROR_STATUSES = new Set([400, 403, 404, 501]);
+const DEFINITIVE_ERROR_STATUSES = new Set([400, 402, 403, 404, 501, 503]);
 
 /** Cascada de reproducción de F6: un `<video>` nativo apuntando a `/stream/:kind/:id`.
  *
@@ -198,12 +199,19 @@ export function PlayerScreen() {
 
   // Cambiar de stream de verdad (zapping, o abrir otro título) es un intento nuevo:
   // sin esto, tres cortes seguidos en canales distintos agotarían los reintentos del
-  // primero y dejarían el segundo sin ninguno.
+  // primero y dejarían el segundo sin ninguno. Un reintento ya programado era del
+  // stream anterior: se cancela.
   useEffect(() => {
     setReconnectAttempt(0);
     setErrorMessage(null);
     setNeedsMpv(false);
+    if (reconnectTimerRef.current) window.clearTimeout(reconnectTimerRef.current);
   }, [streamPath]);
+
+  // Stream que se está viendo ahora mismo, para descartar el resultado de un fallo que
+  // llega tarde, cuando el usuario ya cambió de canal.
+  const currentStreamPathRef = useRef(streamPath);
+  currentStreamPathRef.current = streamPath;
 
   useEffect(() => {
     return () => {
@@ -212,27 +220,32 @@ export function PlayerScreen() {
   }, []);
 
   // `<video onError>` no da el porqué (el navegador nunca ve el cuerpo de una respuesta
-  // que no pudo interpretar como vídeo). En vez de un mensaje genérico siempre igual, se
-  // hace una comprobación puntual de diagnóstico contra la misma URL: la sesión ya
-  // falló, así que esto no abre una conexión de más que compita con nada — mensajes
-  // que digan qué hacer, no solo que algo falló (F9).
+  // que no pudo interpretar como vídeo). El núcleo guarda el motivo del último fallo al
+  // abrir cada stream y aquí se le pregunta (F9: mensajes que digan qué hacer). Antes se
+  // volvía a pedir el propio stream para leer el error: eso abría otra sesión con el
+  // proveedor, mataba la que se estaba viendo y, en un directo que funcionaba, la
+  // respuesta no terminaba nunca y el reintento no llegaba a dispararse.
   //
   // En directo, antes de rendirse: un corte de proveedor es lo normal en IPTV, así que
   // se reintenta solo unas pocas veces (ver `MAX_RECONNECT_ATTEMPTS`) forzando un
-  // remontaje del `<video>` con la misma URL, salvo que el diagnóstico ya diga que el
-  // fallo es de los que no se arreglan reintentando (`DEFINITIVE_ERROR_STATUSES`).
+  // remontaje del `<video>` con la misma URL, salvo que el motivo sea de los que no se
+  // arreglan reintentando (`DEFINITIVE_ERROR_STATUSES`).
   const handleVideoError = useCallback(async () => {
     if (!streamUrl) return;
+    const failedPath = streamPath;
     let status: number | null = null;
     let text = "";
     try {
-      const response = await fetch(streamUrl);
-      status = response.status;
-      text = await response.text();
+      const failure = await apiGetOrNull<StreamFailure>(`/api/playback/last-error/${isCatchup ? "catchup" : kind}/${itemId}`);
+      if (failure) {
+        status = failure.status;
+        text = failure.message;
+      }
     } catch {
-      // Fallo de red al ni siquiera poder preguntar: tampoco es un "no" definitivo del
-      // servidor, así que en directo también merece un reintento.
+      // Sin respuesta del propio núcleo: tampoco es un "no" definitivo, así que en
+      // directo también merece un reintento.
     }
+    if (currentStreamPathRef.current !== failedPath) return;
 
     const definitive = status != null && DEFINITIVE_ERROR_STATUSES.has(status);
     if (kind === "channel" && !definitive && reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
@@ -246,7 +259,7 @@ export function PlayerScreen() {
     // prometer algo que reproduciría el momento equivocado.
     setNeedsMpv(status === 501 && !isCatchup);
     setErrorMessage(text || "No se pudo reproducir este contenido.");
-  }, [streamUrl, isCatchup, kind, reconnectAttempt]);
+  }, [streamUrl, streamPath, isCatchup, kind, itemId, reconnectAttempt]);
 
   const launchMpv = useCallback(async () => {
     if (!base || profileId === null) return;

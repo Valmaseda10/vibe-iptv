@@ -42,6 +42,31 @@ pub struct StreamState {
     /// Nivel 3 (F9): igual de opcional y por el mismo motivo. Sin verificar de verdad
     /// (ver `media::mpv`) — no hay mpv instalado en la máquina donde se escribió esto.
     pub mpv_path: Option<PathBuf>,
+    /// Último fallo al abrir cada stream, por `"<kind>:<id>"`. El `<video>` nunca ve el
+    /// cuerpo de una respuesta de error; el reproductor lo consulta aquí para explicar qué
+    /// pasó, sin volver a pedir el stream (que abriría otra sesión con el proveedor).
+    pub last_errors: StreamErrorLog,
+}
+
+pub type StreamErrorLog = Arc<std::sync::Mutex<std::collections::HashMap<String, StreamFailure>>>;
+
+#[derive(Clone, serde::Serialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct StreamFailure {
+    pub status: u16,
+    pub message: String,
+}
+
+fn remember_outcome(log: &StreamErrorLog, key: String, outcome: Result<&Response, &StreamError>) {
+    let Ok(mut map) = log.lock() else { return };
+    match outcome {
+        Ok(_) => {
+            map.remove(&key);
+        }
+        Err(err) => {
+            map.insert(key, StreamFailure { status: err.status().as_u16(), message: err.to_string() });
+        }
+    }
 }
 
 pub fn stream_router(state: StreamState) -> Router {
@@ -51,6 +76,7 @@ pub fn stream_router(state: StreamState) -> Router {
         .route("/stream/catchup/:channel_id", get(get_catchup))
         .route("/api/playback/tier/:kind/:id", get(get_playback_tier))
         .route("/api/playback/binaries", get(get_binaries_status))
+        .route("/api/playback/last-error/:kind/:id", get(get_last_error))
         .with_state(state)
 }
 
@@ -194,9 +220,9 @@ enum StreamError {
     Internal,
 }
 
-impl IntoResponse for StreamError {
-    fn into_response(self) -> Response {
-        let status = match &self {
+impl StreamError {
+    fn status(&self) -> StatusCode {
+        match self {
             StreamError::NotFound | StreamError::ProviderNotFound => StatusCode::NOT_FOUND,
             StreamError::BadKind => StatusCode::BAD_REQUEST,
             StreamError::Source(_) | StreamError::Unreachable | StreamError::MpvLaunchFailed(_) => StatusCode::BAD_GATEWAY,
@@ -206,8 +232,23 @@ impl IntoResponse for StreamError {
             StreamError::CatchupNotSupported => StatusCode::NOT_FOUND,
             StreamError::CatchupOutOfRange => StatusCode::BAD_REQUEST,
             StreamError::Db(_) | StreamError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
-        };
-        (status, self.to_string()).into_response()
+        }
+    }
+}
+
+impl IntoResponse for StreamError {
+    fn into_response(self) -> Response {
+        (self.status(), self.to_string()).into_response()
+    }
+}
+
+/// El motivo del último fallo al abrir este stream (`kind` = `channel`, `movie`,
+/// `episode` o `catchup`), o 204 si el último intento abrió bien. No toca al proveedor.
+async fn get_last_error(State(state): State<StreamState>, AxumPath((kind, id)): AxumPath<(String, i64)>) -> Response {
+    let failure = state.last_errors.lock().ok().and_then(|map| map.get(&format!("{kind}:{id}")).cloned());
+    match failure {
+        Some(failure) => axum::Json(failure).into_response(),
+        None => StatusCode::NO_CONTENT.into_response(),
     }
 }
 
@@ -245,7 +286,10 @@ async fn get_stream(
     headers: HeaderMap,
 ) -> Response {
     let range = headers.get(header::RANGE).cloned();
-    match handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, query.audio_track, range).await {
+    let log = Arc::clone(&state.last_errors);
+    let result = handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, query.audio_track, range).await;
+    remember_outcome(&log, format!("{kind}:{id}"), result.as_ref());
+    match result {
         Ok(response) => response,
         Err(err) => {
             tracing::warn!(kind = %kind, id, error = %err, "fallo al servir /stream");
@@ -282,7 +326,10 @@ async fn get_catchup(
     headers: HeaderMap,
 ) -> Response {
     let range = headers.get(header::RANGE).cloned();
-    match handle_catchup(state, channel_id, query.profile_id, query.start, query.duration_min.unwrap_or(60), range).await {
+    let log = Arc::clone(&state.last_errors);
+    let result = handle_catchup(state, channel_id, query.profile_id, query.start, query.duration_min.unwrap_or(60), range).await;
+    remember_outcome(&log, format!("catchup:{channel_id}"), result.as_ref());
+    match result {
         Ok(response) => response,
         Err(err) => {
             tracing::warn!(channel_id, error = %err, "fallo al servir /stream/catchup");
@@ -765,7 +812,11 @@ mod tests {
     /// Borra el secreto de prueba del keychain real al terminar, pase lo que pase (igual
     /// que `util::keychain`'s propios tests: no hay backend de prueba, es el almacén de
     /// credenciales real del sistema).
-    struct KeychainGuard(String);
+    /// Borra la credencial de prueba al terminar y, mientras vive, tiene el cerrojo del
+    /// keychain (`keychain::TEST_LOCK`): el núcleo vuelve a leer la credencial al abrir el
+    /// stream, y con otros tests escribiendo a la vez el almacén de Windows devolvía
+    /// `NoEntry` de forma intermitente.
+    struct KeychainGuard(String, #[allow(dead_code)] tokio::sync::MutexGuard<'static, ()>);
     impl Drop for KeychainGuard {
         fn drop(&mut self) {
             let _ = keychain::delete_secret(&self.0);
@@ -776,8 +827,11 @@ mod tests {
         std::env::temp_dir().join(format!("vibe-iptv-stream-test-{label}-{}-{}.sqlite3", std::process::id(), rand_suffix()))
     }
 
+    /// Aleatorio de verdad, no la hora: dos tests en paralelo podían sacar el mismo
+    /// nanosegundo, abrir el mismo fichero SQLite y fallar de forma intermitente.
     fn rand_suffix() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+        use rand::RngExt;
+        rand::rng().random()
     }
 
     async fn generate_sample(ffmpeg_path: &Path, dir: &Path, filename: &str, container: &str) -> PathBuf {
@@ -830,18 +884,19 @@ mod tests {
         format!("http://{addr}")
     }
 
-    fn seed_provider_with_credential(db_path: &Path, base_url: &str, credential_suffix: &str) -> (i64, KeychainGuard) {
+    async fn seed_provider_with_credential(db_path: &Path, base_url: &str, credential_suffix: &str) -> (i64, KeychainGuard) {
+        let lock = keychain::TEST_LOCK.lock().await;
         let conn = open_connection_at(db_path).unwrap();
         let provider_id =
             write_queries::insert_provider(&conn, ProviderKind::Xtream, "P", base_url, Some("user"), 1, None).unwrap();
         let credential_ref = format!("vibe-iptv-stream-test-{}-{credential_suffix}", std::process::id());
         keychain::store_secret(&credential_ref, "pass").unwrap();
         write_queries::set_provider_credential_ref(&conn, provider_id, &credential_ref).unwrap();
-        (provider_id, KeychainGuard(credential_ref))
+        (provider_id, KeychainGuard(credential_ref, lock))
     }
 
     fn base_state(db_path: PathBuf, ffmpeg_path: Option<PathBuf>, ffprobe_path: Option<PathBuf>) -> StreamState {
-        StreamState { db_path, stream_guard: StreamGuard::new(), ffmpeg_path, ffprobe_path, mpv_path: None }
+        StreamState { db_path, stream_guard: StreamGuard::new(), ffmpeg_path, ffprobe_path, mpv_path: None, last_errors: Default::default() }
     }
 
     #[tokio::test]
@@ -872,6 +927,29 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
     }
 
+    /// El reproductor pregunta aquí por qué falló un stream, en vez de volver a pedirlo
+    /// (que abría otra sesión con el proveedor y mataba la que se estaba viendo).
+    #[tokio::test]
+    async fn last_error_reports_why_a_stream_failed_without_opening_it_again() {
+        let db_path = temp_db_path("lasterror");
+        open_connection_at(&db_path).unwrap();
+        let router = stream_router(base_state(db_path.clone(), None, None));
+
+        let before = router.clone().oneshot(Request::builder().uri("/api/playback/last-error/channel/9999").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(before.status(), StatusCode::NO_CONTENT);
+
+        let failed = router.clone().oneshot(Request::builder().uri("/stream/channel/9999?profile_id=1").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(failed.status(), StatusCode::NOT_FOUND);
+
+        let after = router.oneshot(Request::builder().uri("/api/playback/last-error/channel/9999").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(after.status(), StatusCode::OK);
+        let body = after.into_body().collect().await.unwrap().to_bytes();
+        let failure: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(failure["status"], 404);
+        assert!(!failure["message"].as_str().unwrap().is_empty());
+        let _ = std::fs::remove_file(&db_path);
+    }
+
     #[tokio::test]
     async fn tier_one_proxies_a_progressive_mp4_with_range_support_and_caches_the_probe() {
         let Some(ffmpeg_path) = which_on_path("ffmpeg") else {
@@ -889,7 +967,7 @@ mod tests {
         let base_url = spawn_file_server("/movie/user/pass/1.mp4", sample).await;
 
         let db_path = temp_db_path("mp4");
-        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "mp4");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "mp4").await;
         {
             let conn = open_connection_at(&db_path).unwrap();
             let raw = RawMovie {
@@ -950,7 +1028,7 @@ mod tests {
         let base_url = spawn_file_server("/live/user/pass/1.ts", sample).await;
 
         let db_path = temp_db_path("ts");
-        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "ts");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "ts").await;
         {
             let conn = open_connection_at(&db_path).unwrap();
             let channel = RawChannel {
@@ -1023,7 +1101,7 @@ mod tests {
         let base_url = spawn_file_server("/live/user/pass/1.ts", sample).await;
 
         let db_path = temp_db_path("audiotrack");
-        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "audiotrack");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "audiotrack").await;
         let channel_id = seed_channel(&db_path, provider_id, "1", false, 0);
 
         // Pista 1 (índice relativo) es la estéreo según `generate_sample_with_two_audio_tracks`.
@@ -1080,7 +1158,7 @@ mod tests {
         let base_url = spawn_file_server("/live/user/pass/1.ts", sample).await;
 
         let db_path = temp_db_path("zap");
-        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "zap");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "zap").await;
         {
             let conn = open_connection_at(&db_path).unwrap();
             let channel = RawChannel {
@@ -1133,7 +1211,7 @@ mod tests {
     #[tokio::test]
     async fn mpv_launch_responds_service_unavailable_when_mpv_is_not_configured() {
         let db_path = temp_db_path("mpv-missing");
-        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "mpv-missing");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "mpv-missing").await;
         let conn = open_connection_at(&db_path).unwrap();
         let raw = RawMovie {
             remote_id: "1".into(),
@@ -1209,7 +1287,7 @@ mod tests {
     #[tokio::test]
     async fn catchup_returns_404_when_the_channel_has_no_catchup_support() {
         let db_path = temp_db_path("catchup-unsupported");
-        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "catchup-unsupported");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "catchup-unsupported").await;
         let channel_id = seed_channel(&db_path, provider_id, "1", false, 0);
 
         let state = base_state(db_path.clone(), None, None);
@@ -1225,7 +1303,7 @@ mod tests {
     #[tokio::test]
     async fn catchup_rejects_a_start_older_than_catchup_days() {
         let db_path = temp_db_path("catchup-range");
-        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "catchup-range");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "catchup-range").await;
         let channel_id = seed_channel(&db_path, provider_id, "1", true, 3);
 
         let state = base_state(db_path.clone(), None, None);
@@ -1239,7 +1317,7 @@ mod tests {
     #[tokio::test]
     async fn catchup_rejects_a_start_in_the_future() {
         let db_path = temp_db_path("catchup-future");
-        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "catchup-future");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, "http://127.0.0.1:1", "catchup-future").await;
         let channel_id = seed_channel(&db_path, provider_id, "1", true, 3);
 
         let state = base_state(db_path.clone(), None, None);

@@ -233,6 +233,10 @@ function sendFile(req, res, path, contentType) {
 
 /** Directo: el TS se envía al ritmo de reproducción, sin fin conocido, como un canal. */
 let openLiveConnections = 0;
+// Cuándo empezó el solapamiento actual (dos conexiones a la vez), para medir cuánto duró:
+// unos milisegundos son el servidor enterándose tarde del cierre del socket anterior; más
+// es una segunda conexión de verdad (regla R1).
+let overlapStartedAt = null;
 function sendLive(req, res, spec) {
   const path = join(MEDIA_DIR, spec.file);
   const size = statSync(path).size;
@@ -241,7 +245,8 @@ function sendLive(req, res, spec) {
   let offset = 0;
   const fd = openSync(path, "r");
   openLiveConnections++;
-  console.log(`directo abierto (${openLiveConnections} a la vez)${openLiveConnections > 1 ? "  ← ¡MÁS DE UNA CONEXIÓN! (R1)" : ""}`);
+  if (openLiveConnections > 1 && overlapStartedAt === null) overlapStartedAt = Date.now();
+  console.log(`directo abierto (${openLiveConnections} a la vez)${openLiveConnections > 1 ? "  ← más de una conexión, midiendo…" : ""}`);
   res.writeHead(200, { "content-type": "video/mp2t" });
   const pushBytes = (count) => {
     const buffer = Buffer.alloc(Math.min(count, size - offset));
@@ -262,6 +267,11 @@ function sendLive(req, res, spec) {
     clearInterval(timer);
     closeSync(fd);
     openLiveConnections--;
+    if (openLiveConnections <= 1 && overlapStartedAt !== null) {
+      const ms = Date.now() - overlapStartedAt;
+      overlapStartedAt = null;
+      console.log(`solapamiento de ${ms} ms${ms > 250 ? "  ← ¡DOS CONEXIONES DE VERDAD! (R1)" : " (cierre detectado tarde)"}`);
+    }
     console.log(`directo cerrado (${openLiveConnections} a la vez)`);
   };
   res.once("close", close);

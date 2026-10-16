@@ -321,8 +321,11 @@ mod tests {
         std::env::temp_dir().join(format!("vibe-iptv-lan-test-{label}-{}-{}.sqlite3", std::process::id(), rand_suffix()))
     }
 
+    /// Aleatorio de verdad, no la hora: dos tests en paralelo podían sacar el mismo
+    /// nanosegundo, abrir el mismo fichero SQLite y fallar de forma intermitente.
     fn rand_suffix() -> u64 {
-        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64
+        use rand::RngExt;
+        rand::rng().random()
     }
 
     fn base_state(db_path: std::path::PathBuf) -> LanState {
