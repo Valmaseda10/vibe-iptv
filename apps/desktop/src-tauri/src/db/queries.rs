@@ -186,7 +186,8 @@ pub fn upsert_categories(
     {
         let mut stmt = conn.prepare(
             "INSERT INTO categories (provider_id, remote_id, kind, name, is_adult) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(provider_id, kind, remote_id) DO UPDATE SET name = excluded.name, is_adult = excluded.is_adult",
+             ON CONFLICT(provider_id, kind, remote_id) DO UPDATE SET name = excluded.name,
+                is_adult = COALESCE(categories.is_adult_manual, excluded.is_adult)",
         )?;
         for category in categories {
             let is_adult = is_adult_category_name(&category.name) as i64;
@@ -203,6 +204,19 @@ pub fn upsert_categories(
         map.insert(remote_id, id);
     }
     Ok(map)
+}
+
+/// Marca (o desmarca) a mano una categoría como de adultos. `None` vuelve al criterio
+/// automático por nombre. La sincronización respeta la decisión manual.
+pub fn set_category_adult(conn: &Connection, category_id: i64, manual: Option<bool>) -> Result<bool> {
+    let name: Option<String> = conn.query_row("SELECT name FROM categories WHERE id = ?1", params![category_id], |row| row.get(0)).optional()?;
+    let Some(name) = name else { return Ok(false) };
+    let is_adult = manual.unwrap_or_else(|| is_adult_category_name(&name));
+    conn.execute(
+        "UPDATE categories SET is_adult = ?1, is_adult_manual = ?2 WHERE id = ?3",
+        params![is_adult as i64, manual.map(|m| m as i64), category_id],
+    )?;
+    Ok(true)
 }
 
 pub fn upsert_channel(
@@ -819,6 +833,36 @@ mod tests {
         };
         assert_eq!(is_adult("1"), 0);
         assert_eq!(is_adult("2"), 1);
+    }
+
+    /// Lo que el usuario marca a mano no lo deshace la siguiente sincronización: antes la
+    /// heurística por nombre se reaplicaba siempre y no había forma de corregirla.
+    #[test]
+    fn a_manual_adult_mark_survives_a_resync_and_can_go_back_to_automatic() {
+        let conn = memory_conn();
+        let provider_id = insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let cats = vec![
+            RawCategory { remote_id: "1".into(), kind: MediaKind::Live, name: "PARA MAYORES".into() },
+            RawCategory { remote_id: "2".into(), kind: MediaKind::Live, name: "XXX".into() },
+        ];
+        upsert_categories(&conn, provider_id, MediaKind::Live, &cats).unwrap();
+        let id = |remote_id: &str| -> i64 {
+            conn.query_row("SELECT id FROM categories WHERE remote_id = ?1", params![remote_id], |r| r.get(0)).unwrap()
+        };
+        let is_adult = |remote_id: &str| -> i64 {
+            conn.query_row("SELECT is_adult FROM categories WHERE remote_id = ?1", params![remote_id], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(is_adult("1"), 0, "la heurística no conoce \"PARA MAYORES\"");
+
+        assert!(set_category_adult(&conn, id("1"), Some(true)).unwrap());
+        assert!(set_category_adult(&conn, id("2"), Some(false)).unwrap());
+        upsert_categories(&conn, provider_id, MediaKind::Live, &cats).unwrap();
+        assert_eq!(is_adult("1"), 1, "la resincronización respeta la marca manual");
+        assert_eq!(is_adult("2"), 0);
+
+        set_category_adult(&conn, id("2"), None).unwrap();
+        assert_eq!(is_adult("2"), 1, "sin marca manual vuelve a mandar el nombre");
+        assert!(!set_category_adult(&conn, 9_999, Some(true)).unwrap());
     }
 
     #[test]

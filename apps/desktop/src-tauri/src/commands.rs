@@ -227,14 +227,14 @@ pub async fn auto_sync_stale_providers(app: AppHandle, stream_guard: Arc<StreamG
         let conn = match schema::open_connection(&app) {
             Ok(conn) => conn,
             Err(err) => {
-                tracing::error!(error = %err, "no se pudo abrir la base de datos para la sincronización automática de arranque");
+                tracing::error!(error = %err, "no se pudo abrir la base de datos para la sincronización automática");
                 return;
             }
         };
         match queries::list_providers(&conn) {
             Ok(rows) => rows,
             Err(err) => {
-                tracing::error!(error = %err, "no se pudo listar proveedores para la sincronización automática de arranque");
+                tracing::error!(error = %err, "no se pudo listar proveedores para la sincronización automática");
                 return;
             }
         }
@@ -252,10 +252,10 @@ pub async fn auto_sync_stale_providers(app: AppHandle, stream_guard: Arc<StreamG
         let provider_id = provider.id;
         match build_source_for_provider(provider).await {
             Ok(source) => {
-                tracing::info!(provider_id, "sincronización automática de arranque (más de 12h sin sincronizar)");
+                tracing::info!(provider_id, "sincronización automática (más de 12h sin sincronizar)");
                 spawn_sync(app.clone(), provider_id, source, Arc::clone(&stream_guard));
             }
-            Err(err) => tracing::warn!(provider_id, error = %err, "no se pudo reconstruir la fuente para la sincronización automática de arranque"),
+            Err(err) => tracing::warn!(provider_id, error = %err, "no se pudo reconstruir la fuente para la sincronización automática"),
         }
     }
 }
@@ -376,10 +376,36 @@ async fn fetch_m3u_source(url: &str) -> CmdResult<M3uSource> {
     M3uSource::parse(std::io::Cursor::new(text.into_bytes())).map_err(|err| err.to_string())
 }
 
+/// Proveedores con una sincronización en marcha. Una sincronización se pausa (no se
+/// cancela) mientras hay reproducción, así que puede durar lo que dure una película; sin
+/// esto, la comprobación horaria o el botón de Ajustes lanzarían otra del mismo proveedor
+/// en paralelo, escribiendo las mismas tablas a la vez.
+static SYNCING: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+
+/// Quita el proveedor de `SYNCING` al terminar, también si la tarea entra en pánico.
+struct SyncingGuard(i64);
+impl Drop for SyncingGuard {
+    fn drop(&mut self) {
+        if let Ok(mut syncing) = SYNCING.lock() {
+            syncing.retain(|id| *id != self.0);
+        }
+    }
+}
+
 fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + Sync>, stream_guard: Arc<StreamGuard>) {
+    {
+        let Ok(mut syncing) = SYNCING.lock() else { return };
+        if syncing.contains(&provider_id) {
+            tracing::info!(provider_id, "ya hay una sincronización en marcha de este proveedor; no se lanza otra");
+            return;
+        }
+        syncing.push(provider_id);
+    }
+    let syncing_guard = SyncingGuard(provider_id);
     let app_for_progress = app.clone();
     let source_for_epg = Arc::clone(&source);
     tauri::async_runtime::spawn(async move {
+        let _syncing_guard = syncing_guard;
         let conn = match schema::open_connection(&app) {
             Ok(conn) => conn,
             Err(err) => {

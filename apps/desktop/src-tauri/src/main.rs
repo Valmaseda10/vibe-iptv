@@ -23,6 +23,9 @@ use tracing_subscriber::util::SubscriberInitExt;
 use util::diag_log::DiagnosticsLog;
 use util::stream_guard::StreamGuard;
 
+/// Cada cuánto se comprueba, con la app abierta, si algún proveedor necesita sincronizar.
+const AUTO_SYNC_CHECK_EVERY_SECONDS: u64 = 3_600;
+
 fn main() {
     let diagnostics_log = DiagnosticsLog::new();
     // Dos salidas para el mismo log: la consola de siempre (con color, para desarrollo)
@@ -71,10 +74,16 @@ fn main() {
             });
 
             // RF2: sincroniza en segundo plano cualquier proveedor con más de 12h sin
-            // sincronizar, sin bloquear ni retrasar la apertura de la ventana.
+            // sincronizar, sin bloquear ni retrasar la apertura de la ventana. Se vuelve a
+            // mirar cada hora: con la app abierta días seguidos, catálogo y guía caducaban
+            // (la EPG solo trae siete días). La sincronización ya se pausa sola mientras
+            // hay reproducción (R1).
             let app_handle_for_autosync = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                auto_sync_stale_providers(app_handle_for_autosync, stream_guard).await;
+                loop {
+                    auto_sync_stale_providers(app_handle_for_autosync.clone(), stream_guard.clone()).await;
+                    tokio::time::sleep(std::time::Duration::from_secs(AUTO_SYNC_CHECK_EVERY_SECONDS)).await;
+                }
             });
             Ok(())
         })

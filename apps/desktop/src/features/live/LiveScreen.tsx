@@ -6,6 +6,8 @@ import { apiGet } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type { CategorySummary, ChannelsPage, EpgNowNextResponse } from "../../lib/api-types";
 import { groupChannelsByName, type ChannelGroup } from "../../lib/channels";
+import { useFavorites } from "../../lib/favorites";
+import { HeartIcon } from "../../components/icons";
 
 const ROW_HEIGHT = 60;
 const EPG_REFRESH_MS = 60_000;
@@ -168,6 +170,7 @@ export function LiveScreen() {
                         </div>
                         {channel.has_catchup && <span className="ml-auto shrink-0 rounded bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400">catch-up</span>}
                       </button>
+                      <ChannelFavoriteToggle group={group} activeChannelId={channel.id} />
                       {group.channels.length > 1 && (
                         <select
                           value={channel.id}
@@ -216,5 +219,28 @@ function NowPlaying({ epg }: { epg: EpgNowNextResponse | undefined }) {
         <div className="h-full bg-red-600" style={{ width: `${progress * 100}%` }} />
       </div>
     </div>
+  );
+}
+
+/** Corazón de cada fila de Directo. Un canal con varias fuentes es un solo canal para el
+ * usuario: está en favoritos si lo está cualquiera de sus fuentes, y quitarlo las quita
+ * todas; añadirlo marca la fuente que se está usando. */
+function ChannelFavoriteToggle({ group, activeChannelId }: { group: ChannelGroup; activeChannelId: number }) {
+  const { isFavorite, toggleFavorite } = useFavorites();
+  const favoriteFeeds = group.channels.filter((c) => isFavorite("channel", c.id));
+  const active = favoriteFeeds.length > 0;
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        if (active) favoriteFeeds.forEach((c) => toggleFavorite("channel", c.id, false));
+        else toggleFavorite("channel", activeChannelId, true);
+      }}
+      aria-label={active ? `Quitar ${group.displayName} de favoritos` : `Añadir ${group.displayName} a favoritos`}
+      aria-pressed={active}
+      className="shrink-0 rounded-full p-2 text-neutral-400 outline-none hover:bg-neutral-800 hover:text-white"
+    >
+      <HeartIcon filled={active} className={`h-4 w-4 ${active ? "text-red-500" : ""}`} />
+    </button>
   );
 }

@@ -15,6 +15,16 @@ export type AudioTrackSummary = { index: number, language: string | null, codec_
 
 export type BinariesStatus = { ffmpeg: boolean, ffprobe: boolean, mpv: boolean, };
 
+export type CategoryAdultSetting = { id: number, 
+/**
+ * `live`, `movie` o `series`.
+ */
+kind: string, name: string, is_adult: boolean, 
+/**
+ * `true` si lo decidió el usuario; `false` si es el criterio automático por nombre.
+ */
+manual: boolean, };
+
 export type CategorySummary = { id: number, name: string, };
 
 export type ChannelSummary = { id: number, display_name: string, logo_url: string | null, category_id: number | null, has_catchup: boolean, };

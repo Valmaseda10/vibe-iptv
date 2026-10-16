@@ -256,6 +256,29 @@ pub fn list_categories(conn: &Connection, kind: &str, include_adult: bool) -> Re
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+pub struct CategoryAdultRow {
+    pub id: i64,
+    pub kind: String,
+    pub name: String,
+    pub is_adult: bool,
+    pub manual: bool,
+}
+
+/// Todas las categorías de todos los tipos, para marcar a mano las de adultos (Ajustes).
+pub fn list_categories_for_adult_settings(conn: &Connection) -> Result<Vec<CategoryAdultRow>> {
+    let mut stmt = conn.prepare("SELECT id, kind, name, is_adult, is_adult_manual IS NOT NULL FROM categories ORDER BY kind, name")?;
+    let rows = stmt.query_map([], |row| {
+        Ok(CategoryAdultRow {
+            id: row.get(0)?,
+            kind: row.get(1)?,
+            name: row.get(2)?,
+            is_adult: row.get::<_, i64>(3)? != 0,
+            manual: row.get(4)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 pub struct ChannelListItem {
     pub id: i64,
     pub display_name: String,

@@ -14,7 +14,7 @@ use ts_rs::TS;
 use crate::catalog::tmdb::{TmdbClient, TmdbExtras, TMDB_API_KEY_CREDENTIAL_REF};
 use crate::db::reads::{self, MovieSort};
 use crate::db::{queries, schema, DbError};
-use crate::sources::{Source, VodInfo};
+use crate::sources::VodInfo;
 use crate::sync::{engine, outbox};
 use crate::util::keychain;
 
@@ -31,6 +31,8 @@ enum ApiError {
     NotFound,
     #[error("{0}")]
     BadRequest(String),
+    #[error("Solo un perfil de adulto puede hacer esto.")]
+    Forbidden,
     #[error("error interno")]
     Internal,
 }
@@ -40,6 +42,7 @@ impl IntoResponse for ApiError {
         let status = match &self {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
+            ApiError::Forbidden => StatusCode::FORBIDDEN,
             ApiError::Db(_) | ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
@@ -58,6 +61,21 @@ where
     .await
     .map_err(|_| ApiError::Internal)?
     .map_err(ApiError::from)
+}
+
+/// Igual que `with_db`, para cierres que pueden fallar con un `ApiError` propio (p. ej.
+/// un permiso), no solo con errores de base de datos.
+async fn with_db_result<T, F>(db_path: PathBuf, f: F) -> Result<T, ApiError>
+where
+    T: Send + 'static,
+    F: FnOnce(&rusqlite::Connection) -> Result<T, ApiError> + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        let conn = schema::open_readonly_at(&db_path)?;
+        f(&conn)
+    })
+    .await
+    .map_err(|_| ApiError::Internal)?
 }
 
 // ─────────────── Tipos de respuesta (ts-rs) ───────────────
@@ -616,6 +634,66 @@ async fn get_live_categories(State(state): State<CatalogState>, Query(query): Qu
     })
     .await?;
     Ok(Json(items.into_iter().map(Into::into).collect()))
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct CategoryAdultSetting {
+    #[ts(type = "number")]
+    pub id: i64,
+    /// `live`, `movie` o `series`.
+    pub kind: String,
+    pub name: String,
+    pub is_adult: bool,
+    /// `true` si lo decidió el usuario; `false` si es el criterio automático por nombre.
+    pub manual: bool,
+}
+
+/// Solo un perfil de adulto ve y cambia qué categorías lo son: si no, un perfil infantil
+/// podría desmarcar la suya.
+fn require_adult_profile(conn: &rusqlite::Connection, profile_id: i64) -> Result<(), ApiError> {
+    if reads::profile_allows_adult(conn, profile_id)? {
+        Ok(())
+    } else {
+        Err(ApiError::Forbidden)
+    }
+}
+
+async fn get_category_adult_settings(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<Vec<CategoryAdultSetting>>, ApiError> {
+    let rows = with_db_result(state.db_path, move |conn| {
+        require_adult_profile(conn, query.profile_id)?;
+        Ok(reads::list_categories_for_adult_settings(conn)?)
+    })
+    .await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|r| CategoryAdultSetting { id: r.id, kind: r.kind, name: r.name, is_adult: r.is_adult, manual: r.manual })
+            .collect(),
+    ))
+}
+
+#[derive(Deserialize)]
+struct CategoryAdultInput {
+    profile_id: i64,
+    /// `null` vuelve al criterio automático por nombre.
+    is_adult: Option<bool>,
+}
+
+async fn put_category_adult(
+    State(state): State<CatalogState>,
+    AxumPath(category_id): AxumPath<i64>,
+    Json(input): Json<CategoryAdultInput>,
+) -> Result<StatusCode, ApiError> {
+    let found = with_db_result(state.db_path, move |conn| {
+        require_adult_profile(conn, input.profile_id)?;
+        Ok(queries::set_category_adult(conn, category_id, input.is_adult)?)
+    })
+    .await?;
+    if found {
+        Ok(StatusCode::NO_CONTENT)
+    } else {
+        Err(ApiError::NotFound)
+    }
 }
 
 #[derive(Deserialize)]
@@ -1318,6 +1396,8 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
     Router::new()
         .route("/api/home", get(get_home))
         .route("/api/live/categories", get(get_live_categories))
+        .route("/api/categories/adult", get(get_category_adult_settings))
+        .route("/api/categories/:id/adult", axum::routing::put(put_category_adult))
         .route("/api/live/channels", get(get_live_channels))
         .route("/api/movies", get(get_movies))
         .route("/api/movies/:id", get(get_movie_detail))
@@ -1411,6 +1491,32 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["items"][0]["clean_title"], "Peli de Prueba");
+
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Solo un perfil de adulto ve y cambia qué categorías lo son: un perfil infantil no
+    /// puede desmarcar la suya.
+    #[tokio::test]
+    async fn adult_category_settings_are_only_for_adult_profiles() {
+        let db_path = seeded_db();
+        let router = catalog_router(db_path.clone());
+        let uri = format!("/api/categories/adult?profile_id={TEST_PROFILE_ID}");
+
+        let kid = router.clone().oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(kid.status(), StatusCode::FORBIDDEN, "el perfil por defecto no es de adulto");
+        let put = Request::builder()
+            .method("PUT")
+            .uri("/api/categories/1/adult")
+            .header("content-type", "application/json")
+            .body(Body::from(format!(r#"{{"profile_id":{TEST_PROFILE_ID},"is_adult":false}}"#)))
+            .unwrap();
+        assert_eq!(router.clone().oneshot(put).await.unwrap().status(), StatusCode::FORBIDDEN);
+
+        open_connection_at(&db_path).unwrap().execute("UPDATE profiles SET adult_ok = 1 WHERE id = ?1", [TEST_PROFILE_ID]).unwrap();
+        let adult = router.oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(adult.status(), StatusCode::OK);
+        assert!(body_json(adult).await.is_array());
 
         let _ = std::fs::remove_file(&db_path);
     }

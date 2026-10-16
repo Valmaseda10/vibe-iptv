@@ -84,6 +84,16 @@ export async function apiPatch(path: string, body: unknown): Promise<void> {
   if (!response.ok) return throwWithBody(path, response);
 }
 
+export async function apiPut(path: string, body: unknown): Promise<void> {
+  const base = await getApiBase();
+  const response = await fetch(`${base}${path}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) return throwWithBody(path, response);
+}
+
 export async function apiDelete(path: string): Promise<void> {
   const base = await getApiBase();
   const response = await fetch(`${base}${path}`, { method: "DELETE" });

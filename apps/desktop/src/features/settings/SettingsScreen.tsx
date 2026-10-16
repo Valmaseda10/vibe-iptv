@@ -2,12 +2,13 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { apiGet, apiPost, errorMessage } from "../../lib/api-client";
+import { apiGet, apiPost, apiPut, errorMessage } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type {
   AccountStatus,
   AccountStatusResponse,
   AddProviderInput,
+  CategoryAdultSetting,
   CloudSyncStatus,
   BinariesStatus,
   EpgSyncSummary,
@@ -409,6 +410,7 @@ export function SettingsScreen() {
 
       <AccountSection />
       <ProfileSection />
+      <AdultCategoriesSection />
       <LanSection />
       <DiagnosticsSection />
     </div>
@@ -419,6 +421,84 @@ export function SettingsScreen() {
  * reales: cada uno con su propio PIN de entrada y su propio "adulto"/"infantil" — se
  * administran desde el propio selector de perfiles (botón "Administrar perfiles"), no
  * desde Ajustes. Aquí solo queda un atajo para volver a ese selector. */
+const CATEGORY_KIND_LABELS: Record<string, string> = { live: "Directo", movie: "Películas", series: "Series" };
+
+/** Qué categorías son de adultos (F12). Las detecta solas una heurística por nombre al
+ * sincronizar; aquí se corrige a mano lo que se le escape o lo que marque de más, y la
+ * siguiente sincronización lo respeta. Solo para perfiles de adulto: el núcleo responde
+ * 403 a los demás y la sección no aparece. */
+function AdultCategoriesSection() {
+  const queryClient = useQueryClient();
+  const { profileId } = useActiveProfile();
+  const [filter, setFilter] = useState("");
+  const queryKey = ["adult-categories", profileId];
+  const categoriesQuery = useQuery({
+    queryKey,
+    queryFn: () => apiGet<CategoryAdultSetting[]>(`/api/categories/adult?profile_id=${profileId}`),
+    enabled: profileId !== null,
+    retry: false,
+  });
+  const mutation = useMutation({
+    mutationFn: ({ id, isAdult }: { id: number; isAdult: boolean | null }) =>
+      apiPut(`/api/categories/${id}/adult`, { profile_id: profileId, is_adult: isAdult }),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey });
+      // Lo que se ve en Directo, Películas y Series depende de esto.
+      queryClient.invalidateQueries();
+    },
+  });
+
+  if (!categoriesQuery.data) return null;
+  const needle = filter.trim().toLowerCase();
+  const visible = categoriesQuery.data.filter((c) => !needle || c.name.toLowerCase().includes(needle));
+  const markedCount = categoriesQuery.data.filter((c) => c.is_adult).length;
+
+  return (
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+      <h2 className="mb-2 text-xl font-medium">Categorías para adultos</h2>
+      <p className="mb-4 text-sm text-neutral-400">
+        Los perfiles que no son de adulto no ven estas categorías. Se detectan solas por el nombre ({markedCount} ahora
+        mismo); marca o desmarca las que se hayan escapado.
+      </p>
+      <input
+        type="search"
+        placeholder="Buscar categoría"
+        aria-label="Buscar categoría"
+        className="mb-3 w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm"
+        value={filter}
+        onChange={(e) => setFilter(e.target.value)}
+      />
+      <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto">
+        {visible.map((category) => (
+          <li key={category.id} className="flex items-center gap-3 rounded px-2 py-1 text-sm hover:bg-neutral-800">
+            <label className="flex flex-1 items-center gap-3">
+              <input
+                type="checkbox"
+                checked={category.is_adult}
+                onChange={(e) => mutation.mutate({ id: category.id, isAdult: e.target.checked })}
+              />
+              <span className="w-20 shrink-0 text-xs text-neutral-500">{CATEGORY_KIND_LABELS[category.kind] ?? category.kind}</span>
+              <span className="truncate">{category.name}</span>
+            </label>
+            {category.manual ? (
+              <button
+                type="button"
+                className="shrink-0 text-xs text-neutral-500 underline decoration-dotted hover:text-neutral-300"
+                onClick={() => mutation.mutate({ id: category.id, isAdult: null })}
+              >
+                Volver a automático
+              </button>
+            ) : (
+              <span className="shrink-0 text-xs text-neutral-600">automático</span>
+            )}
+          </li>
+        ))}
+        {visible.length === 0 && <li className="px-2 py-1 text-sm text-neutral-500">Ninguna categoría coincide.</li>}
+      </ul>
+    </section>
+  );
+}
+
 function ProfileSection() {
   const { setProfileId } = useActiveProfile();
 
