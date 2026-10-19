@@ -269,6 +269,8 @@ enum StreamError {
     AccountExpired,
     #[error("No se pudo conectar con el proveedor. Puede que hayas alcanzado el límite de conexiones simultáneas, que la cuenta esté caída, o que no haya conexión a internet. Inténtalo de nuevo en un momento.")]
     Unreachable,
+    #[error("{}", no_data_message(*max_connections))]
+    NoData { max_connections: i64 },
     #[error("ffmpeg o ffprobe no están instalados todavía (se empaquetan como sidecar en una fase posterior).")]
     BinariesMissing,
     #[error("Este contenido necesita mpv como reproductor externo y no está instalado. Instálalo y vuelve a intentarlo, o usa \"Abrir con mpv\" una vez lo tengas.")]
@@ -293,6 +295,7 @@ impl StreamError {
             StreamError::NotFound | StreamError::ProviderNotFound => StatusCode::NOT_FOUND,
             StreamError::BadKind => StatusCode::BAD_REQUEST,
             StreamError::Source(_) | StreamError::Unreachable | StreamError::MpvLaunchFailed(_) => StatusCode::BAD_GATEWAY,
+            StreamError::NoData { .. } => StatusCode::GATEWAY_TIMEOUT,
             StreamError::AccountExpired => StatusCode::PAYMENT_REQUIRED,
             StreamError::BinariesMissing | StreamError::MpvMissing => StatusCode::SERVICE_UNAVAILABLE,
             StreamError::NeedsMpv => StatusCode::NOT_IMPLEMENTED,
@@ -302,6 +305,21 @@ impl StreamError {
         }
     }
 }
+
+/// Lo más probable cuando el proveedor acepta la conexión y no manda nada es que la cuenta
+/// ya esté en uso en otro sitio (medido con la cuenta real del usuario, de 1 conexión).
+fn no_data_message(max_connections: i64) -> String {
+    let limit = if max_connections == 1 { "1 conexión".to_string() } else { format!("{max_connections} conexiones") };
+    format!(
+        "El proveedor no ha enviado vídeo en {} segundos. Si tienes esta cuenta abierta en otro dispositivo (tele, móvil, otra app), ciérralo: solo permite {limit} a la vez. Si no, puede que el canal esté caído.",
+        FIRST_DATA_TIMEOUT.as_secs()
+    )
+}
+
+/// Cuánto se espera el primer trozo de vídeo de un remux antes de darlo por perdido. Lo
+/// normal con un proveedor real es 2,5–5 s; sin este límite, el reproductor se quedaba
+/// cargando para siempre sin decir por qué.
+const FIRST_DATA_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(if cfg!(test) { 2 } else { 20 });
 
 impl IntoResponse for StreamError {
     fn into_response(self) -> Response {
@@ -551,6 +569,7 @@ async fn handle_stream(
         }
     }
 
+    let max_connections = provider_row.max_connections;
     let source = build_source_for_provider(provider_row).await.map_err(StreamError::Source)?;
 
     let item = StreamRef { kind: media_kind, remote_id, container_extension };
@@ -592,7 +611,8 @@ async fn handle_stream(
             let subtitles_path =
                 subtitle_track.and_then(|track| replace_subtitle_session(&state.subtitles, Some(subtitle_session_key(&kind_str, id, track, start_seconds.filter(|s| *s > 0.0)))));
             let subtitles = subtitle_track.zip(subtitles_path.as_deref());
-            let remux = RemuxRequest { audio_codec: codec.as_deref(), client_audio, live, start_seconds, audio_track: tracks.audio, subtitles };
+            let remux =
+                RemuxRequest { audio_codec: codec.as_deref(), client_audio, live, start_seconds, audio_track: tracks.audio, subtitles, max_connections };
             spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), remux, permit, Arc::clone(&state.stream_guard)).await
         }
         _ => Err(StreamError::NeedsMpv),
@@ -686,6 +706,7 @@ async fn handle_catchup(
         }
     }
 
+    let max_connections = provider_row.max_connections;
     let source = build_source_for_provider(provider_row).await.map_err(StreamError::Source)?;
     let item = CatchupRef { remote_id: channel.remote_id, start_epoch, duration_min };
     let primary_url = source.catchup_url(&item).map_err(|err| StreamError::Source(err.to_string()))?;
@@ -706,7 +727,15 @@ async fn handle_catchup(
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
         2 => {
             // Un programa ya emitido tiene principio y fin: como una película, sin `nobuffer`.
-            let remux = RemuxRequest { audio_codec: audio_codec.as_deref(), client_audio, live: false, start_seconds: None, audio_track: None, subtitles: None };
+            let remux = RemuxRequest {
+                audio_codec: audio_codec.as_deref(),
+                client_audio,
+                live: false,
+                start_seconds: None,
+                audio_track: None,
+                subtitles: None,
+                max_connections,
+            };
             spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), remux, permit, Arc::clone(&state.stream_guard)).await
         }
         _ => Err(StreamError::NeedsMpv),
@@ -941,6 +970,8 @@ struct RemuxRequest<'a> {
     start_seconds: Option<f64>,
     audio_track: Option<i64>,
     subtitles: Option<(i64, &'a Path)>,
+    /// Solo para explicar un remux que no recibe nada (ver `StreamError::NoData`).
+    max_connections: i64,
 }
 
 /// Nivel 2: remux a fMP4 con ffmpeg, un proceso vivo por sesión (ver
@@ -971,9 +1002,27 @@ async fn spawn_remux_response(
     let stdout = child.stdout.take().ok_or(StreamError::Internal)?;
 
     guard.attach_process(&permit, child).await;
-
     let generation = permit.generation();
-    let inner: BoxedByteStream = Box::pin(ReaderStream::new(stdout).map(|item| item.map_err(|err| Box::new(err) as BoxError)));
+
+    // Se espera al primer trozo antes de responder: si el proveedor acepta la conexión y
+    // no manda nada (cuenta en uso en otro sitio, canal caído), el cliente recibe un
+    // error que explica qué pasa, en vez de un vídeo que carga para siempre.
+    let mut reader = ReaderStream::new(stdout);
+    let first = match tokio::time::timeout(FIRST_DATA_TIMEOUT, reader.next()).await {
+        Ok(Some(Ok(bytes))) => bytes,
+        Ok(_) => {
+            // ffmpeg terminó sin sacar nada: el proveedor rechazó o cortó la conexión.
+            guard.release_process(generation).await;
+            return Err(StreamError::Unreachable);
+        }
+        Err(_) => {
+            tracing::warn!(seconds = FIRST_DATA_TIMEOUT.as_secs(), "el remux no recibió nada del proveedor");
+            guard.release_process(generation).await;
+            return Err(StreamError::NoData { max_connections: remux.max_connections });
+        }
+    };
+    let rest = reader.map(|item| item.map_err(|err| Box::new(err) as BoxError));
+    let inner: BoxedByteStream = Box::pin(futures_util::stream::once(async move { Ok::<Bytes, BoxError>(first) }).chain(rest));
     let body = Body::from_stream(PermitBoundBody { inner, permit: Some(permit), guard, generation });
 
     Response::builder()
@@ -1463,6 +1512,53 @@ mod tests {
         assert_eq!(after["active"], false, "abrir otro stream cierra la sesión de subtítulos anterior");
 
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Lo que pasó con la cuenta real del usuario (1 conexión, en uso en otro sitio): el
+    /// proveedor acepta la conexión y no manda nada. Antes el reproductor se quedaba
+    /// cargando para siempre; ahora el núcleo corta y deja el motivo.
+    #[tokio::test]
+    async fn a_provider_that_accepts_but_never_sends_ends_with_an_explained_error() {
+        let Some(ffmpeg_path) = which_on_path("ffmpeg") else {
+            eprintln!("ffmpeg no está en el PATH: prueba omitida");
+            return;
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut socket, _)) = listener.accept().await {
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 4096];
+                    let _ = socket.read(&mut buf).await;
+                    let _ = socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: video/mp2t\r\n\r\n").await;
+                    tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                });
+            }
+        });
+
+        let db_path = temp_db_path("nodata");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "nodata").await;
+        let channel_id = seed_channel(&db_path, provider_id, "1", false, 0);
+        {
+            // Ya sondeado antes: se va directo al remux, como un canal que ya se vio.
+            let conn = open_connection_at(&db_path).unwrap();
+            let key = probe::stream_cache_key(&format!("{base_url}/live/user/pass/1.ts"));
+            write_queries::set_probe_cache(&conn, &key, Some("h264"), Some("aac"), Some("mpegts"), 2, None, None, None).unwrap();
+        }
+
+        let state = base_state(db_path.clone(), Some(ffmpeg_path), which_on_path("ffprobe"));
+        let started = std::time::Instant::now();
+        let response = get_oneshot(state.clone(), &format!("/stream/channel/{channel_id}?profile_id=1")).await;
+        assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10), "tiene que cortar, no esperar indefinidamente");
+
+        let failure = get_oneshot(state, &format!("/api/playback/last-error/channel/{channel_id}")).await;
+        let body = failure.into_body().collect().await.unwrap().to_bytes();
+        let failure: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(failure["status"], 504);
+        assert!(failure["message"].as_str().unwrap().contains("otro dispositivo"), "{failure}");
         let _ = std::fs::remove_file(&db_path);
     }
 
