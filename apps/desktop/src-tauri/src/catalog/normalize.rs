@@ -36,7 +36,24 @@ const MAX_PREFIX_TAGS: usize = 3;
 static HASH_PREFIX_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*#\s*").unwrap());
 // Solo formas entre paréntesis/corchetes: un año suelto al final es indistinguible de
 // parte del título ("1917", "2012", "Blade Runner 2049"). Ver docs/DECISIONS.md.
-static YEAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[(\[](\d{4})[)\]]").unwrap());
+static YEAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[(\[]\s*(\d{4})\s*[)\]]").unwrap());
+/// Única excepción al año suelto: al final y tras un guion ("Beethoven 2 - 1993", visto en
+/// la lista real del usuario). El guion lo separa del título sin ambigüedad.
+static DASH_YEAR_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s[-–]\s*(\d{4})[\s._]*$").unwrap());
+/// "1080 p", con espacio: la forma pegada ya la reconoce `QUALITY_MARKERS`.
+static SPACED_QUALITY_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\b(2160|1080|720|480)(\s+p\b|\s*$)").unwrap());
+static BRACKETED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]*)\]").unwrap());
+/// Idioma al final del título ("... Latino", "... VOSE"). Solo al final: en medio puede
+/// ser parte del título ("Latino Americano").
+static TRAILING_LANGUAGE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)[\s_.\-(]+(latino|vose|vo)[\s.)]*$").unwrap());
+/// Marcas de feed que algunos paneles ponen al final del nombre del canal ("DAZN LaLiga
+/// HD@", "M+ LaLiga TV HD ?"): una "@" en cualquier caso, otros signos solo sueltos.
+static FEED_MARKER_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\s*@+|\s+[?*#]+)\s*$").unwrap());
+/// Palabras de un corchete técnico ("[MicroHD 1080p]", "[WEB-DL m1080p]", "[ES]").
+const TECHNICAL_BRACKET_WORDS: &[&str] = &["MICROHD", "BDRIP", "WEBRIP", "WEB", "DL", "SUBS", "SUB", "VOS", "VOSE", "M1080P", "M720P"];
+/// Lo que queda de "(1080p-x265)" tras retirar calidad y etiquetas: "(-)".
+static EMPTY_BRACKETS_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[(\[][\s\-_.,|:]*[)\]]").unwrap());
 static EPISODE_PATTERNS: LazyLock<[Regex; 4]> = LazyLock::new(|| {
     [
         // `\s*` entre número y "E": un proveedor real usa "S4 E5" con espacio, no solo
@@ -85,6 +102,16 @@ pub fn normalize(raw_title: &str) -> NormalizedTitle {
         text = text[whole_end..].to_string();
     }
 
+    // Corchetes técnicos ("[MicroHD 1080p][ES]"): fuera enteros, antes de que retirar la
+    // calidad de dentro deje "[MicroHD ]". Los descriptivos ("[Blanco y Negro]") se quedan.
+    text = BRACKETED_RE
+        .replace_all(&text, |caps: &regex::Captures| if is_technical_bracket(&caps[1]) { " ".to_string() } else { caps[0].to_string() })
+        .into_owned();
+    if let Some(m) = SPACED_QUALITY_RE.find(&text) {
+        quality.get_or_insert(m.as_str().replace(' ', "").to_uppercase());
+        text = remove_span(&text, m.range());
+    }
+
     // Regla 2: marcas de calidad en cualquier posición. La primera es la calidad de la
     // fuente; se retiran todas ("4K HDR" no debe dejar "HDR" en el título).
     while let Some((found, span)) = find_quality(&text) {
@@ -107,6 +134,27 @@ pub fn normalize(raw_title: &str) -> NormalizedTitle {
     // Regla 4: etiquetas de release, se eliminan todas las que aparezcan.
     text = strip_all_release_tags(&text);
 
+    // Año tras guion al final: después de las etiquetas, que en "- 2017_1080p_x264"
+    // estaban detrás del año.
+    if year.is_none() {
+        if let Some(caps) = DASH_YEAR_RE.captures(&text) {
+            if let Ok(candidate) = caps[1].parse::<i32>() {
+                if (1900..=current_year() + 1).contains(&candidate) {
+                    year = Some(candidate);
+                    let start = caps.get(0).map(|m| m.start()).unwrap_or(text.len());
+                    text.truncate(start);
+                }
+            }
+        }
+    }
+    // Hasta dos seguidas: "VO-latino".
+    for _ in 0..2 {
+        let Some(caps) = TRAILING_LANGUAGE_RE.captures(&text) else { break };
+        language.get_or_insert(caps[1].to_uppercase());
+        let start = caps.get(0).map(|m| m.start()).unwrap_or(text.len());
+        text.truncate(start);
+    }
+
     // Regla 5: patrón de episodio (relevante sobre todo para títulos M3U que llegan sin
     // pasar por sources::m3u, p. ej. episodios sueltos). Se retira, no se reextrae aquí:
     // la temporada/número ya se calculó en sources::m3u durante el parseo (F1).
@@ -116,6 +164,21 @@ pub fn normalize(raw_title: &str) -> NormalizedTitle {
     let clean_title = final_cleanup(&text);
 
     NormalizedTitle { clean_title, year, quality, language }
+}
+
+/// Si el contenido de un corchete es solo información técnica (calidad, idioma, release).
+fn is_technical_bracket(content: &str) -> bool {
+    let upper = content.to_uppercase();
+    if upper.contains("V.O.S") {
+        return true;
+    }
+    upper.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).any(|word| {
+        QUALITY_MARKERS.contains(&word)
+            || LANGUAGE_CODES.contains(&word)
+            || TECHNICAL_BRACKET_WORDS.contains(&word)
+            || RELEASE_TAGS.iter().any(|tag| *tag == word)
+            || (word.ends_with('P') && word.len() >= 4 && word[..word.len() - 1].chars().all(|c| c.is_ascii_digit()))
+    })
 }
 
 fn find_quality(text: &str) -> Option<(String, std::ops::Range<usize>)> {
@@ -178,9 +241,20 @@ fn strip_episode_pattern(text: &str) -> String {
 }
 
 fn final_cleanup(text: &str) -> String {
-    let replaced: String = text
-        .chars()
-        .map(|c| if c == '.' || c == '_' { ' ' } else { c })
+    let text = EMPTY_BRACKETS_RE.replace_all(text, " ");
+    let text = FEED_MARKER_RE.replace(&text, "");
+    // Un punto pegado a la palabra siguiente es separador de release ("The.Matrix"); con
+    // un espacio detrás es puntuación de verdad ("Mr. Link") y se queda.
+    let chars: Vec<char> = text.chars().collect();
+    let replaced: String = chars
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| {
+            // Entre dígitos tampoco: es una fecha o un número ("13.9.2024").
+            let between_digits = i > 0 && chars[i - 1].is_ascii_digit() && chars.get(i + 1).is_some_and(char::is_ascii_digit);
+            let scene_dot = c == '.' && !between_digits && chars.get(i + 1).is_some_and(|next| !next.is_whitespace());
+            if c == '_' || scene_dot { ' ' } else { c }
+        })
         .collect();
 
     let mut cleaned = String::with_capacity(replaced.len());
@@ -202,8 +276,20 @@ fn final_cleanup(text: &str) -> String {
         // Sin '(' ')' '[' ']' aquí: un año fuera de rango deja su paréntesis de cierre
         // intacto a propósito (regla 3), y recortarlo a ciegas lo destrozaría.
         .trim_matches(|c: char| c == '-' || c == '|' || c == ':')
+        .trim_end_matches(['.', '(', '['])
         .trim()
         .to_string()
+}
+
+/// Nombre de categoría sin la decoración que ponen algunos paneles ("== NOVEDADES",
+/// "*** CINE ***"), con los espacios repetidos colapsados.
+pub fn clean_category_name(raw: &str) -> String {
+    let decoration = |c: char| c.is_whitespace() || matches!(c, '=' | '*' | '-' | '#' | '>' | '<' | '|' | '~' | '•');
+    let trimmed = raw.trim_matches(decoration);
+    if trimmed.is_empty() {
+        return raw.trim().to_string();
+    }
+    trimmed.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 fn current_year() -> i32 {
@@ -578,4 +664,94 @@ mod tests {
     fn slug_keeps_only_ascii_alphanumeric_and_dashes() {
         assert_eq!(slug("¡Vámonos, ya! 2"), "vamonos-ya-2");
     }
+
+    // ── Casos de la lista real del usuario (2026-10-19) ───────────────────────
+    #[test]
+    fn quality_inside_brackets_leaves_no_empty_brackets() {
+        assert_eq!(normalize("Sense8(1080p-x265)").clean_title, "Sense8");
+        assert_eq!(normalize("La materia oscura(720p-x264)").clean_title, "La materia oscura");
+        // Un paréntesis con contenido real se queda.
+        assert_eq!(normalize("Snake Eyes (Ojos de serpiente) (1998) 1080p").clean_title, "Snake Eyes (Ojos de serpiente)");
+    }
+
+    #[test]
+    fn trailing_year_after_a_dash_is_extracted() {
+        let n = normalize("Beethoven 2: La familia crece - 1993");
+        assert_eq!(n.clean_title, "Beethoven 2: La familia crece");
+        assert_eq!(n.year, Some(1993));
+        // Sin el guion, un número final sigue siendo parte del título.
+        assert_eq!(normalize("Blade Runner 2049").year, None);
+        assert_eq!(normalize("1917").clean_title, "1917");
+    }
+
+    #[test]
+    fn a_dot_followed_by_a_space_is_kept_but_scene_dots_still_become_spaces() {
+        assert_eq!(normalize("Mr. Link: El origen perdido (2019)").clean_title, "Mr. Link: El origen perdido");
+        assert_eq!(normalize("The.Matrix.(1999)").clean_title, "The Matrix");
+    }
+
+    #[test]
+    fn dash_year_tolerates_a_trailing_dot_or_release_leftovers() {
+        let n = normalize("Big Hero 6 - 2014.");
+        assert_eq!((n.clean_title.as_str(), n.year), ("Big Hero 6", Some(2014)));
+        let n = normalize("Disobedience - 2017_1080p_x264");
+        assert_eq!((n.clean_title.as_str(), n.year), ("Disobedience", Some(2017)));
+        // Sin espacio antes del guion es ambiguo ("Formula 1- 2026"): se deja.
+        assert_eq!(normalize("Formula 1- 2026").year, None);
+    }
+
+    #[test]
+    fn trailing_language_words_are_extracted() {
+        let n = normalize("Minions: El origen de Gru (2022) 1080p_Latino");
+        assert_eq!((n.clean_title.as_str(), n.language.as_deref()), ("Minions: El origen de Gru", Some("LATINO")));
+        assert_eq!(normalize("Buscando a Michael (2023) VOSE").clean_title, "Buscando a Michael");
+        assert_eq!(normalize("The Judge From Hell 1080P   [V.O.S.E.]").clean_title, "The Judge From Hell");
+        // En medio del título, "latino" es parte del título.
+        assert_eq!(normalize("Latino Americano (2010)").clean_title, "Latino Americano");
+    }
+
+    #[test]
+    fn technical_brackets_go_but_descriptive_ones_stay() {
+        assert_eq!(normalize("Adrenalina (2022) [WEB-DL m1080p]").clean_title, "Adrenalina");
+        assert_eq!(normalize("Bambi 2 (2006) [MicroHD 1080p][ES][Animación]").clean_title, "Bambi 2 [Animación]");
+        assert_eq!(normalize("Fate/stay night [Unlimited Blade Works] 1080P").clean_title, "Fate/stay night [Unlimited Blade Works]");
+    }
+
+    #[test]
+    fn spaced_quality_and_spaced_years_are_recognised() {
+        assert_eq!(normalize("Spawn 1080 p").clean_title, "Spawn");
+        let n = normalize("Circus of Books ( 2019) 1080p");
+        assert_eq!((n.clean_title.as_str(), n.year), ("Circus of Books", Some(2019)));
+        assert_eq!(normalize("Àngela y Archie: Tras la Pantalla (2026 )1080p").year, Some(2026));
+        assert_eq!(normalize("La maldición de Hill House(The Haunting of Hill House)(1080p-x265").clean_title, "La maldición de Hill House(The Haunting of Hill House)");
+    }
+
+    #[test]
+    fn bare_resolution_vo_and_dates_from_the_real_catalog() {
+        assert_eq!(normalize("Culpable (2021) 1080").clean_title, "Culpable");
+        assert_eq!(normalize("Gintama (2006) VO-latino").clean_title, "Gintama");
+        assert_eq!(normalize("Cuando el polvo se asienta VO").clean_title, "Cuando el polvo se asienta");
+        assert_eq!(normalize("Coca-Cola Music Experience - 13.9.2024 (2024)  720p").clean_title, "Coca-Cola Music Experience - 13.9.2024");
+        // Un número que es el título se queda.
+        assert_eq!(normalize("2012 (2009)_1080p_x264").clean_title, "2012");
+    }
+
+    #[test]
+    fn feed_markers_at_the_end_of_channel_names_are_removed() {
+        assert_eq!(normalize("DAZN LaLiga HD@").clean_title, "DAZN LaLiga");
+        assert_eq!(normalize("M+ LaLiga TV HD ?").clean_title, "M+ LaLiga TV");
+        // Signos que son parte del nombre se quedan.
+        assert_eq!(normalize("¿Qué te juegas? - 2019").clean_title, "¿Qué te juegas?");
+        assert_eq!(normalize("Movistar Plus+ HD").clean_title, "Movistar Plus+");
+    }
+
+    #[test]
+    fn category_decoration_from_the_panel_is_removed() {
+        assert_eq!(clean_category_name("== NOVEDADES"), "NOVEDADES");
+        assert_eq!(clean_category_name("== FORMULA 1 y  MOTO GP"), "FORMULA 1 y MOTO GP");
+        assert_eq!(clean_category_name("*** CINE ***"), "CINE");
+        assert_eq!(clean_category_name("Peliculas 2024"), "Peliculas 2024");
+        assert_eq!(clean_category_name("==="), "===", "si no queda nada, mejor el original que vacío");
+    }
 }
+

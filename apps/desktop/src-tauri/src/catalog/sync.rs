@@ -91,9 +91,16 @@ pub async fn run(
 
     // Paso 2: categorías, una llamada por tipo. El mapa remote_id->id local hace falta
     // para enlazar canales y películas con su categoría en el paso siguiente.
-    let live_categories = source.categories(MediaKind::Live).await?;
-    let movie_categories = source.categories(MediaKind::Movie).await?;
-    let series_categories = source.categories(MediaKind::Series).await?;
+    // Sin la decoración que ponen algunos paneles ("== NOVEDADES").
+    let clean = |mut categories: Vec<crate::sources::RawCategory>| {
+        for category in &mut categories {
+            category.name = normalize::clean_category_name(&category.name);
+        }
+        categories
+    };
+    let live_categories = clean(source.categories(MediaKind::Live).await?);
+    let movie_categories = clean(source.categories(MediaKind::Movie).await?);
+    let series_categories = clean(source.categories(MediaKind::Series).await?);
     let total_categories = (live_categories.len() + movie_categories.len() + series_categories.len()) as i64;
 
     let (next_conn, live_map) =
