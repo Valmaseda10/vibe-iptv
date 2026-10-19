@@ -95,6 +95,14 @@ pub fn drop_pending_for_profile(conn: &Connection, remote_profile_id: &str) -> R
 
 /// Borra los ajustes que empiezan por `prefix` (cursores de bajada de una cuenta que
 /// cierra sesión, ver `sync::engine`).
+/// Borra lo que es de una cuenta: sus perfiles (y en cascada sus favoritos y progreso) y
+/// su cola de salida. Catálogo, proveedores y ajustes del PC se quedan.
+pub fn delete_account_data(conn: &Connection) -> Result<()> {
+    conn.execute("DELETE FROM sync_outbox", [])?;
+    conn.execute("DELETE FROM profiles", [])?;
+    Ok(())
+}
+
 pub fn delete_settings_with_prefix(conn: &Connection, prefix: &str) -> Result<()> {
     conn.execute("DELETE FROM app_settings WHERE substr(key, 1, length(?1)) = ?1", params![prefix])?;
     Ok(())

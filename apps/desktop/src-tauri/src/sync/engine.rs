@@ -36,6 +36,9 @@ const MAX_BACKOFF_S: i64 = 3_600;
 /// Ajustes de la cuenta sincronizada en `app_settings`; se borran todos al cerrar sesión.
 const SETTINGS_PREFIX: &str = "cloud.";
 const MERGED_UID_KEY: &str = "cloud.merged_uid";
+/// De qué cuenta son los perfiles de este PC. Fuera del prefijo `cloud.`: tiene que
+/// sobrevivir al cierre de sesión.
+const DATA_OWNER_KEY: &str = "account.data_owner_uid";
 
 fn cursor_key(collection: Collection) -> String {
     format!("cloud.cursor.{}", collection.as_str())
@@ -153,10 +156,39 @@ pub async fn pending_changes(db_path: &Path) -> i64 {
 }
 
 /// Al cerrar sesión: lo pendiente y los cursores eran de esa cuenta, no de la próxima.
+/// Los perfiles se quedan (si vuelve la misma cuenta, nada se pierde), pero apuntando de
+/// quién son: ver [`claim_local_data`].
 pub async fn forget_account(db_path: &Path) -> Result<(), SyncError> {
     with_db(db_path, |conn| {
+        if let Some(owner) = reads::get_setting(conn, MERGED_UID_KEY)? {
+            queries::set_setting(conn, DATA_OWNER_KEY, &owner)?;
+        }
         cloud::clear_outbox(conn)?;
         cloud::delete_settings_with_prefix(conn, SETTINGS_PREFIX)
+    })
+    .await
+}
+
+/// Antes de usar una cuenta en este PC. Si los perfiles locales son de otra cuenta, se
+/// quitan, con sus favoritos, progreso y cambios pendientes: si no, la fusión los subiría
+/// a esta como si fueran suyos. Si no son de nadie (creados antes de iniciar sesión
+/// nunca), pasan a ser de esta.
+pub async fn claim_local_data(db_path: &Path, user_id: &str) -> Result<(), SyncError> {
+    let user_id = user_id.to_string();
+    with_db(db_path, move |conn| {
+        let owner = match reads::get_setting(conn, DATA_OWNER_KEY)? {
+            Some(owner) => Some(owner),
+            None => reads::get_setting(conn, MERGED_UID_KEY)?,
+        };
+        let tx = conn.unchecked_transaction()?;
+        if owner.as_deref().is_some_and(|owner| owner != user_id) {
+            cloud::delete_account_data(&tx)?;
+            cloud::delete_settings_with_prefix(&tx, SETTINGS_PREFIX)?;
+            tracing::info!("los perfiles de este PC eran de otra cuenta: se han quitado");
+        }
+        queries::set_setting(&tx, DATA_OWNER_KEY, &user_id)?;
+        tx.commit()?;
+        Ok(())
     })
     .await
 }
@@ -261,6 +293,8 @@ pub async fn initial_merge_if_needed(db_path: &Path, cloud: &dyn CloudBackend, s
     if merged_uid.as_deref() == Some(session.user_id.as_str()) {
         return Ok(());
     }
+    // El inicio de sesión ya lo hace; esto cubre una sesión que llegue por otro camino.
+    claim_local_data(db_path, &session.user_id).await?;
 
     let mut remote = Vec::new();
     let mut cursors = Vec::new();
@@ -462,6 +496,63 @@ mod tests {
 
     async fn flush_everything(device: &Device, cloud: &MemoryBackend) -> Result<usize, SyncError> {
         flush_after_hours(device, cloud, 2).await
+    }
+
+    fn local_profiles(device: &Device) -> i64 {
+        device.conn().query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0)).unwrap()
+    }
+
+    /// Lo que pasó en la app real: se cerró sesión en una cuenta, se entró con otra y la
+    /// fusión subió a la nueva los perfiles de la anterior.
+    #[tokio::test]
+    async fn another_account_never_inherits_the_profiles_left_on_this_pc() {
+        let cloud_a = MemoryBackend::new();
+        let cloud_b = MemoryBackend::new();
+        let session_a = cloud_a.session();
+        let session_b = Session { user_id: "uid-otra-cuenta".into(), ..cloud_b.session() };
+        let pc = Device::new("cuentas");
+        pc.favorite_movie();
+
+        claim_local_data(&pc.db, &session_a.user_id).await.unwrap();
+        initial_merge_if_needed(&pc.db, &cloud_a, &session_a).await.unwrap();
+        flush_outbox_at(&pc.db, &cloud_a, &session_a, now_epoch() + 7_200).await.unwrap();
+        assert_eq!(cloud_a.docs(Collection::Profiles).len(), 1);
+
+        // Cerrar sesión y volver con la misma cuenta no pierde nada.
+        forget_account(&pc.db).await.unwrap();
+        claim_local_data(&pc.db, &session_a.user_id).await.unwrap();
+        assert_eq!(local_profiles(&pc), 1);
+        assert!(pc.has_favorite_movie());
+
+        // Con otra cuenta, los perfiles de la anterior desaparecen del PC y no suben.
+        forget_account(&pc.db).await.unwrap();
+        claim_local_data(&pc.db, &session_b.user_id).await.unwrap();
+        assert_eq!(local_profiles(&pc), 0);
+        assert!(!pc.has_favorite_movie());
+        initial_merge_if_needed(&pc.db, &cloud_b, &session_b).await.unwrap();
+        flush_outbox_at(&pc.db, &cloud_b, &session_b, now_epoch() + 7_200).await.unwrap();
+        assert!(cloud_b.docs(Collection::Profiles).is_empty(), "la cuenta nueva recibió perfiles ajenos");
+        assert!(cloud_b.docs(Collection::Favorites).is_empty());
+    }
+
+    /// Sin cerrar sesión (la sesión caducó y se entra con otra cuenta), la fusión tampoco
+    /// sube lo de la cuenta anterior, ni lo que esta tenía pendiente.
+    #[tokio::test]
+    async fn an_expired_session_followed_by_another_account_does_not_leak_either() {
+        let cloud_a = MemoryBackend::new();
+        let cloud_b = MemoryBackend::new();
+        let session_a = cloud_a.session();
+        let session_b = Session { user_id: "uid-otra-cuenta".into(), ..cloud_b.session() };
+        let pc = Device::new("caducada");
+        initial_merge_if_needed(&pc.db, &cloud_a, &session_a).await.unwrap();
+        pc.favorite_movie();
+        assert!(pc.pending() > 0);
+
+        initial_merge_if_needed(&pc.db, &cloud_b, &session_b).await.unwrap();
+        flush_outbox_at(&pc.db, &cloud_b, &session_b, now_epoch() + 7_200).await.unwrap();
+        assert_eq!(local_profiles(&pc), 0);
+        assert!(cloud_b.docs(Collection::Profiles).is_empty());
+        assert!(cloud_b.docs(Collection::Favorites).is_empty(), "el favorito pendiente de la otra cuenta llegó a esta");
     }
 
     #[tokio::test]

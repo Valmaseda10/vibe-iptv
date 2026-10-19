@@ -145,6 +145,14 @@ baja todo, lo aplica y encola lo local que la nube no tiene o tiene más viejo. 
 la migración desde Supabase: la cuenta de Firebase empieza vacía y recibe todo lo del PC,
 **incluido el progreso**, que con Supabase nunca llegaba a subirse.
 
+**Los perfiles del PC tienen dueño** (`account.data_owner_uid`, que sobrevive al cierre
+de sesión). Al iniciar sesión, y otra vez antes de fusionar, si los perfiles locales son
+de otra cuenta se borran del PC (con sus favoritos, progreso y cola pendiente) en vez de
+subirse a la nueva. Volver con la misma cuenta no pierde nada, y los perfiles sin dueño
+(creados antes de iniciar sesión nunca) pasan a ser de la cuenta que entra. Antes de
+esto, cerrar sesión y entrar con otra cuenta le subía los perfiles de la anterior
+(encontrado al pasar de la cuenta de pruebas a la del usuario).
+
 ### Sesión y local-first
 
 - El keychain guarda solo el token de refresco, el uid y el correo. El token de acceso
@@ -155,7 +163,8 @@ la migración desde Supabase: la cuenta de Firebase empieza vacía y recibe todo
 - `GET /api/account/status` no toca la red. Un fallo pasajero en login o registro
   responde 503, y la pantalla de cuenta ofrece "Entrar sin conexión".
 - Cerrar sesión intenta enviar lo pendiente durante 5 s y luego vacía la cola y los
-  cursores: eran de esa cuenta.
+  cursores: eran de esa cuenta. Los perfiles se quedan en el PC hasta saber quién entra
+  (ver "Primera fusión con una cuenta").
 
 ---
 

@@ -7,7 +7,7 @@
 //! pasajero de la nube responde 503 para que la interfaz pueda ofrecer entrar sin
 //! conexión en vez de dejar al usuario fuera de su propio catálogo.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,8 +95,13 @@ struct CredentialsInput {
     password: String,
 }
 
-fn signed_in(session: Session) -> Json<AccountStatusResponse> {
+async fn signed_in(db_path: &Path, session: Session) -> Json<AccountStatusResponse> {
     let email = session.email.clone();
+    // Antes de que la app enseñe nada: si los perfiles de este PC eran de otra cuenta,
+    // fuera. Si fallara, la fusión lo vuelve a intentar antes de subir nada.
+    if let Err(err) = engine::claim_local_data(db_path, &session.user_id).await {
+        tracing::warn!(error = %err, "no se pudo comprobar de quién son los perfiles locales");
+    }
     session::save(&session);
     // La fusión con lo que haya en la nube la hace el motor en segundo plano: el login
     // responde en cuanto la nube acepta las credenciales.
@@ -106,12 +111,12 @@ fn signed_in(session: Session) -> Json<AccountStatusResponse> {
 
 async fn post_signup(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, CloudError> {
     let session = state.cloud.sign_up(input.email.trim(), &input.password).await?;
-    Ok(signed_in(session))
+    Ok(signed_in(&state.db_path, session).await)
 }
 
 async fn post_login(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, CloudError> {
     let session = state.cloud.sign_in(input.email.trim(), &input.password).await?;
-    Ok(signed_in(session))
+    Ok(signed_in(&state.db_path, session).await)
 }
 
 /// Cierra sesión localmente siempre. Antes intenta un último envío de lo pendiente,
@@ -158,7 +163,7 @@ pub struct ResetPasswordInput {
 async fn post_reset_password(State(state): State<AccountState>, Json(input): Json<ResetPasswordInput>) -> Result<Json<AccountStatusResponse>, CloudError> {
     state.cloud.confirm_password_reset(&input.token_or_link, &input.new_password).await?;
     let session = state.cloud.sign_in(input.email.trim(), &input.new_password).await?;
-    Ok(signed_in(session))
+    Ok(signed_in(&state.db_path, session).await)
 }
 
 #[derive(Deserialize)]
