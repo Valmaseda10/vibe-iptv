@@ -33,6 +33,8 @@ enum ApiError {
     BadRequest(String),
     #[error("Solo un perfil de adulto puede hacer esto.")]
     Forbidden,
+    #[error("Este título no está disponible en este perfil.")]
+    NotForProfile,
     #[error("error interno")]
     Internal,
 }
@@ -42,7 +44,7 @@ impl IntoResponse for ApiError {
         let status = match &self {
             ApiError::NotFound => StatusCode::NOT_FOUND,
             ApiError::BadRequest(_) => StatusCode::BAD_REQUEST,
-            ApiError::Forbidden => StatusCode::FORBIDDEN,
+            ApiError::Forbidden | ApiError::NotForProfile => StatusCode::FORBIDDEN,
             ApiError::Db(_) | ApiError::Internal => StatusCode::INTERNAL_SERVER_ERROR,
         };
         (status, self.to_string()).into_response()
@@ -951,7 +953,7 @@ async fn get_movie_detail(
         None => reads::ProfileAccess::UNRESTRICTED,
     };
     if !with_db(db_path.clone(), move |conn| reads::item_allowed(conn, "movie", id, access)).await? {
-        return Err(ApiError::Forbidden);
+        return Err(ApiError::NotForProfile);
     }
 
     // Marcado como visto (F "premium") — sin profile_id no hay de quién consultarlo,
@@ -1146,7 +1148,7 @@ async fn get_series_detail(
     let profile_id = query.profile_id;
     let access = with_db(db_path.clone(), move |conn| reads::profile_access(conn, profile_id)).await?;
     if !with_db(db_path.clone(), move |conn| reads::item_allowed(conn, "series", id, access)).await? {
-        return Err(ApiError::Forbidden);
+        return Err(ApiError::NotForProfile);
     }
 
     // Checkmark de "visto" por episodio (F "premium") — nunca rompe la ficha si falla:

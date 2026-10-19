@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useCanGoBack, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiGet, apiPost, useApiBase, imagePath } from "../../lib/api-client";
+import { ApiError, apiGet, apiPost, errorMessage, useApiBase, imagePath } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
@@ -23,7 +23,7 @@ export function SeriesDetailScreen() {
   const { isFavorite, toggleFavorite } = useFavorites();
   const queryClient = useQueryClient();
   const [trailerOpen, setTrailerOpen] = useState(false);
-  const { data, isPending, isError } = useQuery({
+  const { data, isPending, isError, error } = useQuery({
     queryKey: ["series", seriesId, profileId],
     // series_detail() puede llamarse bajo demanda en el núcleo (primera visita o caché
     // de más de 7 días): esta petición puede tardar más que el resto de la API.
@@ -62,6 +62,8 @@ export function SeriesDetailScreen() {
   }, [navigate, trailerOpen, canGoBack, router]);
 
   if (isPending) return <DetailSkeleton />;
+  // 403: el perfil no puede ver este título (F14); el núcleo dice por qué.
+  if (isError && error instanceof ApiError && error.status === 403) return <p className="p-10 text-neutral-300">{errorMessage(error)}</p>;
   if (isError || !data) return <p className="p-10 text-red-400">No se encontró la serie.</p>;
 
   const backdrop = imagePath(base, data.backdrop_path, "w1280");

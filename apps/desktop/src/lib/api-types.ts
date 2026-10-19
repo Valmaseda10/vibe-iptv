@@ -238,7 +238,12 @@ audio_tracks: Array<AudioTrackSummary>,
  * Pistas de subtítulos que se pueden enseñar (solo las de texto: las de imagen, como
  * PGS, no se pueden pasar a WebVTT). Vacío si nunca se ha reproducido.
  */
-subtitle_tracks: Array<SubtitleTrackSummary>, };
+subtitle_tracks: Array<SubtitleTrackSummary>, 
+/**
+ * Capítulo de intro del fichero (F14): el reproductor ofrece saltarlo. Solo si el
+ * fichero tiene un capítulo con ese nombre; nunca se adivina.
+ */
+intro_start_s: number | null, intro_end_s: number | null, };
 
 export type ProfileInput = { name: string, avatar: string | null, adult_ok: boolean, 
 /**

@@ -157,6 +157,7 @@ pub fn profile_by_remote_id(conn: &Connection, remote_id: &str) -> Result<Option
 /// Crea o actualiza el perfil local espejo de uno remoto. `updated_at` es el de la nube,
 /// no el de ahora: si no, el perfil recién bajado parecería un cambio local más nuevo y
 /// se volvería a subir sin motivo.
+#[allow(clippy::too_many_arguments)]
 pub fn upsert_profile_from_remote(
     conn: &Connection,
     remote_id: &str,

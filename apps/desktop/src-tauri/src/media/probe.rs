@@ -48,6 +48,23 @@ pub struct ProbeResult {
     /// Pistas de subtítulos incrustadas (F12). Solo las de texto se pueden ofrecer: se
     /// convierten a WebVTT en el mismo remux (ver `media::ffmpeg`).
     pub subtitle_tracks: Vec<SubtitleTrack>,
+    /// Inicio y fin (segundos) del capítulo de intro, si el fichero tiene uno con ese
+    /// título (F14, ver `find_intro`).
+    pub intro: Option<(f64, f64)>,
+}
+
+/// El capítulo de intro, si alguno se llama así ("Intro", "Opening", "Cabecera"...) y
+/// dura como mucho diez minutos. Nunca se deduce por tiempos ni por posición: sin un
+/// capítulo con ese nombre, no hay intro que saltar.
+pub fn find_intro<'a>(chapters: impl Iterator<Item = (f64, f64, &'a str)>) -> Option<(f64, f64)> {
+    const NAMES: &[&str] = &[
+        "intro", "introducción", "introduccion", "opening", "op", "apertura", "cabecera", "opening credits", "opening theme",
+        "intro song", "créditos iniciales", "creditos iniciales", "title sequence",
+    ];
+    chapters
+        .filter(|(start, end, _)| end > start && end - start <= 600.0)
+        .find(|(_, _, title)| NAMES.contains(&title.trim().to_lowercase().as_str()))
+        .map(|(start, end, _)| (start, end))
 }
 
 /// Una pista de audio del stream original (F "premium"). `index` es la posición
@@ -106,6 +123,7 @@ pub async fn probe_url(ffprobe_path: &Path, url: &str, user_agent: &str) -> Resu
             "json",
             "-show_streams",
             "-show_format",
+            "-show_chapters",
             "-user_agent",
             user_agent,
         ])
@@ -135,6 +153,8 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
     #[derive(Deserialize)]
     struct FfprobeOutput {
         #[serde(default)]
+        chapters: Vec<FfprobeChapter>,
+        #[serde(default)]
         streams: Vec<FfprobeStream>,
         #[serde(default)]
         format: Option<FfprobeFormat>,
@@ -151,6 +171,19 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
     #[derive(Debug, Deserialize)]
     struct FfprobeTags {
         language: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct FfprobeChapter {
+        #[serde(default, deserialize_with = "duration_from_string")]
+        start_time: Option<f64>,
+        #[serde(default, deserialize_with = "duration_from_string")]
+        end_time: Option<f64>,
+        #[serde(default)]
+        tags: Option<FfprobeChapterTags>,
+    }
+    #[derive(Deserialize)]
+    struct FfprobeChapterTags {
+        title: Option<String>,
     }
     #[derive(Deserialize)]
     struct FfprobeFormat {
@@ -200,10 +233,14 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
             text: is_text_subtitle(s.codec_name.as_deref()),
         })
         .collect();
+    let intro = find_intro(parsed.chapters.iter().filter_map(|c| {
+        let title = c.tags.as_ref()?.title.as_deref()?;
+        Some((c.start_time?, c.end_time?, title))
+    }));
     let format = parsed.format?;
     let container = format.format_name?;
 
-    Some(ProbeResult { video_codec, audio_codec, container, duration_seconds: format.duration, audio_tracks, subtitle_tracks })
+    Some(ProbeResult { video_codec, audio_codec, container, duration_seconds: format.duration, audio_tracks, subtitle_tracks, intro })
 }
 
 /// Decide el nivel de la cascada (1, 2 o 3) a partir de contenedor y códecs, siguiendo
@@ -376,6 +413,27 @@ mod tests {
         // El códec/idioma "principal" (para decide_tier/audio_needs_transcode) sigue
         // siendo el de la PRIMERA pista, igual que antes de que existiera el selector.
         assert_eq!(result.audio_codec.as_deref(), Some("aac"));
+    }
+
+    #[test]
+    fn the_intro_comes_only_from_a_chapter_called_that() {
+        let json = br#"{
+            "chapters": [
+                {"start_time": "0.000000", "end_time": "62.500000", "tags": {"title": "Previously"}},
+                {"start_time": "62.500000", "end_time": "151.000000", "tags": {"title": "Opening"}},
+                {"start_time": "151.000000", "end_time": "1400.000000", "tags": {"title": "Part A"}}
+            ],
+            "streams": [{"codec_type": "video", "codec_name": "h264"}],
+            "format": {"format_name": "matroska,webm"}
+        }"#;
+        assert_eq!(parse_ffprobe_json(json).unwrap().intro, Some((62.5, 151.0)));
+
+        let titles = [(0.0, 90.0, "Capítulo 1"), (90.0, 2000.0, "Capítulo 2")];
+        assert_eq!(find_intro(titles.into_iter()), None, "sin capítulo con ese nombre no se inventa");
+        let too_long = [(0.0, 900.0, "Intro")];
+        assert_eq!(find_intro(too_long.into_iter()), None, "una «intro» de 15 minutos no es una intro");
+        let spanish = [(5.0, 70.0, " Cabecera ")];
+        assert_eq!(find_intro(spanish.into_iter()), Some((5.0, 70.0)));
     }
 
     #[test]

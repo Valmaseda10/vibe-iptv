@@ -1161,10 +1161,11 @@ pub fn epg_grid(conn: &Connection, channel_ids: &[i64], from_ts: i64, to_ts: i64
 
 /// `None` si el perfil no tiene PIN configurado todavía (control parental sin activar:
 /// no hay nada que ocultar). Ver `util::parental`.
-/// PIN (hasheados) de los perfiles adultos sin límite de edad: los que pueden autorizar
-/// que otro perfil vea más (F14).
+/// PIN (hasheados) de los perfiles sin límite de edad: los que pueden autorizar que otro
+/// perfil vea más (F14). No hace falta que vean categorías XXX: un padre sin ellas
+/// sigue siendo quien decide.
 pub fn adult_pin_hashes(conn: &Connection) -> Result<Vec<String>> {
-    let mut stmt = conn.prepare("SELECT pin_hash FROM profiles WHERE adult_ok = 1 AND max_age IS NULL AND pin_hash IS NOT NULL")?;
+    let mut stmt = conn.prepare("SELECT pin_hash FROM profiles WHERE max_age IS NULL AND pin_hash IS NOT NULL")?;
     let rows = stmt.query_map([], |row| row.get(0))?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }

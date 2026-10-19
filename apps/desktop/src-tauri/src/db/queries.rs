@@ -631,6 +631,9 @@ pub struct ProbeCacheRow {
     pub audio_tracks_json: Option<String>,
     /// JSON de `Vec<media::probe::SubtitleTrack>` (F12), mismo criterio que el anterior.
     pub subtitle_tracks_json: Option<String>,
+    /// Capítulo de intro del fichero (F14), si tiene uno con ese nombre.
+    pub intro_start_s: Option<f64>,
+    pub intro_end_s: Option<f64>,
 }
 
 /// `stream_key` es `media::probe::stream_cache_key(url)`: un hash, nunca la URL en sí
@@ -638,7 +641,8 @@ pub struct ProbeCacheRow {
 /// resultado se cachea por ítem".
 pub fn get_probe_cache(conn: &Connection, stream_key: &str) -> Result<Option<ProbeCacheRow>> {
     conn.query_row(
-        "SELECT video_codec, audio_codec, container, play_tier, duration_s, audio_tracks_json, subtitle_tracks_json FROM probe_cache WHERE stream_key = ?1",
+        "SELECT video_codec, audio_codec, container, play_tier, duration_s, audio_tracks_json, subtitle_tracks_json, intro_start_s, intro_end_s
+         FROM probe_cache WHERE stream_key = ?1",
         params![stream_key],
         |row| {
             Ok(ProbeCacheRow {
@@ -649,6 +653,8 @@ pub fn get_probe_cache(conn: &Connection, stream_key: &str) -> Result<Option<Pro
                 duration_s: row.get(4)?,
                 audio_tracks_json: row.get(5)?,
                 subtitle_tracks_json: row.get(6)?,
+                intro_start_s: row.get(7)?,
+                intro_end_s: row.get(8)?,
             })
         },
     )
@@ -678,6 +684,15 @@ pub fn set_probe_cache(
             subtitle_tracks_json = excluded.subtitle_tracks_json,
             probed_at = excluded.probed_at",
         params![stream_key, video_codec, audio_codec, container, play_tier, duration_s, audio_tracks_json, subtitle_tracks_json, now_epoch()],
+    )?;
+    Ok(())
+}
+
+/// Guarda el capítulo de intro de un stream ya sondeado (F14).
+pub fn set_probe_intro(conn: &Connection, stream_key: &str, intro: Option<(f64, f64)>) -> Result<()> {
+    conn.execute(
+        "UPDATE probe_cache SET intro_start_s = ?1, intro_end_s = ?2 WHERE stream_key = ?3",
+        params![intro.map(|i| i.0), intro.map(|i| i.1), stream_key],
     )?;
     Ok(())
 }

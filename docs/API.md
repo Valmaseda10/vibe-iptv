@@ -70,9 +70,22 @@ no existe.
 ### `GET /api/series` / `GET /api/series/:id`
 Igual que películas; el detalle trae `episodes[]` (temporada, número, título, duración).
 
-### `GET /api/search?q=`
+### `GET /api/search?q=&profile_id=`
 Búsqueda instantánea (FTS5). `{ channels: [], movies: [], series: [] }`, cada uno hasta
-20 resultados. `q` vacío o solo símbolos da listas vacías, no error.
+20 resultados. `q` vacío o solo símbolos da listas vacías, no error. Lo que el perfil no
+puede ver no sale.
+
+### `GET /api/random?profile_id=`
+"Sorpréndeme": `{ kind: "movie" | "series", id }` al azar entre lo que el perfil puede
+ver, o `204` si no hay nada.
+
+### Qué ve cada perfil
+Todas las rutas de catálogo filtran por el perfil (`profile_id`): listas, búsqueda,
+«Sorpréndeme», Inicio, similares y favoritos. Una ficha (`/api/movies/:id`,
+`/api/series/:id`) o un stream de algo que el perfil no puede ver responde `403` con el
+motivo. Un perfil con `max_age` solo ve títulos con clasificación por edad **conocida** y
+no mayor; lo que no tiene clasificación no se le enseña nunca. Un `profile_id` que no
+existe ve lo mínimo, nunca todo.
 
 ---
 
@@ -162,10 +175,13 @@ en la ventana de la app. Responde `204` en cuanto mpv arranca (no cuando termina
 ### `GET /api/playback/tier/:kind/:id`
 Qué nivel de la cascada sirvió (o serviría) este ítem, según la sonda ya cacheada — no
 abre ninguna conexión nueva. `{ tier: 1|2|3|null, video_codec, audio_codec, container,
-duration_s, audio_tracks, subtitle_tracks }`. `tier: null` significa "nunca se ha
+duration_s, audio_tracks, subtitle_tracks, intro_start_s, intro_end_s }`. `tier: null` significa "nunca se ha
 reproducido, no hay sonda todavía", y entonces las listas de pistas van vacías: no se
 sabe qué pistas tiene un fichero hasta abrirlo de verdad. `subtitle_tracks` solo lista
 las de texto (SRT, ASS, mov_text, WebVTT); las de imagen (PGS, DVD) no se ofrecen.
+`intro_start_s`/`intro_end_s` son el capítulo de intro del fichero, solo si tiene uno con
+ese nombre ("Intro", "Opening", "Cabecera"...): el cliente puede ofrecer "Saltar intro".
+Nunca se deduce por tiempos.
 
 ### `GET /api/playback/binaries`
 `{ ffmpeg: bool, ffprobe: bool, mpv: bool }` — si falta alguno, los endpoints que lo
@@ -199,16 +215,22 @@ Mensajes en español, pensados para enseñarse tal cual (ver `server::stream::St
 - `POST /api/favorites` con `{ item_kind, item_id }`.
 - `DELETE /api/favorites?item_kind=movie&item_id=5`.
 
-## Control parental
+## Perfiles y control parental
 
-- `GET /api/parental/status` → `{ has_pin, unlocked }`.
-- `POST /api/parental/pin` con `{ pin: string | null }` (null quita el PIN).
-- `POST /api/parental/unlock` con `{ pin }`.
-- `POST /api/parental/lock`.
+El control parental es por perfil (sustituyó al PIN global de F8).
 
-El desbloqueo es por sesión de la app (nunca se persiste); un cliente LAN que abra su
-propia sesión de reproducción probablemente necesite su propio desbloqueo — esto no
-está resuelto todavía por dispositivo, ver deuda técnica en `docs/DECISIONS.md`.
+- `GET /api/profiles` → `[{ id, name, avatar, has_pin, adult_ok, max_age }]`.
+  `adult_ok` es "ve categorías XXX"; `max_age` es la edad máxima de lo que ve (`null`,
+  sin límite).
+- `POST /api/profiles` y `PATCH /api/profiles/:id` con `{ name, avatar, adult_ok, max_age,
+  adult_pin }`. Si el cambio deja ver más (activar `adult_ok`, subir o quitar `max_age`,
+  o crear un perfil sin límite), hace falta `adult_pin`: el PIN de cualquier perfil sin
+  límite de edad que tenga PIN. Sin él, `403`. Si ningún perfil así tiene PIN, no hace
+  falta.
+- `POST /api/profiles/:id/pin` con `{ pin, current_pin }` (`pin: null` lo quita). Si el
+  perfil ya tiene PIN, `current_pin` tiene que ser ese o el de un adulto; si no, `401`.
+- `POST /api/profiles/:id/enter` con `{ pin }`: comprueba el PIN al elegir perfil.
+- `DELETE /api/profiles/:id`.
 
 ## Salud e imágenes
 

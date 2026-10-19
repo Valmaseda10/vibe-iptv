@@ -178,9 +178,9 @@ function ProfileEditForm({
   const [icon, setIcon] = useState<string | null>(initial.icon);
   const [color, setColor] = useState(initial.color);
   const [adultOk, setAdultOk] = useState(profile?.adult_ok ?? false);
-  // Un perfil nuevo empieza como infantil (hasta 12): abrirlo a más pide el PIN de un
-  // adulto si lo hay (F14), y así crear uno para un niño no pide nada.
-  const [maxAge, setMaxAge] = useState<number | null>(profile ? profile.max_age : 12);
+  // Sin límite por defecto: `adult_ok` desmarcado solo quita las categorías XXX, no hace
+  // infantil el perfil. El límite de edad se elige aquí a propósito (F14).
+  const [maxAge, setMaxAge] = useState<number | null>(profile ? profile.max_age : null);
   const [pin, setPin] = useState("");
   const [clearPin, setClearPin] = useState(false);
   const [currentPin, setCurrentPin] = useState("");

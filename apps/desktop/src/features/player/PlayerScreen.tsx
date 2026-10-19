@@ -27,6 +27,8 @@ const NEXT_EPISODE_TRIGGER_SECONDS = 15;
 const NEXT_EPISODE_COUNTDOWN_SECONDS = 10;
 const RESUME_MIN_SECONDS = 5;
 const SEEK_STEP_SECONDS = 10;
+/** Velocidades de reproducción del VOD (F14). */
+const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 /** Un directo IPTV se corta con normalidad (el proveedor tiene un mal minuto, un salto
  * de red del propio PC...); reintentar solo, unas pocas veces, es la diferencia entre
  * "la app está rota" y "el proveedor tuvo un mal minuto". El VOD no reintenta solo: un
@@ -93,6 +95,8 @@ export function PlayerScreen() {
   const [buffering, setBuffering] = useState(false);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [retryNonce, setRetryNonce] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1);
+  const [inPictureInPicture, setInPictureInPicture] = useState(false);
   const reconnectTimerRef = useRef<number | undefined>(undefined);
   // Pista de subtítulos elegida, ligada al ítem: al pasar al siguiente episodio no se
   // arrastra un índice que en ese fichero puede ser otro idioma (o no existir).
@@ -206,6 +210,11 @@ export function PlayerScreen() {
   const nativeSeekable = kind !== "channel" && tierQuery.data?.tier === 1 && subtitleTrack == null;
   const displayDuration = metadataDurationSeconds;
   const displayCurrentTime = nativeSeekable ? videoCurrentTime : appliedStart + videoCurrentTime;
+  // "Saltar intro" (F14): solo con un capítulo de intro en el fichero, nunca adivinado.
+  const introStart = tierQuery.data?.intro_start_s;
+  const introEnd = tierQuery.data?.intro_end_s;
+  const inIntro =
+    kind !== "channel" && introStart != null && introEnd != null && displayCurrentTime >= introStart && displayCurrentTime < introEnd - 1;
 
   // Catch-up (F9): la Guía manda aquí en vez de al directo cuando el programa pulsado ya
   // pasó. Solo se distingue por la presencia de `catchupStart` en la URL de la ruta, no
@@ -551,6 +560,20 @@ export function PlayerScreen() {
     setMuted(video.muted);
   }, []);
 
+  const togglePictureInPicture = useCallback(() => {
+    const video = videoRef.current;
+    if (!video || !document.pictureInPictureEnabled) return;
+    if (document.pictureInPictureElement) document.exitPictureInPicture().catch(() => {});
+    else video.requestPictureInPicture().catch(() => {});
+  }, []);
+
+  const changeRate = useCallback((direction: 1 | -1) => {
+    setPlaybackRate((rate) => {
+      const index = PLAYBACK_RATES.indexOf(rate);
+      return PLAYBACK_RATES[Math.max(0, Math.min(PLAYBACK_RATES.length - 1, (index === -1 ? 2 : index) + direction))] ?? 1;
+    });
+  }, []);
+
   const toggleFullscreen = useCallback(() => {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     else containerRef.current?.requestFullscreen().catch(() => {});
@@ -581,6 +604,18 @@ export function PlayerScreen() {
           break;
         case "m":
           toggleMute();
+          break;
+        case "p":
+          togglePictureInPicture();
+          break;
+        case ">":
+          if (kind !== "channel") changeRate(1);
+          break;
+        case "<":
+          if (kind !== "channel") changeRate(-1);
+          break;
+        case "s":
+          if (inIntro && introEnd != null) seekTo(introEnd);
           break;
         case "f":
           toggleFullscreen();
@@ -622,12 +657,50 @@ export function PlayerScreen() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [kind, goBack, togglePlay, toggleMute, toggleFullscreen, zapChannel, seekTo, displayCurrentTime, resetHideTimer, liveTimeshift, timeshift]);
+  }, [
+    kind,
+    goBack,
+    togglePlay,
+    toggleMute,
+    toggleFullscreen,
+    zapChannel,
+    seekTo,
+    displayCurrentTime,
+    resetHideTimer,
+    liveTimeshift,
+    timeshift,
+    togglePictureInPicture,
+    changeRate,
+    inIntro,
+    introEnd,
+  ]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (video) video.volume = volume;
   }, [volume, streamPath]);
+
+  // Velocidad (F14): solo en VOD. Cada búsqueda o cambio de pista monta otro `<video>`,
+  // que empieza a 1×: se le vuelve a aplicar.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (video && kind !== "channel") video.playbackRate = playbackRate;
+  }, [playbackRate, kind, streamPath, retryNonce]);
+
+  // Imagen en imagen (F14): el estado lo lleva el navegador; aquí solo se sigue para el
+  // botón.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const onEnter = () => setInPictureInPicture(true);
+    const onLeave = () => setInPictureInPicture(false);
+    video.addEventListener("enterpictureinpicture", onEnter);
+    video.addEventListener("leavepictureinpicture", onLeave);
+    return () => {
+      video.removeEventListener("enterpictureinpicture", onEnter);
+      video.removeEventListener("leavepictureinpicture", onLeave);
+    };
+  }, [streamPath, retryNonce, timeshift.bufferKey]);
 
   const canRenderVideo = streamUrl && resumeReady;
 
@@ -760,6 +833,17 @@ export function PlayerScreen() {
             </button>
           )}
         </div>
+      )}
+
+      {inIntro && introEnd != null && (
+        <button
+          type="button"
+          onClick={() => seekTo(introEnd)}
+          className="absolute bottom-32 right-8 rounded-lg border border-white/40 bg-black/70 px-5 py-3 font-medium text-white outline-none hover:bg-black/90 focus-visible:ring-2 focus-visible:ring-white"
+          title="Saltar intro (S)"
+        >
+          Saltar intro
+        </button>
       )}
 
       {nextCountdown !== null && nextEpisode && (
@@ -927,6 +1011,37 @@ export function PlayerScreen() {
                 ))}
               </select>
             </label>
+          )}
+
+          {kind !== "channel" && (
+            <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+              Velocidad
+              <select
+                value={playbackRate}
+                onChange={(e) => setPlaybackRate(Number(e.target.value))}
+                className="rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-2 focus:ring-white/60"
+                aria-label="Velocidad de reproducción"
+                title="Velocidad (< y >)"
+              >
+                {PLAYBACK_RATES.map((rate) => (
+                  <option key={rate} value={rate}>
+                    {rate === 1 ? "Normal" : `${String(rate).replace(".", ",")}×`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {typeof document !== "undefined" && document.pictureInPictureEnabled && (
+            <button
+              type="button"
+              onClick={togglePictureInPicture}
+              aria-pressed={inPictureInPicture}
+              className="rounded px-2 py-1 text-xs text-neutral-300 outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/60"
+              title="Imagen en imagen (P)"
+            >
+              {inPictureInPicture ? "Salir de imagen en imagen" : "Imagen en imagen"}
+            </button>
           )}
 
           <button type="button" onClick={goBack} className="ml-auto text-sm text-neutral-300 outline-none hover:text-white">

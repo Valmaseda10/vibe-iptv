@@ -1,9 +1,9 @@
 -- Perfil infantil por edad (F14).
 --
 -- `profiles.max_age`: edad máxima de lo que puede ver el perfil (7, 12, 16...). NULL es
--- "sin límite". Los perfiles que ya eran infantiles (sin contenido adulto) pasan a 12.
+-- "sin límite", y así empiezan todos: `adult_ok = 0` solo significa "sin categorías XXX"
+-- (el editor de perfiles lo deja así por defecto), no "es un niño".
 ALTER TABLE profiles ADD COLUMN max_age INTEGER;
-UPDATE profiles SET max_age = 12 WHERE adult_ok = 0;
 
 -- `age_min`: edad mínima del título, sacada de `age_rating` (ver `catalog::age`). NULL es
 -- "sin clasificación conocida", y un perfil con límite de edad nunca lo ve: no se puede

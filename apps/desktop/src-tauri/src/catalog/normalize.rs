@@ -176,7 +176,7 @@ fn is_technical_bracket(content: &str) -> bool {
         QUALITY_MARKERS.contains(&word)
             || LANGUAGE_CODES.contains(&word)
             || TECHNICAL_BRACKET_WORDS.contains(&word)
-            || RELEASE_TAGS.iter().any(|tag| *tag == word)
+            || RELEASE_TAGS.contains(&word)
             || (word.ends_with('P') && word.len() >= 4 && word[..word.len() - 1].chars().all(|c| c.is_ascii_digit()))
     })
 }

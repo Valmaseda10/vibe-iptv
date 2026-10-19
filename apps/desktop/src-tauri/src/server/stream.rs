@@ -167,6 +167,10 @@ pub struct PlaybackTierResponse {
     /// Pistas de subtítulos que se pueden enseñar (solo las de texto: las de imagen, como
     /// PGS, no se pueden pasar a WebVTT). Vacío si nunca se ha reproducido.
     pub subtitle_tracks: Vec<SubtitleTrackSummary>,
+    /// Capítulo de intro del fichero (F14): el reproductor ofrece saltarlo. Solo si el
+    /// fichero tiene un capítulo con ese nombre; nunca se adivina.
+    pub intro_start_s: Option<f64>,
+    pub intro_end_s: Option<f64>,
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -244,6 +248,8 @@ async fn get_playback_tier(
                     .filter(|t| t.text)
                     .map(|t| SubtitleTrackSummary { index: t.index, language: t.language, codec_name: t.codec_name })
                     .collect(),
+                intro_start_s: row.intro_start_s,
+                intro_end_s: row.intro_end_s,
             }
         }
         None => PlaybackTierResponse {
@@ -254,6 +260,8 @@ async fn get_playback_tier(
             duration_s: None,
             audio_tracks: Vec::new(),
             subtitle_tracks: Vec::new(),
+            intro_start_s: None,
+            intro_end_s: None,
         },
     }))
 }
@@ -891,6 +899,7 @@ async fn resolve_tier_and_url(
     let container = probe_result.container.clone();
     let audio_tracks_json = serde_json::to_string(&probe_result.audio_tracks).ok();
     let subtitle_tracks_json = serde_json::to_string(&probe_result.subtitle_tracks).ok();
+    let intro = if item.kind == MediaKind::Live { None } else { probe_result.intro };
     with_db(db_path.clone(), move |conn| {
         queries::set_probe_cache(
             conn,
@@ -902,7 +911,8 @@ async fn resolve_tier_and_url(
             duration_s,
             audio_tracks_json.as_deref(),
             subtitle_tracks_json.as_deref(),
-        )
+        )?;
+        queries::set_probe_intro(conn, &store_key, intro)
     })
     .await?;
 

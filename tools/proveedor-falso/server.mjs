@@ -36,7 +36,7 @@ const MEDIA = {
   // Película MKV con dos pistas de audio y dos de subtítulos SRT: nivel 2 (remux) y los
   // selectores de pista. `testsrc` pinta un contador de segundos, y cada frase dice en qué
   // segundo debería verse: así se comprueba a ojo que los subtítulos van a tiempo.
-  mkv: { file: "pelicula-subtitulada.mkv", seconds: 180, source: "testsrc", twoAudio: true, subtitles: true, args: ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "128k", "-c:s", "srt", "-f", "matroska"] },
+  mkv: { file: "pelicula-capitulos.mkv", seconds: 180, source: "testsrc", twoAudio: true, subtitles: true, chapters: true, args: ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "128k", "-c:s", "srt", "-f", "matroska"] },
   // Película en H.265/HEVC: la WebView sin decodificación HEVC no la abre (nivel 3, mpv).
   hevc: { file: "pelicula-hevc.mkv", seconds: 60, args: ["-c:v", "libx265", "-preset", "ultrafast", "-x265-params", "log-level=error", "-c:a", "aac", "-b:a", "128k", "-f", "matroska"] },
   // Película en H.264 de 10 bits (habitual en anime): la sonda solo ve "h264" y la manda al
@@ -68,6 +68,21 @@ function ensureMedia() {
         inputs.push("-i", srt);
       }
       maps.push("-map", `${first}:s`, "-map", `${first + 1}:s`, "-metadata:s:s:0", "language=spa", "-metadata:s:s:1", "language=eng");
+    }
+    if (spec.chapters) {
+      // Capítulos como los de un episodio de verdad: resumen, intro y el resto. El
+      // reproductor solo ofrece "Saltar intro" porque uno se llama así.
+      const metadata = join(MEDIA_DIR, "capitulos.txt");
+      writeFileSync(
+        metadata,
+        ";FFMETADATA1\n" +
+          "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=20000\ntitle=Resumen\n" +
+          "[CHAPTER]\nTIMEBASE=1/1000\nSTART=20000\nEND=50000\ntitle=Intro\n" +
+          `[CHAPTER]\nTIMEBASE=1/1000\nSTART=50000\nEND=${spec.seconds * 1000}\ntitle=Capítulo\n`,
+      );
+      const index = inputs.filter((arg) => arg === "-i").length;
+      inputs.push("-i", metadata);
+      maps.push("-map_chapters", String(index));
     }
     const result = spawnSync("ffmpeg", ["-hide_banner", "-loglevel", "error", "-y", ...inputs, ...maps, ...spec.args, out], { stdio: "inherit" });
     if (result.status !== 0) {

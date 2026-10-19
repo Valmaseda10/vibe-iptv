@@ -1457,6 +1457,89 @@ falso no registró ningún solapamiento.
 
 ---
 
+## 2026-10-20 — F14 Detalles premium en VOD y perfiles
+
+Criterio de aceptación cumplido: un perfil infantil no llega a ningún título no apto, ni
+por búsqueda, ni por recomendaciones, ni por "Sorpréndeme".
+- **Con test automático** sobre lista, búsqueda, "Sorpréndeme", ficha e Inicio. El test
+  falla si se quita el filtro.
+- **En la app real**, con un perfil de hasta 7 años:
+  - las películas que ve tienen 7 o menos;
+  - buscar "Matrix" (18) no da nada;
+  - "Sorpréndeme" llevó 8 veces a títulos de 0–7;
+  - la ficha y el stream de Matrix responden 403.
+
+**Perfil infantil por edad.**
+- `profiles.max_age` (7, 12, 16 o sin límite) y `movies/series.age_min`, sacada de la
+  certificación de TMDB.
+  - `catalog::age` reconoce los sistemas de España, EE. UU. (cine y televisión), Reino
+    Unido y los numéricos.
+  - Lo que no reconoce queda sin edad.
+- **Regla estricta:** con límite, solo se ve lo que tiene clasificación **conocida** y
+  no mayor. Lo no clasificado no se enseña nunca, porque no se puede dar por apto lo que
+  no se sabe.
+- **Paso de extras de TMDB** después del emparejamiento: trae clasificación, tráiler y
+  similares de todo lo emparejado.
+  - Antes solo se pedían al abrir la ficha, y con el catálogo real del usuario 1 de 19.033
+    películas tenía clasificación.
+  - Son unas 23.600 peticiones a TMDB, una vez.
+  - Medido: avanza solo en segundo plano y los títulos clasificados aparecen en el perfil
+    infantil a medida que llegan.
+- **El filtro está en el núcleo**, no en la pantalla, y cubre:
+  - listas, búsqueda y "Sorpréndeme";
+  - todas las filas de Inicio, similares y favoritos;
+  - fichas (403 con el motivo) y reproducción (403).
+- **Agujeros que ya había:** la búsqueda y "Sorpréndeme" no filtraban ni el contenido
+  adulto (XXX). Ahora piden el perfil.
+- Un `profile_id` que no existe ve lo mínimo, nunca todo: el servidor local no tiene
+  autenticación.
+
+**Control parental por perfil.**
+- **Dar más acceso pide el PIN de un perfil sin límite de edad.** Afecta a abrir un
+  perfil a más contenido (XXX, subir o quitar el límite) y a crear uno sin límite.
+  - No sirve el PIN del propio perfil, porque un niño lo puede saber.
+  - Si ningún perfil sin límite tiene PIN, no hay con qué proteger y se permite.
+- **Cambiar o quitar un PIN pide el actual** (o el de un adulto). Antes no pedía nada
+  ("acceso físico asumido", decisión de los perfiles Netflix). Con perfiles infantiles,
+  eso dejaba a un niño quitar el PIN del perfil de un adulto y entrar en él.
+- **El límite viaja a la nube** con el perfil (campo `max_age`).
+
+**Error corregido antes de publicarlo.**
+- La primera versión de la migración 017 puso límite de 12 años a todo perfil con
+  `adult_ok = 0`, pero eso solo quiere decir "sin categorías XXX", y es como el editor
+  crea los perfiles por defecto. El perfil del propio usuario se quedó así: habría visto
+  casi nada.
+- La 017 ya no limita a nadie, y la migración 019 quita el límite que ya se hubiera
+  puesto. Nadie podía haberlo elegido a mano todavía, porque el editor llegó en la misma
+  versión.
+- Los perfiles nuevos empiezan sin límite.
+
+**Reproductor.**
+- **Velocidad** de 0,5× a 2× en VOD, también con las teclas `<` y `>`. Se mantiene al
+  buscar o cambiar de pista, que montan otro `<video>`.
+- **Imagen en imagen**, con botón y la tecla `P`. La WebView2 lo permite.
+- **"Saltar intro"**: solo si el fichero tiene un capítulo llamado así ("Intro",
+  "Opening", "Cabecera", "Apertura"…), de 10 minutos como mucho. Nunca se deduce por
+  tiempos ni por posición.
+  - Lo lee la sonda con `-show_chapters` (migración 018, que vacía la caché de sondas
+    para que se vuelvan a hacer).
+  - Medido con el proveedor falso (capítulos Resumen 0–20, Intro 20–50): no hay botón en
+    el resumen; en el segundo 21 aparece; pulsarlo lleva al 50.
+
+**Cuidado al probar.** El proveedor falso tiene títulos con el mismo nombre y año que el
+catálogo real del usuario ("Matrix (1999)"), y la app los agrupa en una ficha con dos
+fuentes. Abrir esa ficha pidió datos técnicos al proveedor real (bloqueado), así que hay
+que probar con títulos que solo existan en el proveedor falso.
+
+`cargo test`: 487 pasan.
+
+**Pendiente.**
+- La imagen en imagen se cierra al salir del reproductor: hace falta que el `<video>`
+  sobreviva a la navegación.
+- Si el proveedor falla, la ficha vuelve a pedirle los datos técnicos en cada visita.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

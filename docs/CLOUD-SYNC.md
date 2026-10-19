@@ -72,7 +72,7 @@ users/{uid}/playback/{sha256(target)}
 
 | Campo | Colecciones | Notas |
 |---|---|---|
-| `name`, `avatar`, `adult_ok`, `pin_hash` | profiles | `pin_hash` es SHA-256 del PIN, nunca el PIN |
+| `name`, `avatar`, `adult_ok`, `max_age`, `pin_hash` | profiles | `pin_hash` es SHA-256 del PIN, nunca el PIN; `max_age` entero o null (sin límite, F14) |
 | `profile_id` | favorites, playback | id del documento de perfil |
 | `item_kind` | favorites, playback | `movie`, `series` o `episode` |
 | `item_key` | favorites, playback | `match_key` de película o serie; `match_key:temporada:número` para episodios |
