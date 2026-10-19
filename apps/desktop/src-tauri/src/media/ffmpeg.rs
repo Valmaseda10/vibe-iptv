@@ -11,26 +11,42 @@ use tokio::process::{Child, Command};
 
 use crate::util::redact;
 
+/// Duración de cada trozo de la grabación del directo (F13). Corto para que pausar y
+/// reanudar no tenga que esperar mucho al primer trozo; ffmpeg corta en el fotograma
+/// clave siguiente, así que es un mínimo.
+pub const TIMESHIFT_SEGMENT_SECONDS: u32 = 2;
+
+/// Todo lo que decide cómo se remuxea, aparte de la URL.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RemuxOptions<'a> {
+    /// Códec de la pista de audio que se va a usar, según la sonda.
+    pub audio_codec: Option<&'a str>,
+    /// Audio que el cliente decodifica él mismo ("ac3", "eac3"): se copia.
+    pub client_audio: &'a [String],
+    pub live: bool,
+    /// Búsqueda en VOD: `-ss` de entrada.
+    pub start_seconds: Option<f64>,
+    /// Índice relativo de la pista de audio elegida.
+    pub audio_track: Option<i64>,
+    /// Pista de subtítulos de texto y fichero WebVTT donde dejarla (F12).
+    pub subtitles: Option<(i64, &'a Path)>,
+    /// Grabación del directo para pausar y rebobinar (F13): carpeta donde dejar los trozos
+    /// HLS y su lista, con una ventana de `timeshift_window_seconds`.
+    pub timeshift: Option<&'a Path>,
+    pub timeshift_window_seconds: u32,
+}
+
 /// Construye el comando ffmpeg de remux, sin lanzarlo todavía. Separado de
 /// [`spawn_remux`] para poder probar los flags exactos sin depender de tener ffmpeg
 /// instalado.
-#[allow(clippy::too_many_arguments)]
-pub fn build_remux_command(
-    ffmpeg_path: &Path,
-    url: &str,
-    user_agent: &str,
-    audio_codec: Option<&str>,
-    client_audio: &[String],
-    live: bool,
-    start_seconds: Option<f64>,
-    audio_track: Option<i64>,
-    subtitles: Option<(i64, &Path)>,
-) -> Command {
+pub fn build_remux_command(ffmpeg_path: &Path, url: &str, user_agent: &str, options: &RemuxOptions) -> Command {
+    let RemuxOptions { audio_codec, client_audio, live, start_seconds, audio_track, subtitles, timeshift, timeshift_window_seconds } =
+        *options;
     let mut command = Command::new(ffmpeg_path);
     command.args(["-hide_banner", "-loglevel", "error"]).args(["-user_agent", user_agent]);
-    if subtitles.is_some() {
-        // stdin está cerrado: si el fichero de subtítulos existiera, ffmpeg preguntaría
-        // si sobrescribirlo y abortaría el remux entero sin respuesta.
+    if subtitles.is_some() || timeshift.is_some() {
+        // stdin está cerrado: si un fichero de salida existiera, ffmpeg preguntaría si
+        // sobrescribirlo y abortaría el remux entero sin respuesta.
         command.arg("-y");
     }
     // Sin `-fflags nobuffer`: descarta lo leído mientras se analiza la entrada, y eso es
@@ -54,21 +70,16 @@ pub fn build_remux_command(
 
     command.args(["-i", url]);
 
-    // Sin pista elegida, se deja que ffmpeg escoja solas la de vídeo y la de audio (su
-    // comportamiento de siempre, antes de que existiera el selector — no tocar nada
-    // aquí es justo lo que mantiene ese caso común idéntico). En cuanto se pide `-map`
-    // una vez hay que pedirlo para las dos, o ffmpeg deja de incluir vídeo del todo.
-    match (audio_track, subtitles) {
-        (Some(track), _) => {
-            command.args(["-map", "0:v:0", "-map", &format!("0:a:{track}")]);
-        }
-        // Los subtítulos son una segunda salida y llevan su propio `-map`: la principal
-        // también se mapea explícita, con la primera pista de audio (la que describe
-        // `audio_codec`). El `?` deja pasar un vídeo sin audio.
-        (None, Some(_)) => {
-            command.args(["-map", "0:v:0", "-map", "0:a:0?"]);
-        }
-        (None, None) => {}
+    // Sin pista elegida ni más salidas, se deja que ffmpeg escoja solas la de vídeo y la
+    // de audio (su comportamiento de siempre). En cuanto se pide `-map` una vez hay que
+    // pedirlo para las dos, o ffmpeg deja de incluir vídeo del todo. Con subtítulos o
+    // grabación hay más de una salida y cada una lleva sus `-map`: la principal también,
+    // con la primera pista de audio (la que describe `audio_codec`); el `?` deja pasar un
+    // vídeo sin audio.
+    let audio_map = audio_track.map(|track| format!("0:a:{track}")).unwrap_or_else(|| "0:a:0?".to_string());
+    let explicit_maps = audio_track.is_some() || subtitles.is_some() || timeshift.is_some();
+    if explicit_maps {
+        command.args(["-map", "0:v:0", "-map", &audio_map]);
     }
 
     command.args(["-c:v", "copy"]);
@@ -116,6 +127,37 @@ pub fn build_remux_command(
             .arg(path);
     }
 
+    // Otra salida del mismo proceso (F13): la grabación del directo, en trozos HLS fMP4 en
+    // disco con una ventana deslizante. Misma conexión con el proveedor (R1) y mismo reloj
+    // que la salida principal (medido: los dos empiezan en cero), así que el reproductor
+    // puede pasar de una a otra en el mismo segundo al pausar o rebobinar. hls.js la
+    // reproduce por MSE, que no acepta audio MPEG (MP2/MP3) dentro de MP4 (medido en la
+    // WebView2): ese audio, solo aquí, se convierte a AAC.
+    if let Some(dir) = timeshift {
+        command.args(["-map", "0:v:0", "-map", &audio_map, "-c:v", "copy"]);
+        let mse_decodes = matches!(audio_codec, Some("aac") | None) || client_decodes;
+        if mse_decodes {
+            command.args(["-c:a", "copy"]);
+            if audio_codec == Some("aac") {
+                command.args(["-bsf:a", "aac_adtstoasc"]);
+            }
+        } else {
+            command.args(["-c:a", "aac", "-b:a", "192k"]);
+        }
+        let list_size = (timeshift_window_seconds / TIMESHIFT_SEGMENT_SECONDS).max(1);
+        // Con barras normales: con las invertidas de Windows, el muxer HLS no sabe sacar
+        // la carpeta de la lista y deja `init.mp4` en el directorio de trabajo (medido).
+        let dir = dir.to_string_lossy().replace('\\', "/");
+        let dir = dir.trim_end_matches('/');
+        command
+            .arg("-sn")
+            .args(["-f", "hls", "-hls_time", &TIMESHIFT_SEGMENT_SECONDS.to_string(), "-hls_list_size", &list_size.to_string()])
+            .args(["-hls_flags", "delete_segments+independent_segments+temp_file", "-hls_segment_type", "fmp4"])
+            .args(["-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename"])
+            .arg(format!("{dir}/seg-%06d.m4s"))
+            .arg(format!("{dir}/live.m3u8"));
+    }
+
     command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -130,20 +172,8 @@ pub fn build_remux_command(
 /// Lanza el remux y engancha un lector de `stderr` que registra cada línea con
 /// `tracing`, pasada siempre por `redact()` (regla R5: por si acaso ffmpeg llegara a
 /// ecoar la URL de entrada en un mensaje de error).
-#[allow(clippy::too_many_arguments)]
-pub fn spawn_remux(
-    ffmpeg_path: &Path,
-    url: &str,
-    user_agent: &str,
-    audio_codec: Option<&str>,
-    client_audio: &[String],
-    live: bool,
-    start_seconds: Option<f64>,
-    audio_track: Option<i64>,
-    subtitles: Option<(i64, &Path)>,
-) -> std::io::Result<Child> {
-    let mut child =
-        build_remux_command(ffmpeg_path, url, user_agent, audio_codec, client_audio, live, start_seconds, audio_track, subtitles).spawn()?;
+pub fn spawn_remux(ffmpeg_path: &Path, url: &str, user_agent: &str, options: &RemuxOptions) -> std::io::Result<Child> {
+    let mut child = build_remux_command(ffmpeg_path, url, user_agent, options).spawn()?;
 
     if let Some(stderr) = child.stderr.take() {
         tokio::spawn(async move {
@@ -167,7 +197,7 @@ mod tests {
 
     #[test]
     fn video_is_always_copied_never_recoded() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, ..Default::default() });
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:v").unwrap();
         assert_eq!(args[pos + 1], "copy");
@@ -175,7 +205,7 @@ mod tests {
 
     #[test]
     fn aac_is_copied_with_the_adts_to_mp4_filter() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("aac"), &[], true, None, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some("aac"), live: true, ..Default::default() });
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "copy");
@@ -185,7 +215,7 @@ mod tests {
     #[test]
     fn other_compatible_audio_is_copied_without_the_aac_filter() {
         for codec in [Some("mp3"), Some("opus"), None] {
-            let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", codec, &[], true, None, None, None);
+            let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: codec, live: true, ..Default::default() });
             let args = args_of(&command);
             let pos = args.iter().position(|a| a == "-c:a").unwrap();
             assert_eq!(args[pos + 1], "copy");
@@ -197,19 +227,19 @@ mod tests {
     fn dolby_audio_is_copied_when_the_client_decodes_it() {
         let client = ["ac3".to_string(), "eac3".to_string()];
         for codec in ["ac3", "eac3"] {
-            let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some(codec), &client, true, None, None, None));
+            let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some(codec), client_audio: &client, live: true, ..Default::default() }));
             let pos = args.iter().position(|a| a == "-c:a").unwrap();
             assert_eq!(args[pos + 1], "copy", "{codec} no debe convertirse si el cliente lo decodifica");
         }
         // DTS sigue convirtiéndose: el cliente no dijo que lo decodifique.
-        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("dts"), &client, true, None, None, None));
+        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some("dts"), client_audio: &client, live: true, ..Default::default() }));
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "aac");
     }
 
     #[test]
     fn audio_transcodes_to_aac_at_192k_when_incompatible() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", Some("ac3"), &[], true, None, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some("ac3"), live: true, ..Default::default() });
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "aac");
@@ -219,7 +249,7 @@ mod tests {
 
     #[test]
     fn output_uses_fragmented_mp4_over_stdout() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, ..Default::default() });
         let args = args_of(&command);
         assert!(args.windows(2).any(|w| w[0] == "-f" && w[1] == "mp4"));
         assert!(args.iter().any(|a| a == "frag_keyframe+empty_moov+default_base_moof+delay_moov"));
@@ -228,8 +258,8 @@ mod tests {
 
     #[test]
     fn the_initial_burst_is_never_dropped_and_live_analyzes_less() {
-        let live = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, None, None));
-        let vod = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, &[], false, None, None, None));
+        let live = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, ..Default::default() }));
+        let vod = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", &RemuxOptions { ..Default::default() }));
         for args in [&live, &vod] {
             assert!(!args.iter().any(|a| a == "nobuffer"), "nobuffer tira la ráfaga inicial del panel");
             assert!(args.windows(2).any(|w| w[0] == "-frag_duration" && w[1] == "500000"));
@@ -240,7 +270,7 @@ mod tests {
 
     #[test]
     fn user_agent_and_input_url_are_forwarded() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "MiAgente/1.0", None, &[], true, None, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "MiAgente/1.0", &RemuxOptions { live: true, ..Default::default() });
         let args = args_of(&command);
         let ua_pos = args.iter().position(|a| a == "-user_agent").unwrap();
         assert_eq!(args[ua_pos + 1], "MiAgente/1.0");
@@ -250,7 +280,7 @@ mod tests {
 
     #[test]
     fn start_seconds_inserts_input_seek_before_input_url() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, &[], false, Some(125.5), None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", &RemuxOptions { start_seconds: Some(125.5), ..Default::default() });
         let args = args_of(&command);
         let ss_pos = args.iter().position(|a| a == "-ss").unwrap();
         assert_eq!(args[ss_pos + 1], "125.5");
@@ -260,7 +290,7 @@ mod tests {
 
     #[test]
     fn no_seek_flag_when_start_seconds_is_none() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, &[], false, None, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", &RemuxOptions { ..Default::default() });
         let args = args_of(&command);
         assert!(!args.iter().any(|a| a == "-ss"));
     }
@@ -269,14 +299,14 @@ mod tests {
     fn no_explicit_map_without_an_audio_track_choice() {
         // Comportamiento de siempre: sin pista elegida, ffmpeg decide solo qué pistas
         // incluir — pedir `-map` sin necesidad rompería eso (dejaría de incluir vídeo).
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, None, None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, ..Default::default() });
         let args = args_of(&command);
         assert!(!args.iter().any(|a| a == "-map"));
     }
 
     #[test]
     fn selecting_an_audio_track_maps_video_and_that_track_explicitly() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, Some(1), None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, audio_track: Some(1), ..Default::default() });
         let args = args_of(&command);
         let map_positions: Vec<usize> = args.iter().enumerate().filter(|(_, a)| *a == "-map").map(|(i, _)| i).collect();
         assert_eq!(map_positions.len(), 2, "hacen falta los dos -map (vídeo y audio) o ffmpeg deja de incluir vídeo");
@@ -285,9 +315,43 @@ mod tests {
     }
 
     #[test]
+    fn the_live_recording_is_a_rolling_hls_output_with_mse_friendly_audio() {
+        let dir = Path::new("C:/tmp/ts");
+        let options = |codec: Option<&'static str>| RemuxOptions {
+            audio_codec: codec,
+            live: true,
+            timeshift: Some(dir),
+            timeshift_window_seconds: 1800,
+            ..Default::default()
+        };
+        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &options(Some("mp2"))));
+        let pipe = args.iter().position(|a| a == "pipe:1").unwrap();
+        let (live, recording) = (&args[..pipe], &args[pipe + 1..]);
+        // El directo copia el MP2 (el `<video>` lo reproduce); la grabación va por MSE, que no.
+        assert!(live.windows(2).any(|w| w[0] == "-c:a" && w[1] == "copy"));
+        assert!(recording.windows(2).any(|w| w[0] == "-c:a" && w[1] == "aac"));
+        assert!(live.windows(2).any(|w| w[0] == "-map" && w[1] == "0:a:0?"), "con dos salidas, mapas explícitos");
+        assert!(recording.windows(2).any(|w| w[0] == "-f" && w[1] == "hls"));
+        assert!(recording.windows(2).any(|w| w[0] == "-hls_list_size" && w[1] == "900"), "30 min en trozos de 2 s");
+        assert!(recording.windows(2).any(|w| w[0] == "-hls_flags" && w[1].contains("delete_segments")), "ventana deslizante");
+        assert!(recording.windows(2).any(|w| w[0] == "-hls_segment_type" && w[1] == "fmp4"));
+        assert!(recording.last().unwrap().ends_with("live.m3u8"));
+        assert!(args.iter().any(|a| a == "-y"));
+
+        // AAC se copia en las dos (con su filtro); sin grabación no cambia nada.
+        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &options(Some("aac"))));
+        let pipe = args.iter().position(|a| a == "pipe:1").unwrap();
+        assert!(args[pipe + 1..].windows(2).any(|w| w[0] == "-bsf:a" && w[1] == "aac_adtstoasc"));
+        assert!(!args[pipe + 1..].iter().any(|a| a == "aac"));
+        let plain = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, ..Default::default() }));
+        assert!(!plain.iter().any(|a| a == "hls"));
+        assert_eq!(plain.last().map(String::as_str), Some("pipe:1"));
+    }
+
+    #[test]
     fn subtitles_go_to_a_second_webvtt_output_and_never_into_the_mp4() {
         let path = Path::new("C:/tmp/subs.vtt");
-        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, &[], false, None, None, Some((1, path))));
+        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", &RemuxOptions { subtitles: Some((1, path)), ..Default::default() }));
         assert!(args.iter().any(|a| a == "-y"), "sin -y, ffmpeg pregunta por stdin y aborta");
         let pipe = args.iter().position(|a| a == "pipe:1").unwrap();
         let main_output = &args[..pipe];
@@ -302,7 +366,7 @@ mod tests {
         assert_eq!(subtitle_output.last().map(String::as_str), Some("C:/tmp/subs.vtt"));
 
         // Con pista de audio elegida, esa es la que va en la salida principal.
-        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", None, &[], false, None, Some(2), Some((0, path))));
+        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", &RemuxOptions { audio_track: Some(2), subtitles: Some((0, path)), ..Default::default() }));
         let pipe = args.iter().position(|a| a == "pipe:1").unwrap();
         assert!(args[..pipe].windows(2).any(|w| w[0] == "-map" && w[1] == "0:a:2"));
         assert!(!args[..pipe].iter().any(|a| a == "0:a:0?"));
@@ -312,7 +376,7 @@ mod tests {
     fn selecting_audio_track_zero_still_maps_explicitly() {
         // Track 0 es "falsy" en muchos lenguajes — confirma que Some(0) no se confunde
         // con None y se sigue mapeando de forma explícita.
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", None, &[], true, None, Some(0), None);
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, audio_track: Some(0), ..Default::default() });
         let args = args_of(&command);
         assert!(args.iter().any(|a| a == "-map"));
         let last_map = args.iter().enumerate().filter(|(_, a)| *a == "-map").last().unwrap().0;
@@ -351,7 +415,7 @@ mod tests {
         // fichero por HTTP en localhost para que la prueba ejercite exactamente los
         // mismos flags que se usan contra un proveedor real.
         let url = serve_file_over_http(sample.clone()).await;
-        let mut child = spawn_remux(&ffmpeg_path, &url, "vibe-iptv-test", Some("aac"), &[], false, None, None, None).unwrap();
+        let mut child = spawn_remux(&ffmpeg_path, &url, "vibe-iptv-test", &RemuxOptions { audio_codec: Some("aac"), ..Default::default() }).unwrap();
         let mut stdout = child.stdout.take().expect("stdout debería estar conectado");
 
         let mut buf = vec![0u8; 65536];

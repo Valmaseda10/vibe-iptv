@@ -87,6 +87,14 @@ impl StreamGuard {
     /// sesión más nueva ya se lo haya llevado (entonces esa sesión nueva es quien manda,
     /// y aquí no queda nada que esperar). Consume `permit`: al volver, ya se soltó.
     pub async fn run_until_exit_or_replaced(&self, permit: StreamPermit) {
+        self.run_while(permit, || true).await;
+    }
+
+    /// Como [`Self::run_until_exit_or_replaced`], pero además termina la sesión (mata su
+    /// proceso) en cuanto `wanted()` diga que ya nadie la usa. Para la grabación del
+    /// directo (F13): sigue viva aunque el reproductor deje de leer el vídeo en directo
+    /// (está en pausa), mientras siga dando señales de vida.
+    pub async fn run_while(&self, permit: StreamPermit, wanted: impl Fn() -> bool) {
         loop {
             let mut slot = self.process.lock().await;
             match slot.as_mut() {
@@ -94,6 +102,13 @@ impl StreamGuard {
                 Some((_, child)) => {
                     if matches!(child.try_wait(), Ok(Some(_))) {
                         slot.take(); // terminó solo (p. ej. el usuario cerró la ventana de mpv).
+                        break;
+                    }
+                    if !wanted() {
+                        if let Some((_, mut child)) = slot.take() {
+                            let _ = child.start_kill();
+                            let _ = child.wait().await;
+                        }
                         break;
                     }
                 }
@@ -261,6 +276,27 @@ mod tests {
             .expect("run_until_exit_or_replaced no debería colgarse");
 
         assert!(!guard.is_busy(), "is_busy() debe volver a false cuando el proceso termina solo");
+    }
+
+    #[tokio::test]
+    async fn run_while_kills_the_process_once_nobody_wants_the_session() {
+        let guard = StreamGuard::new();
+        let permit = guard.acquire().await;
+        guard.attach_process(&permit, spawn_long_lived_process()).await;
+        let wanted = Arc::new(AtomicBool::new(true));
+
+        let task = {
+            let guard = Arc::clone(&guard);
+            let wanted = Arc::clone(&wanted);
+            tokio::spawn(async move { guard.run_while(permit, move || wanted.load(Ordering::SeqCst)).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        assert!(guard.is_busy(), "mientras se quiera, la sesión sigue");
+
+        wanted.store(false, Ordering::SeqCst);
+        tokio::time::timeout(std::time::Duration::from_secs(5), task).await.expect("debería terminar").unwrap();
+        assert!(!guard.is_busy());
+        assert!(guard.process.lock().await.is_none(), "el proceso se mató, no se quedó huérfano");
     }
 
     #[tokio::test]

@@ -23,12 +23,15 @@ use tokio_util::io::ReaderStream;
 
 use crate::commands::build_source_for_provider;
 use crate::db::{queries, reads, schema, DbError};
+use crate::media::ffmpeg::RemuxOptions;
 use crate::media::{ffmpeg, mpv, probe, subtitles};
 use crate::sources::model::{CatchupRef, MediaKind, StreamRef};
 use crate::sources::xtream::DEFAULT_USER_AGENT;
 use crate::sources::Source;
 use crate::util::redact;
 use crate::util::stream_guard::{StreamGuard, StreamPermit};
+
+use super::timeshift::{self, TimeshiftSession, TimeshiftSlot};
 
 #[derive(Clone)]
 pub struct StreamState {
@@ -48,6 +51,8 @@ pub struct StreamState {
     pub last_errors: StreamErrorLog,
     /// Subtítulos que va dejando el remux en curso (F12), si se pidió alguna pista.
     pub subtitles: SubtitleSession,
+    /// Grabación del directo en curso, para pausar y rebobinar (F13).
+    pub timeshift: TimeshiftSlot,
 }
 
 pub type StreamErrorLog = Arc<std::sync::Mutex<std::collections::HashMap<String, StreamFailure>>>;
@@ -117,6 +122,9 @@ pub fn stream_router(state: StreamState) -> Router {
         .route("/api/playback/binaries", get(get_binaries_status))
         .route("/api/playback/last-error/:kind/:id", get(get_last_error))
         .route("/api/playback/subtitles/:kind/:id", get(get_subtitle_cues))
+        .route("/stream/timeshift/channel/:id/:file", get(timeshift::get_file))
+        .route("/api/timeshift/:channel_id/keepalive", axum::routing::post(timeshift::post_keepalive))
+        .route("/api/timeshift/:channel_id", axum::routing::delete(timeshift::delete_session))
         .with_state(state)
 }
 
@@ -611,9 +619,20 @@ async fn handle_stream(
             let subtitles_path =
                 subtitle_track.and_then(|track| replace_subtitle_session(&state.subtitles, Some(subtitle_session_key(&kind_str, id, track, start_seconds.filter(|s| *s > 0.0)))));
             let subtitles = subtitle_track.zip(subtitles_path.as_deref());
-            let remux =
-                RemuxRequest { audio_codec: codec.as_deref(), client_audio, live, start_seconds, audio_track: tracks.audio, subtitles, max_connections };
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), remux, permit, Arc::clone(&state.stream_guard)).await
+            let options = RemuxOptions {
+                audio_codec: codec.as_deref(),
+                client_audio,
+                live,
+                start_seconds,
+                audio_track: tracks.audio,
+                subtitles,
+                ..Default::default()
+            };
+            if live {
+                spawn_live_response(&ffmpeg_path, resolved_url.as_str(), options, max_connections, id, permit, &state).await
+            } else {
+                spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), options, max_connections, permit, Arc::clone(&state.stream_guard)).await
+            }
         }
         _ => Err(StreamError::NeedsMpv),
     }
@@ -727,16 +746,8 @@ async fn handle_catchup(
         1 => proxy_passthrough(resolved_url, range_header, permit, Arc::clone(&state.stream_guard)).await,
         2 => {
             // Un programa ya emitido tiene principio y fin: como una película, sin `nobuffer`.
-            let remux = RemuxRequest {
-                audio_codec: audio_codec.as_deref(),
-                client_audio,
-                live: false,
-                start_seconds: None,
-                audio_track: None,
-                subtitles: None,
-                max_connections,
-            };
-            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), remux, permit, Arc::clone(&state.stream_guard)).await
+            let options = RemuxOptions { audio_codec: audio_codec.as_deref(), client_audio, ..Default::default() };
+            spawn_remux_response(&ffmpeg_path, resolved_url.as_str(), options, max_connections, permit, Arc::clone(&state.stream_guard)).await
         }
         _ => Err(StreamError::NeedsMpv),
     }
@@ -962,74 +973,148 @@ async fn selected_track_codec(db_path: &Path, url: &Url, audio_track: Option<i64
     tracks.into_iter().find(|t| t.index == track)?.codec_name
 }
 
-/// Lo que decide cómo se remuxea, aparte de la URL (ver `ffmpeg::build_remux_command`).
-struct RemuxRequest<'a> {
-    audio_codec: Option<&'a str>,
-    client_audio: &'a [String],
-    live: bool,
-    start_seconds: Option<f64>,
-    audio_track: Option<i64>,
-    subtitles: Option<(i64, &'a Path)>,
-    /// Solo para explicar un remux que no recibe nada (ver `StreamError::NoData`).
-    max_connections: i64,
-}
-
 /// Nivel 2: remux a fMP4 con ffmpeg, un proceso vivo por sesión (ver
 /// `util::stream_guard`). `start_seconds` implementa la búsqueda en VOD: el cliente pide
 /// un stream nuevo con `?start=<segundos>` y aquí se traduce a un `-ss` de entrada.
+/// `max_connections` solo sirve para explicar un remux que no recibe nada.
 async fn spawn_remux_response(
     ffmpeg_path: &Path,
     url: &str,
-    remux: RemuxRequest<'_>,
+    options: RemuxOptions<'_>,
+    max_connections: i64,
     permit: StreamPermit,
     guard: Arc<StreamGuard>,
 ) -> Result<Response, StreamError> {
-    let mut child = ffmpeg::spawn_remux(
-        ffmpeg_path,
-        url,
-        DEFAULT_USER_AGENT,
-        remux.audio_codec,
-        remux.client_audio,
-        remux.live,
-        remux.start_seconds,
-        remux.audio_track,
-        remux.subtitles,
-    )
-    .map_err(|err| {
+    let generation = permit.generation();
+    let (first, reader) = start_remux(ffmpeg_path, url, &options, max_connections, &permit, &guard).await?;
+    let rest = reader.map(|item| item.map_err(|err| Box::new(err) as BoxError));
+    let inner: BoxedByteStream = Box::pin(futures_util::stream::once(async move { Ok::<Bytes, BoxError>(first) }).chain(rest));
+    let body = Body::from_stream(PermitBoundBody { inner, permit: Some(permit), guard, generation });
+    mp4_response(body)
+}
+
+/// Lanza ffmpeg y espera su primer trozo antes de responder: si el proveedor acepta la
+/// conexión y no manda nada (cuenta en uso en otro sitio, canal caído), el cliente recibe
+/// un error que explica qué pasa, en vez de un vídeo que carga para siempre.
+async fn start_remux(
+    ffmpeg_path: &Path,
+    url: &str,
+    options: &RemuxOptions<'_>,
+    max_connections: i64,
+    permit: &StreamPermit,
+    guard: &Arc<StreamGuard>,
+) -> Result<(Bytes, ReaderStream<tokio::process::ChildStdout>), StreamError> {
+    let mut child = ffmpeg::spawn_remux(ffmpeg_path, url, DEFAULT_USER_AGENT, options).map_err(|err| {
         tracing::error!(error = %err, "no se pudo lanzar ffmpeg para el remux");
         StreamError::BinariesMissing
     })?;
     let stdout = child.stdout.take().ok_or(StreamError::Internal)?;
-
-    guard.attach_process(&permit, child).await;
+    guard.attach_process(permit, child).await;
     let generation = permit.generation();
 
-    // Se espera al primer trozo antes de responder: si el proveedor acepta la conexión y
-    // no manda nada (cuenta en uso en otro sitio, canal caído), el cliente recibe un
-    // error que explica qué pasa, en vez de un vídeo que carga para siempre.
     let mut reader = ReaderStream::new(stdout);
-    let first = match tokio::time::timeout(FIRST_DATA_TIMEOUT, reader.next()).await {
-        Ok(Some(Ok(bytes))) => bytes,
+    match tokio::time::timeout(FIRST_DATA_TIMEOUT, reader.next()).await {
+        Ok(Some(Ok(bytes))) => Ok((bytes, reader)),
         Ok(_) => {
             // ffmpeg terminó sin sacar nada: el proveedor rechazó o cortó la conexión.
             guard.release_process(generation).await;
-            return Err(StreamError::Unreachable);
+            Err(StreamError::Unreachable)
         }
         Err(_) => {
             tracing::warn!(seconds = FIRST_DATA_TIMEOUT.as_secs(), "el remux no recibió nada del proveedor");
             guard.release_process(generation).await;
-            return Err(StreamError::NoData { max_connections: remux.max_connections });
+            Err(StreamError::NoData { max_connections })
         }
-    };
-    let rest = reader.map(|item| item.map_err(|err| Box::new(err) as BoxError));
-    let inner: BoxedByteStream = Box::pin(futures_util::stream::once(async move { Ok::<Bytes, BoxError>(first) }).chain(rest));
-    let body = Body::from_stream(PermitBoundBody { inner, permit: Some(permit), guard, generation });
+    }
+}
 
+fn mp4_response(body: Body) -> Result<Response, StreamError> {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "video/mp4")
         .body(body)
         .map_err(|_| StreamError::Internal)
+}
+
+/// Trozos de la salida en directo que pueden esperar a que el reproductor los lea. Lleno,
+/// es que el reproductor dejó de leer (pausa): se deja de mandarle el directo.
+const LIVE_BUFFER_CHUNKS: usize = 256;
+
+/// Directo con grabación para pausar y rebobinar (F13). El mismo ffmpeg saca el directo
+/// por la respuesta y graba en disco (ver `server::timeshift`). A diferencia del VOD, la
+/// sesión no muere con la respuesta: el reproductor en pausa deja de leer el directo pero
+/// sigue usando la grabación. ffmpeg se lee siempre, lea o no el reproductor: si dejara
+/// de leerse, se pararía también la grabación y la conexión con el proveedor.
+async fn spawn_live_response(
+    ffmpeg_path: &Path,
+    url: &str,
+    mut options: RemuxOptions<'_>,
+    max_connections: i64,
+    channel_id: i64,
+    permit: StreamPermit,
+    state: &StreamState,
+) -> Result<Response, StreamError> {
+    let dir = match timeshift::new_session_dir() {
+        Ok(dir) => Some(dir),
+        Err(err) => {
+            tracing::warn!(error = %err, "no se pudo preparar la grabación del directo; se ve sin poder pausar");
+            None
+        }
+    };
+    options.timeshift = dir.as_deref();
+    options.timeshift_window_seconds = timeshift::WINDOW_SECONDS;
+
+    let guard = Arc::clone(&state.stream_guard);
+    let (first, mut reader) = match start_remux(ffmpeg_path, url, &options, max_connections, &permit, &guard).await {
+        Ok(started) => started,
+        Err(err) => {
+            if let Some(dir) = &dir {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            return Err(err);
+        }
+    };
+
+    let session = Arc::new(TimeshiftSession::new(channel_id, dir, permit.generation()));
+    timeshift::register(&state.timeshift, Arc::clone(&session));
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Bytes>(LIVE_BUFFER_CHUNKS);
+    let draining = Arc::clone(&session);
+    tokio::spawn(async move {
+        let mut live = Some(tx);
+        let mut pending = Some(first);
+        loop {
+            let chunk = match pending.take() {
+                Some(chunk) => chunk,
+                None => match reader.next().await {
+                    Some(Ok(chunk)) => chunk,
+                    _ => break,
+                },
+            };
+            if let Some(tx) = &live {
+                // Lleno (pausa) o cerrado (el reproductor pasó a la grabación o se fue): a
+                // partir de aquí se descarta, la grabación sigue.
+                if tx.try_send(chunk).is_err() {
+                    live = None;
+                    draining.set_reading_live(false);
+                }
+            }
+        }
+        draining.set_reading_live(false);
+    });
+
+    let slot = Arc::clone(&state.timeshift);
+    let watched = Arc::clone(&session);
+    tokio::spawn(async move {
+        let wanted = Arc::clone(&watched);
+        guard.run_while(permit, move || wanted.is_wanted()).await;
+        timeshift::finish(&slot, &watched);
+    });
+
+    let body = Body::from_stream(futures_util::stream::unfold(rx, |mut rx| async move {
+        rx.recv().await.map(|chunk| (Ok::<Bytes, BoxError>(chunk), rx))
+    }));
+    mp4_response(body)
 }
 
 #[cfg(test)]
@@ -1145,6 +1230,7 @@ mod tests {
             mpv_path: None,
             last_errors: Default::default(),
             subtitles: Default::default(),
+            timeshift: Default::default(),
         }
     }
 
@@ -1559,6 +1645,140 @@ mod tests {
         let failure: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(failure["status"], 504);
         assert!(failure["message"].as_str().unwrap().contains("otro dispositivo"), "{failure}");
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Sirve `file` a ritmo de directo (trozos con pausas), como un canal de verdad: así
+    /// la sesión sigue viva el rato que la prueba necesita para mirar la grabación.
+    async fn spawn_paced_file_server(route_path: &str, file: PathBuf) -> String {
+        let bytes = Arc::new(std::fs::read(file).unwrap());
+        let router = Router::new().route(
+            route_path,
+            get(move || {
+                let bytes = Arc::clone(&bytes);
+                async move {
+                    let chunks = futures_util::stream::unfold(0usize, move |offset| {
+                        let bytes = Arc::clone(&bytes);
+                        async move {
+                            if offset >= bytes.len() {
+                                return None;
+                            }
+                            if offset > 0 {
+                                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                            }
+                            let end = (offset + 24 * 1024).min(bytes.len());
+                            Some((Ok::<Bytes, std::io::Error>(Bytes::copy_from_slice(&bytes[offset..end])), end))
+                        }
+                    });
+                    ([(header::CONTENT_TYPE, "video/mp2t")], Body::from_stream(chunks))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        format!("http://{addr}")
+    }
+
+    /// Pausar el directo (F13), de punta a punta: el mismo remux graba trozos HLS que se
+    /// pueden pedir mientras se ve, con el audio MP2 convertido a AAC solo en la grabación
+    /// (MSE no lo acepta), la sesión sobrevive a que el reproductor deje de leer el
+    /// directo si da señales de vida, y al cerrarla se libera todo: proceso, permiso y
+    /// carpeta.
+    #[tokio::test]
+    async fn live_channels_are_recorded_for_pausing_and_cleaned_up_after() {
+        let Some(ffmpeg_path) = which_on_path("ffmpeg") else {
+            eprintln!("ffmpeg no está en el PATH: prueba omitida");
+            return;
+        };
+        let Some(ffprobe_path) = which_on_path("ffprobe") else {
+            eprintln!("ffprobe no está en el PATH: prueba omitida");
+            return;
+        };
+
+        let dir = std::env::temp_dir().join(format!("vibe-iptv-stream-timeshift-{}-{}", std::process::id(), rand_suffix()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let sample = dir.join("canal.ts");
+        let status = tokio::process::Command::new(&ffmpeg_path)
+            .args(["-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=20", "-f", "lavfi", "-i", "sine=duration=20"])
+            .args(["-ac", "2", "-c:v", "libx264", "-preset", "ultrafast", "-g", "25", "-c:a", "mp2", "-b:a", "192k", "-f", "mpegts"])
+            .arg(&sample)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success());
+        let base_url = spawn_paced_file_server("/live/user/pass/1.ts", sample).await;
+
+        let db_path = temp_db_path("timeshift");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "timeshift").await;
+        let channel_id = seed_channel(&db_path, provider_id, "1", false, 0);
+        let state = base_state(db_path.clone(), Some(ffmpeg_path), Some(ffprobe_path.clone()));
+
+        let response = get_oneshot(state.clone(), &format!("/stream/channel/{channel_id}?profile_id=1")).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut live = response.into_body().into_data_stream();
+        assert!(live.next().await.is_some(), "el directo empieza a llegar");
+
+        // La grabación aparece mientras se ve, con su lista y sus trozos.
+        let mut playlist = String::new();
+        for _ in 0..80 {
+            let response = get_oneshot(state.clone(), &format!("/stream/timeshift/channel/{channel_id}/live.m3u8")).await;
+            if response.status() == StatusCode::OK {
+                playlist = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+                if playlist.matches(".m4s").count() >= 2 {
+                    break;
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(playlist.contains("#EXT-X-MAP:URI=\"init.mp4\""), "lista: {playlist}");
+        let first_segment = playlist.lines().find(|l| l.ends_with(".m4s")).unwrap().to_string();
+        let mut recorded = Vec::new();
+        for file in ["init.mp4", first_segment.as_str()] {
+            let response = get_oneshot(state.clone(), &format!("/stream/timeshift/channel/{channel_id}/{file}")).await;
+            assert_eq!(response.status(), StatusCode::OK, "{file}");
+            recorded.extend_from_slice(&response.into_body().collect().await.unwrap().to_bytes());
+        }
+        let recorded_path = dir.join("grabado.mp4");
+        std::fs::write(&recorded_path, &recorded).unwrap();
+        let probed = probe::probe_url(&ffprobe_path, &recorded_path.to_string_lossy(), "vibe-iptv-test").await.unwrap();
+        assert_eq!(probed.video_codec.as_deref(), Some("h264"));
+        assert_eq!(probed.audio_codec.as_deref(), Some("aac"), "MP2 se convierte a AAC en la grabación");
+        assert!(crate::media::count_packets(&ffprobe_path, &recorded_path, "v") > 0);
+
+        // Un canal que no es el de la grabación no ve nada; un nombre raro, tampoco.
+        assert_eq!(get_oneshot(state.clone(), &format!("/stream/timeshift/channel/{}/live.m3u8", channel_id + 1)).await.status(), StatusCode::NOT_FOUND);
+        assert_eq!(get_oneshot(state.clone(), &format!("/stream/timeshift/channel/{channel_id}/..%2Fsecreto.m4s")).await.status(), StatusCode::BAD_REQUEST);
+
+        // El reproductor deja de leer el directo (pasa a la grabación): con señales de
+        // vida, la sesión sigue.
+        drop(live);
+        tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+        let keepalive = Request::builder().method("POST").uri(format!("/api/timeshift/{channel_id}/keepalive")).body(Body::empty()).unwrap();
+        assert_eq!(stream_router(state.clone()).oneshot(keepalive).await.unwrap().status(), StatusCode::NO_CONTENT);
+        assert!(state.stream_guard.is_busy(), "la grabación sigue ocupando la única conexión (R1)");
+
+        // Cerrar el reproductor la termina ya: proceso, permiso y carpeta.
+        let recording_dir = std::fs::read_dir(timeshift::temp_root()).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join(&first_segment).exists() || p.join("live.m3u8").exists());
+        let close = Request::builder().method("DELETE").uri(format!("/api/timeshift/{channel_id}")).body(Body::empty()).unwrap();
+        assert_eq!(stream_router(state.clone()).oneshot(close).await.unwrap().status(), StatusCode::NO_CONTENT);
+        for _ in 0..30 {
+            if !state.stream_guard.is_busy() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        assert!(!state.stream_guard.is_busy(), "cerrar libera la conexión");
+        assert_eq!(get_oneshot(state.clone(), &format!("/stream/timeshift/channel/{channel_id}/live.m3u8")).await.status(), StatusCode::NOT_FOUND);
+        if let Some(recording_dir) = recording_dir {
+            assert!(!recording_dir.exists(), "la grabación se borra del disco");
+        }
+
+        let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);
     }
 
