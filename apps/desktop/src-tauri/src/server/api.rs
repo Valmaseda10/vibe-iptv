@@ -587,14 +587,53 @@ struct ProfileQuery {
 async fn get_home(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<HomeResponse>, ApiError> {
     let db_path = state.db_path.clone();
     let profile_id = query.profile_id;
-    let (featured, continue_watching, next_episodes, recent_movies, genre_rows) = with_db(db_path.clone(), move |conn| {
-        let featured = reads::get_featured_movie(conn)?;
-        let continue_watching = reads::list_continue_watching(conn, profile_id, 20)?;
-        let next_episodes = reads::list_next_episodes(conn, profile_id, 20)?;
-        let recent_movies = reads::list_recent_movies(conn, 20)?;
-        let genre_rows = reads::list_genre_rows(conn, 3, 20)?;
+    // Cada fila sale ya filtrada por el perfil (F14): con un perfil infantil, Inicio no
+    // puede llevar a nada que no pueda ver. Se piden de más para que filtrar no deje las
+    // filas cortas.
+    let (featured, continue_watching, next_episodes, recent_movies, genre_rows, access) = with_db(db_path.clone(), move |conn| {
+        let access = reads::profile_access(conn, profile_id)?;
+        let allowed = |kind: &str, id: i64| reads::item_allowed(conn, kind, id, access);
+        let featured = match reads::get_featured_movie(conn)? {
+            Some(movie) if allowed("movie", movie.id)? => Some(movie),
+            _ => None,
+        };
+        let mut continue_watching = Vec::new();
+        for item in reads::list_continue_watching(conn, profile_id, 40)? {
+            if allowed(&item.item_kind, item.item_id)? {
+                continue_watching.push(item);
+            }
+        }
+        continue_watching.truncate(20);
+        let mut next_episodes = Vec::new();
+        for item in reads::list_next_episodes(conn, profile_id, 40)? {
+            if allowed("series", item.series_id)? {
+                next_episodes.push(item);
+            }
+        }
+        next_episodes.truncate(20);
+        let restricted = access != reads::ProfileAccess::UNRESTRICTED;
+        let fetch = if restricted { 200 } else { 20 };
+        let mut recent_movies = Vec::new();
+        for movie in reads::list_recent_movies(conn, fetch)? {
+            if allowed("movie", movie.id)? {
+                recent_movies.push(movie);
+            }
+        }
+        recent_movies.truncate(20);
+        let mut genre_rows = reads::list_genre_rows(conn, 3, fetch)?;
+        for row in &mut genre_rows {
+            let mut visible = Vec::new();
+            for movie in std::mem::take(&mut row.movies) {
+                if allowed("movie", movie.id)? {
+                    visible.push(movie);
+                }
+            }
+            visible.truncate(20);
+            row.movies = visible;
+        }
+        genre_rows.retain(|row| !row.movies.is_empty());
         let genre_names = reads::list_genre_names(conn, "movie")?;
-        Ok((featured, continue_watching, next_episodes, recent_movies, (genre_rows, genre_names)))
+        Ok((featured, continue_watching, next_episodes, recent_movies, (genre_rows, genre_names), access))
     })
     .await?;
     let (genre_rows, genre_names) = genre_rows;
@@ -604,7 +643,29 @@ async fn get_home(State(state): State<CatalogState>, Query(query): Query<Profile
     // primera vez): ver los comentarios de cabecera de `catalog::recommendations` y
     // `catalog::trending`.
     let (recommended, recommended_series) = crate::catalog::recommendations::get_cached_or_refresh(db_path.clone(), profile_id).await;
-    let (trending_movies, trending_series) = crate::catalog::trending::get_cached_or_refresh(db_path).await;
+    let (trending_movies, trending_series) = crate::catalog::trending::get_cached_or_refresh(db_path.clone()).await;
+    let (recommended, recommended_series, trending_movies, trending_series) = with_db(db_path, move |conn| {
+        let keep = |kind: &'static str, ids: Vec<i64>| -> crate::db::Result<Vec<i64>> {
+            let mut kept = Vec::new();
+            for id in ids {
+                if reads::item_allowed(conn, kind, id, access)? {
+                    kept.push(id);
+                }
+            }
+            Ok(kept)
+        };
+        let recommended_ids = keep("movie", recommended.iter().map(|m| m.id).collect())?;
+        let recommended_series_ids = keep("series", recommended_series.iter().map(|s| s.id).collect())?;
+        let trending_movie_ids = keep("movie", trending_movies.iter().map(|m| m.id).collect())?;
+        let trending_series_ids = keep("series", trending_series.iter().map(|s| s.id).collect())?;
+        Ok((
+            recommended.into_iter().filter(|m| recommended_ids.contains(&m.id)).collect::<Vec<_>>(),
+            recommended_series.into_iter().filter(|s| recommended_series_ids.contains(&s.id)).collect::<Vec<_>>(),
+            trending_movies.into_iter().filter(|m| trending_movie_ids.contains(&m.id)).collect::<Vec<_>>(),
+            trending_series.into_iter().filter(|s| trending_series_ids.contains(&s.id)).collect::<Vec<_>>(),
+        ))
+    })
+    .await?;
 
     Ok(Json(HomeResponse {
         featured: featured.map(Into::into),
@@ -814,8 +875,8 @@ async fn get_movies(State(state): State<CatalogState>, Query(query): Query<Movie
     let cursor = parse_page_cursor(movie_sort_cursor_key(sort), query.after, query.after_key.as_deref());
     let after_key = query.after_key.clone();
     let items = with_db(state.db_path, move |conn| {
-        let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
-        reads::list_movies_page(conn, query.genre, query.year, query.quality.as_deref(), sort, cursor, after_key.as_deref(), limit, include_adult)
+        let access = reads::profile_access(conn, query.profile_id)?;
+        reads::list_movies_page(conn, query.genre, query.year, query.quality.as_deref(), sort, cursor, after_key.as_deref(), limit, access)
     })
     .await?;
     let (next_cursor, next_cursor_key) = if items.len() as i64 == limit {
@@ -882,6 +943,17 @@ async fn get_movie_detail(
         }
     }
 
+    // Un perfil con restricciones no ve la ficha de lo que no puede ver (F14). Aquí y no
+    // antes: los extras de arriba son lo que trae la clasificación por edad de un título
+    // que aún no la tenía.
+    let access = match query.profile_id {
+        Some(profile_id) => with_db(db_path.clone(), move |conn| reads::profile_access(conn, profile_id)).await?,
+        None => reads::ProfileAccess::UNRESTRICTED,
+    };
+    if !with_db(db_path.clone(), move |conn| reads::item_allowed(conn, "movie", id, access)).await? {
+        return Err(ApiError::Forbidden);
+    }
+
     // Marcado como visto (F "premium") — sin profile_id no hay de quién consultarlo,
     // igual de opcional que en el propio checkmark de episodio.
     let watched = if let Some(profile_id) = query.profile_id {
@@ -901,7 +973,16 @@ async fn get_movie_detail(
         Vec::new()
     } else {
         let ids = movie.similar_tmdb_ids.clone();
-        with_db(db_path, move |conn| reads::resolve_similar_movies(conn, &ids, id, SIMILAR_TITLES_LIMIT)).await?
+        with_db(db_path, move |conn| {
+            let mut visible = Vec::new();
+            for title in reads::resolve_similar_movies(conn, &ids, id, SIMILAR_TITLES_LIMIT)? {
+                if reads::item_allowed(conn, "movie", title.id, access)? {
+                    visible.push(title);
+                }
+            }
+            Ok(visible)
+        })
+        .await?
     };
 
     let mut response: MovieDetailResponse = movie.into();
@@ -1001,8 +1082,8 @@ async fn get_series_list(State(state): State<CatalogState>, Query(query): Query<
     let cursor = parse_page_cursor(series_sort_cursor_key(sort), query.after, query.after_key.as_deref());
     let after_key = query.after_key.clone();
     let items = with_db(state.db_path, move |conn| {
-        let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
-        reads::list_series_page(conn, query.genre, query.year, sort, cursor, after_key.as_deref(), limit, include_adult)
+        let access = reads::profile_access(conn, query.profile_id)?;
+        reads::list_series_page(conn, query.genre, query.year, sort, cursor, after_key.as_deref(), limit, access)
     })
     .await?;
     let (next_cursor, next_cursor_key) = if items.len() as i64 == limit {
@@ -1061,6 +1142,13 @@ async fn get_series_detail(
         }
     }
 
+    // Igual que en la ficha de película (F14), después de pedir los extras.
+    let profile_id = query.profile_id;
+    let access = with_db(db_path.clone(), move |conn| reads::profile_access(conn, profile_id)).await?;
+    if !with_db(db_path.clone(), move |conn| reads::item_allowed(conn, "series", id, access)).await? {
+        return Err(ApiError::Forbidden);
+    }
+
     // Checkmark de "visto" por episodio (F "premium") — nunca rompe la ficha si falla:
     // sin marcas es como estaba la ficha antes de que existiera esta función.
     let profile_id = query.profile_id;
@@ -1073,7 +1161,16 @@ async fn get_series_detail(
         Vec::new()
     } else {
         let ids = series.similar_tmdb_ids.clone();
-        with_db(db_path, move |conn| reads::resolve_similar_series(conn, &ids, id, SIMILAR_TITLES_LIMIT)).await?
+        with_db(db_path, move |conn| {
+            let mut visible = Vec::new();
+            for title in reads::resolve_similar_series(conn, &ids, id, SIMILAR_TITLES_LIMIT)? {
+                if reads::item_allowed(conn, "series", title.id, access)? {
+                    visible.push(title);
+                }
+            }
+            Ok(visible)
+        })
+        .await?
     };
 
     let mut episodes: Vec<EpisodeSummary> = series.episodes.into_iter().map(Into::into).collect();
@@ -1123,6 +1220,8 @@ async fn refresh_series_detail(db_path: PathBuf, series_source_id: i64, provider
 #[derive(Deserialize)]
 struct SearchQuery {
     q: Option<String>,
+    /// Lo que el perfil no puede ver no sale (F14).
+    profile_id: i64,
 }
 
 async fn get_search(State(state): State<CatalogState>, Query(query): Query<SearchQuery>) -> Result<Json<SearchResults>, ApiError> {
@@ -1130,7 +1229,12 @@ async fn get_search(State(state): State<CatalogState>, Query(query): Query<Searc
     if q.trim().is_empty() {
         return Ok(Json(SearchResults { channels: vec![], movies: vec![], series: vec![] }));
     }
-    let hits = with_db(state.db_path, move |conn| reads::search(conn, &q, 20)).await?;
+    let profile_id = query.profile_id;
+    let hits = with_db(state.db_path, move |conn| {
+        let access = reads::profile_access(conn, profile_id)?;
+        reads::search(conn, &q, 20, access)
+    })
+    .await?;
 
     let mut channels = Vec::new();
     let mut movies = Vec::new();
@@ -1286,7 +1390,17 @@ async fn post_playback_progress(State(state): State<CatalogState>, Json(input): 
 }
 
 async fn get_favorites(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<Vec<FavoriteItem>>, ApiError> {
-    let items = with_db(state.db_path, move |conn| reads::list_favorites(conn, query.profile_id)).await?;
+    let items = with_db(state.db_path, move |conn| {
+        let access = reads::profile_access(conn, query.profile_id)?;
+        let mut visible = Vec::new();
+        for item in reads::list_favorites(conn, query.profile_id)? {
+            if reads::item_allowed(conn, &item.item_kind, item.item_id, access)? {
+                visible.push(item);
+            }
+        }
+        Ok(visible)
+    })
+    .await?;
     Ok(Json(items.into_iter().map(Into::into).collect()))
 }
 
@@ -1403,8 +1517,12 @@ pub struct RandomTitleResponse {
 /// la barra lateral. `204` si el catálogo está vacío (sin proveedor sincronizado
 /// todavía) — igual que `get_playback_progress`, más claro para el cliente que un
 /// cuerpo vacío o un error.
-async fn get_random_title(State(state): State<CatalogState>) -> Result<Response, ApiError> {
-    let pick = with_db(state.db_path, |conn| reads::random_title(conn)).await?;
+async fn get_random_title(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Response, ApiError> {
+    let pick = with_db(state.db_path, move |conn| {
+        let access = reads::profile_access(conn, query.profile_id)?;
+        reads::random_title(conn, access)
+    })
+    .await?;
     Ok(match pick {
         Some(p) => Json(RandomTitleResponse { kind: p.kind, id: p.id }).into_response(),
         None => StatusCode::NO_CONTENT.into_response(),
@@ -1499,6 +1617,74 @@ mod tests {
     async fn body_json(response: Response) -> serde_json::Value {
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    /// Criterio de aceptación de F14: un perfil infantil (hasta 12 años) no llega a ningún
+    /// título no apto ni por las listas, ni por búsqueda, ni por "Sorpréndeme", ni
+    /// abriendo la ficha. Tres películas: apta (7), no apta (16) y sin clasificar.
+    #[tokio::test]
+    async fn a_kids_profile_never_reaches_a_title_above_its_age() {
+        let db_path = seeded_db();
+        let (kid, ids) = {
+            let conn = open_connection_at(&db_path).unwrap();
+            let provider_id: i64 = conn.query_row("SELECT id FROM providers LIMIT 1", [], |r| r.get(0)).unwrap();
+            let mut ids = HashMap::new();
+            for (title, age) in [("Dibujos Felices", Some(7)), ("Terror Nocturno", Some(16)), ("Sin Clasificar", None)] {
+                let key = title.to_lowercase().replace(' ', "-");
+                let raw = RawMovie {
+                    remote_id: key.clone(),
+                    category_remote_id: None,
+                    raw_title: title.into(),
+                    container_extension: None,
+                    logo_url: None,
+                    added_at: Some(1_700_000_100),
+                    rating: Some(8.0),
+                    tmdb_id: None,
+                };
+                let fields = TitleFields { clean_title: title, year: Some(2022), match_key: &key, quality: None, language: None };
+                write_queries::upsert_movie(&conn, provider_id, &HashMap::new(), &raw, &fields).unwrap();
+                let id: i64 = conn.query_row("SELECT id FROM movies WHERE match_key = ?1", [&key], |r| r.get(0)).unwrap();
+                conn.execute("UPDATE movies SET age_min = ?1, tmdb_state = 'matched' WHERE id = ?2", rusqlite::params![age, id]).unwrap();
+                ids.insert(title, id);
+            }
+            // La película de `seeded_db` no tiene clasificación: tampoco debe salir.
+            let kid = write_queries::insert_profile(&conn, "Peque", None, false).unwrap();
+            write_queries::set_profile_max_age(&conn, kid, Some(12)).unwrap();
+            write_queries::rebuild_search_index(&conn).unwrap();
+            (kid, ids)
+        };
+        let get = |uri: String| {
+            let router = catalog_router(db_path.clone());
+            async move { router.oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap()).await.unwrap() }
+        };
+
+        let list = body_json(get(format!("/api/movies?profile_id={kid}")).await).await;
+        let titles: Vec<&str> = list["items"].as_array().unwrap().iter().map(|m| m["clean_title"].as_str().unwrap()).collect();
+        assert_eq!(titles, ["Dibujos Felices"], "lista");
+
+        for q in ["Terror", "Clasificar", "Dibujos"] {
+            let found = body_json(get(format!("/api/search?q={q}&profile_id={kid}")).await).await;
+            let titles: Vec<&str> = found["movies"].as_array().unwrap().iter().map(|m| m["title"].as_str().unwrap()).collect();
+            assert!(titles.iter().all(|t| *t == "Dibujos Felices"), "búsqueda de «{q}»: {titles:?}");
+        }
+
+        for _ in 0..25 {
+            let pick = body_json(get(format!("/api/random?profile_id={kid}")).await).await;
+            assert_eq!(pick["id"], ids["Dibujos Felices"], "«Sorpréndeme» solo puede elegir lo apto");
+        }
+
+        assert_eq!(get(format!("/api/movies/{}?profile_id={kid}", ids["Terror Nocturno"])).await.status(), StatusCode::FORBIDDEN);
+        assert_eq!(get(format!("/api/movies/{}?profile_id={kid}", ids["Sin Clasificar"])).await.status(), StatusCode::FORBIDDEN);
+        assert_eq!(get(format!("/api/movies/{}?profile_id={kid}", ids["Dibujos Felices"])).await.status(), StatusCode::OK);
+
+        let home = body_json(get(format!("/api/home?profile_id={kid}")).await).await;
+        let in_home: Vec<i64> = home["recent_movies"].as_array().unwrap().iter().map(|m| m["id"].as_i64().unwrap()).collect();
+        assert_eq!(in_home, [ids["Dibujos Felices"]], "Inicio");
+
+        // Un adulto lo ve todo.
+        let all = body_json(get(format!("/api/movies?profile_id={TEST_PROFILE_ID}")).await).await;
+        assert_eq!(all["items"].as_array().unwrap().len(), 4);
+        let _ = std::fs::remove_file(&db_path);
     }
 
     #[tokio::test]
@@ -1744,7 +1930,7 @@ mod tests {
         let db_path = seeded_db();
         let router = catalog_router(db_path.clone());
 
-        let response = router.oneshot(Request::builder().uri("/api/search?q=Prueba").body(Body::empty()).unwrap()).await.unwrap();
+        let response = router.oneshot(Request::builder().uri(format!("/api/search?q=Prueba&profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["movies"][0]["title"], "Peli de Prueba");
@@ -1997,7 +2183,7 @@ mod tests {
         let db_path = seeded_db();
         let router = catalog_router(db_path.clone());
 
-        let response = router.oneshot(Request::builder().uri("/api/random").body(Body::empty()).unwrap()).await.unwrap();
+        let response = router.oneshot(Request::builder().uri(format!("/api/random?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let json = body_json(response).await;
         assert_eq!(json["kind"], "movie");
@@ -2012,7 +2198,7 @@ mod tests {
         open_connection_at(&path).unwrap();
         let router = catalog_router(path.clone());
 
-        let response = router.oneshot(Request::builder().uri("/api/random").body(Body::empty()).unwrap()).await.unwrap();
+        let response = router.oneshot(Request::builder().uri(format!("/api/random?profile_id={TEST_PROFILE_ID}")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
         let _ = std::fs::remove_file(&path);

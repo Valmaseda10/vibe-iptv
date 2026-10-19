@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { useActiveProfile } from "../../lib/activeProfile";
 import { apiGet, imagePath, useApiBase } from "../../lib/api-client";
 import type { SearchResults } from "../../lib/api-types";
 
@@ -18,10 +19,12 @@ export function SearchScreen() {
     return () => clearTimeout(id);
   }, [input]);
 
+  const { profileId } = useActiveProfile();
+  // Lo que el perfil no puede ver no sale en la búsqueda (F14): el núcleo filtra por perfil.
   const { data, isFetching } = useQuery({
-    queryKey: ["search", debounced],
-    queryFn: () => apiGet<SearchResults>(`/api/search?q=${encodeURIComponent(debounced)}`),
-    enabled: debounced.trim().length > 0,
+    queryKey: ["search", debounced, profileId],
+    queryFn: () => apiGet<SearchResults>(`/api/search?q=${encodeURIComponent(debounced)}&profile_id=${profileId}`),
+    enabled: debounced.trim().length > 0 && profileId !== null,
   });
 
   const hasQuery = debounced.trim().length > 0;

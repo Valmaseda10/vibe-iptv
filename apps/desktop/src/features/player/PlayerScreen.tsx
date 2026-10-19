@@ -100,8 +100,8 @@ export function PlayerScreen() {
   const subtitleTrack = kind !== "channel" && subtitleChoice?.item === `${kind}:${itemId}` ? subtitleChoice.track : null;
 
   const movieQuery = useQuery({
-    queryKey: ["player-movie", itemId],
-    queryFn: () => apiGetOrNull<MovieDetailResponse>(`/api/movies/${itemId}`),
+    queryKey: ["player-movie", itemId, profileId],
+    queryFn: () => apiGetOrNull<MovieDetailResponse>(`/api/movies/${itemId}?profile_id=${profileId}`),
     enabled: kind === "movie",
   });
   const seriesQuery = useQuery({

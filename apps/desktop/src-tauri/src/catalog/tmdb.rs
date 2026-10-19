@@ -437,6 +437,84 @@ async fn match_title(
     }
 }
 
+/// Paso de extras (F14): pide a TMDB la clasificación por edad (y, en la misma llamada,
+/// tráiler y similares) de todo lo emparejado que aún no los tenga. Antes solo se pedía
+/// al abrir la ficha, y con el catálogo real del usuario 1 de 19.033 películas tenía
+/// clasificación: un perfil infantil, que solo ve lo clasificado, se habría quedado sin
+/// nada. Se hace una vez por título; uno que TMDB no reconozca se marca para no volver a
+/// pedirlo, y uno que falle por la red o el límite de peticiones queda para la siguiente.
+pub async fn run_extras_pass(
+    conn: Connection,
+    client: Arc<TmdbClient>,
+    cancel: Arc<AtomicBool>,
+    on_progress: Arc<dyn Fn(u32, u32) + Send + Sync>,
+) -> Result<u32> {
+    let backfilled = queries::backfill_age_min(&conn)?;
+    if backfilled > 0 {
+        tracing::info!(backfilled, "edad mínima calculada para títulos con clasificación ya guardada");
+    }
+    let movies = queries::list_titles_without_extras(&conn, "movies")?;
+    let series = queries::list_titles_without_extras(&conn, "series")?;
+    let conn = Arc::new(AsyncMutex::new(conn));
+    let total = (movies.len() + series.len()) as u32;
+    let done = Arc::new(AtomicU32::new(0));
+    let stored = Arc::new(AtomicU32::new(0));
+    let mut handles = Vec::with_capacity(total as usize);
+
+    let titles = movies.into_iter().map(|t| (MediaKind::Movie, t)).chain(series.into_iter().map(|t| (MediaKind::Series, t)));
+    for (kind, (id, tmdb_id)) in titles {
+        let conn = Arc::clone(&conn);
+        let client = Arc::clone(&client);
+        let cancel = Arc::clone(&cancel);
+        let done = Arc::clone(&done);
+        let stored = Arc::clone(&stored);
+        let on_progress = Arc::clone(&on_progress);
+        handles.push(tokio::spawn(async move {
+            if !cancel.load(Ordering::SeqCst) {
+                let fetched = match kind {
+                    MediaKind::Series => client.tv_extras(tmdb_id).await,
+                    _ => client.movie_extras(tmdb_id).await,
+                };
+                let extras = match fetched {
+                    Ok(extras) => Some(extras),
+                    // TMDB no conoce ese id (o responde algo que no se entiende): no se
+                    // vuelve a pedir, se guarda vacío.
+                    Err(TmdbError::InvalidResponse(_)) => Some(TmdbExtras::default()),
+                    Err(err) => {
+                        tracing::debug!(error = %err, "extras de TMDB aplazados");
+                        None
+                    }
+                };
+                if let Some(extras) = extras {
+                    let conn = conn.lock().await;
+                    let saved = match kind {
+                        MediaKind::Series => queries::set_series_extras(
+                            &conn,
+                            id,
+                            extras.trailer_key.as_deref(),
+                            extras.age_rating.as_deref(),
+                            &extras.similar_tmdb_ids,
+                        ),
+                        _ => queries::set_movie_extras(&conn, id, extras.trailer_key.as_deref(), extras.age_rating.as_deref(), &extras.similar_tmdb_ids),
+                    };
+                    match saved {
+                        Ok(()) => {
+                            stored.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Err(err) => tracing::warn!(error = %err, "no se pudieron guardar los extras de TMDB"),
+                    }
+                }
+            }
+            let progressed = done.fetch_add(1, Ordering::SeqCst) + 1;
+            on_progress(progressed, total);
+        }));
+    }
+    for handle in handles {
+        let _ = handle.await;
+    }
+    Ok(stored.load(Ordering::SeqCst))
+}
+
 async fn store_outcome(conn: &AsyncMutex<Connection>, kind: MediaKind, id: i64, outcome: &MatchOutcome) {
     let genres_json = outcome.data.as_ref().map(|m| serde_json::to_string(&m.genre_ids).unwrap_or_else(|_| "[]".to_string()));
     let db_outcome = queries::TmdbOutcome {

@@ -383,7 +383,7 @@ pub fn list_movies_page(
     after: Option<PageCursor>,
     after_text: Option<&str>,
     limit: i64,
-    include_adult: bool,
+    access: ProfileAccess,
 ) -> Result<Vec<MovieListItem>> {
     let mut sql = String::from("SELECT DISTINCT m.id, m.clean_title, m.year, COALESCE(m.poster_path, m.provider_poster_url) AS poster_path, m.rating, m.tmdb_state, m.added_at FROM movies m");
     if quality.is_some() {
@@ -392,15 +392,7 @@ pub fn list_movies_page(
     sql.push_str(" WHERE 1=1");
 
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
-    if !include_adult {
-        // Se oculta si TODAS sus fuentes son de categorías adultas (control parental,
-        // F8) — más precisamente, se excluye si tiene alguna fuente en una categoría
-        // adulta: mejor ocultar de más que enseñar de menos en un filtro parental.
-        sql.push_str(
-            " AND NOT EXISTS (SELECT 1 FROM movie_sources ms2 JOIN categories c ON c.id = ms2.category_id
-                               WHERE ms2.movie_id = m.id AND c.is_adult = 1)",
-        );
-    }
+    sql.push_str(&title_access_sql(TitleTable::Movies, "m", access));
     if let Some(g) = genre {
         sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(m.genres) WHERE value = ?)");
         args.push(Box::new(g));
@@ -656,20 +648,11 @@ pub fn list_series_page(
     after: Option<PageCursor>,
     after_text: Option<&str>,
     limit: i64,
-    include_adult: bool,
+    access: ProfileAccess,
 ) -> Result<Vec<SeriesListItem>> {
     let mut sql = String::from("SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url) AS poster_path, rating, tmdb_state FROM series WHERE 1=1");
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
-    if !include_adult {
-        // Mismo criterio que las películas (F8): se oculta si tiene alguna fuente en
-        // una categoría adulta, mejor ocultar de más que enseñar de menos en un filtro
-        // parental. Las series sincronizadas antes de esta migración tienen
-        // `category_id` a NULL, así que no se ocultan hasta la próxima sincronización.
-        sql.push_str(
-            " AND NOT EXISTS (SELECT 1 FROM series_sources ss2 JOIN categories c ON c.id = ss2.category_id
-                               WHERE ss2.series_id = series.id AND c.is_adult = 1)",
-        );
-    }
+    sql.push_str(&title_access_sql(TitleTable::Series, "series", access));
     if let Some(g) = genre {
         sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(genres) WHERE value = ?)");
         args.push(Box::new(g));
@@ -918,7 +901,7 @@ pub struct SearchHit {
 /// texto plano (F "premium"). Se busca aparte, tabla por tabla, en vez de meter la
 /// portada en el propio índice: así no hay que reconstruir el FTS5 entero cada vez que
 /// cambia una portada por un reemparejamiento de TMDB.
-pub fn search(conn: &Connection, query: &str, limit_per_kind: i64) -> Result<Vec<SearchHit>> {
+pub fn search(conn: &Connection, query: &str, limit_per_kind: i64, access: ProfileAccess) -> Result<Vec<SearchHit>> {
     let mut stmt = conn.prepare(
         "SELECT item_kind, item_id, title FROM search_index WHERE search_index MATCH ?1
          ORDER BY rank LIMIT ?2",
@@ -937,7 +920,15 @@ pub fn search(conn: &Connection, query: &str, limit_per_kind: i64) -> Result<Vec
         Err(_) => return Ok(Vec::new()), // consulta FTS5 mal formada (p. ej. solo símbolos): sin resultados, no error 500
     };
 
-    Ok(raw_hits
+    // Lo que el perfil no puede ver no sale, ni por búsqueda (F14). Se pidieron de más
+    // (`limit_per_kind * 3`) para que filtrar no deje la lista corta.
+    let mut visible = Vec::with_capacity(raw_hits.len());
+    for hit in raw_hits {
+        if item_allowed(conn, &hit.0, hit.1, access)? {
+            visible.push(hit);
+        }
+    }
+    Ok(visible
         .into_iter()
         .map(|(item_kind, item_id, title)| {
             let poster_path = match item_kind.as_str() {
@@ -1170,6 +1161,14 @@ pub fn epg_grid(conn: &Connection, channel_ids: &[i64], from_ts: i64, to_ts: i64
 
 /// `None` si el perfil no tiene PIN configurado todavía (control parental sin activar:
 /// no hay nada que ocultar). Ver `util::parental`.
+/// PIN (hasheados) de los perfiles adultos sin límite de edad: los que pueden autorizar
+/// que otro perfil vea más (F14).
+pub fn adult_pin_hashes(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT pin_hash FROM profiles WHERE adult_ok = 1 AND max_age IS NULL AND pin_hash IS NOT NULL")?;
+    let rows = stmt.query_map([], |row| row.get(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 pub fn get_profile_pin_hash(conn: &Connection, profile_id: i64) -> Result<Option<String>> {
     conn.query_row("SELECT pin_hash FROM profiles WHERE id = ?1", params![profile_id], |row| row.get(0))
         .optional()
@@ -1201,6 +1200,7 @@ pub struct ProfileRow {
     pub avatar: Option<String>,
     pub has_pin: bool,
     pub adult_ok: bool,
+    pub max_age: Option<i64>,
     pub created_at: i64,
 }
 
@@ -1212,6 +1212,7 @@ fn row_to_profile(row: &Row) -> rusqlite::Result<ProfileRow> {
         avatar: row.get("avatar")?,
         has_pin: pin_hash.is_some(),
         adult_ok: row.get::<_, i64>("adult_ok")? != 0,
+        max_age: row.get("max_age")?,
         created_at: row.get("created_at")?,
     })
 }
@@ -1238,6 +1239,85 @@ pub fn get_profile_remote_id(conn: &Connection, profile_id: i64) -> Result<Optio
         .optional()
         .map(|opt| opt.flatten())
         .map_err(Into::into)
+}
+
+// ─────────────── Qué puede ver cada perfil (F8, F14) ───────────────
+
+/// Restricciones de un perfil: contenido de categorías adultas y edad máxima.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileAccess {
+    pub include_adult: bool,
+    /// `None` es sin límite. Con límite, solo títulos con edad mínima conocida y apta.
+    pub max_age: Option<i64>,
+}
+
+impl ProfileAccess {
+    pub const UNRESTRICTED: Self = Self { include_adult: true, max_age: None };
+    pub const NO_ADULT: Self = Self { include_adult: false, max_age: None };
+}
+
+/// Restricciones del perfil. Un perfil que no existe ve lo mínimo, nunca todo.
+pub fn profile_access(conn: &Connection, profile_id: i64) -> Result<ProfileAccess> {
+    let row: Option<(i64, Option<i64>)> = conn
+        .query_row("SELECT adult_ok, max_age FROM profiles WHERE id = ?1", params![profile_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()?;
+    Ok(match row {
+        Some((adult_ok, max_age)) => ProfileAccess { include_adult: adult_ok != 0, max_age },
+        None => ProfileAccess { include_adult: false, max_age: Some(0) },
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TitleTable {
+    Movies,
+    Series,
+}
+
+/// Condiciones SQL (con `AND` delante) para que un título de `table`, con alias `alias`,
+/// sea visible con `access`. Los valores son enteros, nunca texto del usuario.
+pub fn title_access_sql(table: TitleTable, alias: &str, access: ProfileAccess) -> String {
+    let mut sql = String::new();
+    if !access.include_adult {
+        // Se oculta si tiene alguna fuente en una categoría adulta: mejor ocultar de más
+        // que enseñar de menos en un filtro parental (F8).
+        let (sources, fk) = match table {
+            TitleTable::Movies => ("movie_sources", "movie_id"),
+            TitleTable::Series => ("series_sources", "series_id"),
+        };
+        sql.push_str(&format!(
+            " AND NOT EXISTS (SELECT 1 FROM {sources} src_adult JOIN categories cat_adult ON cat_adult.id = src_adult.category_id
+                              WHERE src_adult.{fk} = {alias}.id AND cat_adult.is_adult = 1)"
+        ));
+    }
+    if let Some(max_age) = access.max_age {
+        sql.push_str(&format!(" AND {alias}.age_min IS NOT NULL AND {alias}.age_min <= {max_age}"));
+    }
+    sql
+}
+
+/// Si el perfil puede ver ese elemento (`movie`, `series`, `episode` o `channel`). Para
+/// lo que no está en una lista paginada: fichas, reproducción, filas de Inicio...
+pub fn item_allowed(conn: &Connection, item_kind: &str, item_id: i64, access: ProfileAccess) -> Result<bool> {
+    if access == ProfileAccess::UNRESTRICTED {
+        return Ok(true);
+    }
+    let sql = match item_kind {
+        "movie" => format!("SELECT EXISTS(SELECT 1 FROM movies m WHERE m.id = ?1{})", title_access_sql(TitleTable::Movies, "m", access)),
+        "series" => format!("SELECT EXISTS(SELECT 1 FROM series s WHERE s.id = ?1{})", title_access_sql(TitleTable::Series, "s", access)),
+        "episode" => format!(
+            "SELECT EXISTS(SELECT 1 FROM episodes e JOIN series_sources ss ON ss.id = e.series_source_id JOIN series s ON s.id = ss.series_id
+                           WHERE e.id = ?1{})",
+            title_access_sql(TitleTable::Series, "s", access)
+        ),
+        "channel" if !access.include_adult => {
+            "SELECT EXISTS(SELECT 1 FROM channels c WHERE c.id = ?1
+                           AND (c.category_id IS NULL OR c.category_id NOT IN (SELECT id FROM categories WHERE is_adult = 1)))"
+                .to_string()
+        }
+        "channel" => return Ok(true),
+        _ => return Ok(false),
+    };
+    conn.query_row(&sql, params![item_id], |row| row.get(0)).map_err(Into::into)
 }
 
 /// Si el perfil tiene `adult_ok = 0` (infantil), nunca ve categorías adultas — sin PIN
@@ -1809,45 +1889,33 @@ pub struct RandomPick {
 /// esa regla es sobre recorrer el catálogo página a página, no sobre pedir una fila.
 /// Prioriza contenido ya emparejado con TMDB (con póster y sinopsis de verdad); si el
 /// catálogo todavía no tiene nada emparejado, cae a cualquier título.
-pub fn random_title(conn: &Connection) -> Result<Option<RandomPick>> {
-    if let Some(pick) = random_title_matched_only(conn, true)? {
+pub fn random_title(conn: &Connection, access: ProfileAccess) -> Result<Option<RandomPick>> {
+    if let Some(pick) = random_title_matched_only(conn, true, access)? {
         return Ok(Some(pick));
     }
-    random_title_matched_only(conn, false)
+    random_title_matched_only(conn, false, access)
 }
 
-fn random_title_matched_only(conn: &Connection, matched_only: bool) -> Result<Option<RandomPick>> {
+/// Al azar entre lo que el perfil puede ver (F14: "Sorpréndeme" no podía saltarse el
+/// filtro de un perfil infantil).
+fn random_title_matched_only(conn: &Connection, matched_only: bool, access: ProfileAccess) -> Result<Option<RandomPick>> {
     use rand::RngExt;
-    let (movie_count, series_count): (i64, i64) = if matched_only {
-        (
-            conn.query_row("SELECT COUNT(*) FROM movies WHERE tmdb_state = 'matched'", [], |row| row.get(0))?,
-            conn.query_row("SELECT COUNT(*) FROM series WHERE tmdb_state = 'matched'", [], |row| row.get(0))?,
-        )
-    } else {
-        (
-            conn.query_row("SELECT COUNT(*) FROM movies", [], |row| row.get(0))?,
-            conn.query_row("SELECT COUNT(*) FROM series", [], |row| row.get(0))?,
-        )
-    };
+    let matched = if matched_only { " AND t.tmdb_state = 'matched'" } else { "" };
+    let movie_where = format!("WHERE 1=1{matched}{}", title_access_sql(TitleTable::Movies, "t", access));
+    let series_where = format!("WHERE 1=1{matched}{}", title_access_sql(TitleTable::Series, "t", access));
+    let movie_count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM movies t {movie_where}"), [], |row| row.get(0))?;
+    let series_count: i64 = conn.query_row(&format!("SELECT COUNT(*) FROM series t {series_where}"), [], |row| row.get(0))?;
     let total = movie_count + series_count;
     if total == 0 {
         return Ok(None);
     }
     let roll = rand::rng().random_range(0..total);
     if roll < movie_count {
-        let id: i64 = if matched_only {
-            conn.query_row("SELECT id FROM movies WHERE tmdb_state = 'matched' LIMIT 1 OFFSET ?1", params![roll], |row| row.get(0))?
-        } else {
-            conn.query_row("SELECT id FROM movies LIMIT 1 OFFSET ?1", params![roll], |row| row.get(0))?
-        };
+        let id: i64 = conn.query_row(&format!("SELECT t.id FROM movies t {movie_where} LIMIT 1 OFFSET ?1"), params![roll], |row| row.get(0))?;
         Ok(Some(RandomPick { kind: "movie".to_string(), id }))
     } else {
         let offset = roll - movie_count;
-        let id: i64 = if matched_only {
-            conn.query_row("SELECT id FROM series WHERE tmdb_state = 'matched' LIMIT 1 OFFSET ?1", params![offset], |row| row.get(0))?
-        } else {
-            conn.query_row("SELECT id FROM series LIMIT 1 OFFSET ?1", params![offset], |row| row.get(0))?
-        };
+        let id: i64 = conn.query_row(&format!("SELECT t.id FROM series t {series_where} LIMIT 1 OFFSET ?1"), params![offset], |row| row.get(0))?;
         Ok(Some(RandomPick { kind: "series".to_string(), id }))
     }
 }
@@ -2168,11 +2236,11 @@ mod tests {
         let adult_id = seed_movie(&conn, provider_id, "Peli Adulta", Some(2020), None, None);
         conn.execute("UPDATE movie_sources SET category_id = ?1 WHERE movie_id = ?2", params![adult_cat["18"], adult_id]).unwrap();
 
-        let hidden = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, None, 50, false).unwrap();
+        let hidden = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, None, 50, ProfileAccess::NO_ADULT).unwrap();
         assert!(hidden.iter().all(|m| m.clean_title != "Peli Adulta"));
         assert!(hidden.iter().any(|m| m.clean_title == "Peli Normal"));
 
-        let unlocked = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, None, 50, true).unwrap();
+        let unlocked = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, None, 50, ProfileAccess::UNRESTRICTED).unwrap();
         assert!(unlocked.iter().any(|m| m.clean_title == "Peli Adulta"));
     }
 
@@ -2183,7 +2251,7 @@ mod tests {
         seed_movie(&conn, provider_id, "Accion Uno", Some(2020), Some("[28,12]"), None);
         seed_movie(&conn, provider_id, "Drama Uno", Some(2020), Some("[18]"), None);
 
-        let action = list_movies_page(&conn, Some(28), None, None, MovieSort::AddedDesc, None, None, 50, true).unwrap();
+        let action = list_movies_page(&conn, Some(28), None, None, MovieSort::AddedDesc, None, None, 50, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(action.len(), 1);
         assert_eq!(action[0].clean_title, "Accion Uno");
     }
@@ -2195,10 +2263,10 @@ mod tests {
         seed_movie(&conn, provider_id, "Peli 2020 4K", Some(2020), None, Some("4K"));
         seed_movie(&conn, provider_id, "Peli 2021 HD", Some(2021), None, Some("HD"));
 
-        let by_year = list_movies_page(&conn, None, Some(2020), None, MovieSort::AddedDesc, None, None, 50, true).unwrap();
+        let by_year = list_movies_page(&conn, None, Some(2020), None, MovieSort::AddedDesc, None, None, 50, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(by_year.len(), 1);
 
-        let by_quality = list_movies_page(&conn, None, None, Some("4K"), MovieSort::AddedDesc, None, None, 50, true).unwrap();
+        let by_quality = list_movies_page(&conn, None, None, Some("4K"), MovieSort::AddedDesc, None, None, 50, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(by_quality.len(), 1);
         assert_eq!(by_quality[0].clean_title, "Peli 2020 4K");
     }
@@ -2211,12 +2279,12 @@ mod tests {
             seed_movie(&conn, provider_id, &format!("Peli {i}"), Some(2020), None, None);
         }
 
-        let first_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, None, 2, true).unwrap();
+        let first_page = list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, None, None, 2, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(first_page.len(), 2);
         let cursor = first_page.last().unwrap().id;
 
         let second_page =
-            list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, Some(PageCursor { id: cursor, key: None }), None, 2, true).unwrap();
+            list_movies_page(&conn, None, None, None, MovieSort::AddedDesc, Some(PageCursor { id: cursor, key: None }), None, 2, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(second_page.len(), 2);
         assert!(second_page.iter().all(|m| m.id != cursor));
     }
@@ -2238,7 +2306,7 @@ mod tests {
         let mut cursor: Option<PageCursor> = None;
         let mut after_text: Option<String> = None;
         loop {
-            let page = list_movies_page(&conn, None, None, None, MovieSort::TitleAsc, cursor, after_text.as_deref(), 2, true).unwrap();
+            let page = list_movies_page(&conn, None, None, None, MovieSort::TitleAsc, cursor, after_text.as_deref(), 2, ProfileAccess::UNRESTRICTED).unwrap();
             if page.is_empty() {
                 break;
             }
@@ -2265,11 +2333,11 @@ mod tests {
             conn.execute("UPDATE movies SET rating = ?1 WHERE id = ?2", params![rating, id]).unwrap();
         }
 
-        let first = list_movies_page(&conn, None, None, None, MovieSort::RatingDesc, None, None, 2, true).unwrap();
+        let first = list_movies_page(&conn, None, None, None, MovieSort::RatingDesc, None, None, 2, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(first.iter().map(|m| m.clean_title.as_str()).collect::<Vec<_>>(), vec!["Alta", "Media"]);
 
         let (cursor, _) = movie_page_cursor(MovieSort::RatingDesc, first.last().unwrap());
-        let second = list_movies_page(&conn, None, None, None, MovieSort::RatingDesc, Some(cursor), None, 2, true).unwrap();
+        let second = list_movies_page(&conn, None, None, None, MovieSort::RatingDesc, Some(cursor), None, 2, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(second.iter().map(|m| m.clean_title.as_str()).collect::<Vec<_>>(), vec!["Baja"]);
     }
 
@@ -2303,7 +2371,7 @@ mod tests {
 
         queries::rebuild_search_index(&conn).unwrap();
 
-        let hits = search(&conn, "Aventura", 10).unwrap();
+        let hits = search(&conn, "Aventura", 10, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(hits.len(), 2);
         assert!(hits.iter().any(|h| h.item_kind == "movie"));
         assert!(hits.iter().any(|h| h.item_kind == "series"));
@@ -2319,7 +2387,7 @@ mod tests {
         conn.execute("UPDATE movies SET poster_path = '/poster.jpg' WHERE id = ?1", params![movie_id]).unwrap();
         queries::rebuild_search_index(&conn).unwrap();
 
-        let hits = search(&conn, "Portada", 10).unwrap();
+        let hits = search(&conn, "Portada", 10, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].poster_path.as_deref(), Some("/poster.jpg"));
     }
@@ -2328,7 +2396,7 @@ mod tests {
     fn search_with_garbage_input_returns_empty_not_error() {
         let conn = memory_conn();
         queries::rebuild_search_index(&conn).unwrap();
-        let hits = search(&conn, "***", 10).unwrap();
+        let hits = search(&conn, "***", 10, ProfileAccess::UNRESTRICTED).unwrap();
         assert!(hits.is_empty());
     }
 
@@ -2463,7 +2531,7 @@ mod tests {
     #[test]
     fn random_title_returns_none_for_an_empty_catalog() {
         let conn = memory_conn();
-        assert!(random_title(&conn).unwrap().is_none());
+        assert!(random_title(&conn, ProfileAccess::UNRESTRICTED).unwrap().is_none());
     }
 
     #[test]
@@ -2475,7 +2543,7 @@ mod tests {
         conn.execute("UPDATE movies SET tmdb_state = 'matched' WHERE id = ?1", params![matched]).unwrap();
 
         for _ in 0..20 {
-            let pick = random_title(&conn).unwrap().unwrap();
+            let pick = random_title(&conn, ProfileAccess::UNRESTRICTED).unwrap().unwrap();
             assert_eq!((pick.kind.as_str(), pick.id), ("movie", matched));
         }
     }
@@ -2486,7 +2554,7 @@ mod tests {
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
         let movie_id = seed_movie(&conn, provider_id, "Recien Sincronizada", Some(2020), None, None);
 
-        let pick = random_title(&conn).unwrap().unwrap();
+        let pick = random_title(&conn, ProfileAccess::UNRESTRICTED).unwrap().unwrap();
         assert_eq!((pick.kind.as_str(), pick.id), ("movie", movie_id));
     }
 
@@ -2496,7 +2564,7 @@ mod tests {
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
         let (series_id, _) = seed_series_with_episodes(&conn, provider_id, "Serie Unica", &[(1, 1)]);
 
-        let pick = random_title(&conn).unwrap().unwrap();
+        let pick = random_title(&conn, ProfileAccess::UNRESTRICTED).unwrap().unwrap();
         assert_eq!((pick.kind.as_str(), pick.id), ("series", series_id));
     }
 
@@ -2808,8 +2876,8 @@ mod tests {
         let fields = TitleFields { clean_title: "Serie Adulta", year: None, match_key: "serie-adulta-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &map, &series, &fields).unwrap();
 
-        assert!(list_series_page(&conn, None, None, SeriesSort::AddedDesc, None, None, 50, false).unwrap().is_empty());
-        assert_eq!(list_series_page(&conn, None, None, SeriesSort::AddedDesc, None, None, 50, true).unwrap().len(), 1);
+        assert!(list_series_page(&conn, None, None, SeriesSort::AddedDesc, None, None, 50, ProfileAccess::NO_ADULT).unwrap().is_empty());
+        assert_eq!(list_series_page(&conn, None, None, SeriesSort::AddedDesc, None, None, 50, ProfileAccess::UNRESTRICTED).unwrap().len(), 1);
     }
 
     /// Series sincronizadas antes de la migración 005 (o cuyo proveedor no da
@@ -2832,7 +2900,7 @@ mod tests {
         let fields = TitleFields { clean_title: "Serie Sin Categoría", year: None, match_key: "serie-sin-categoria-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series, &fields).unwrap();
 
-        assert_eq!(list_series_page(&conn, None, None, SeriesSort::AddedDesc, None, None, 50, false).unwrap().len(), 1);
+        assert_eq!(list_series_page(&conn, None, None, SeriesSort::AddedDesc, None, None, 50, ProfileAccess::NO_ADULT).unwrap().len(), 1);
     }
 
     /// Mismo bug de fondo que en películas: sin cursor compuesto, ordenar series por
@@ -2854,11 +2922,11 @@ mod tests {
             queries::upsert_series(&conn, provider_id, &HashMap::new(), &series, &fields).unwrap();
         }
 
-        let first = list_series_page(&conn, None, None, SeriesSort::TitleAsc, None, None, 2, true).unwrap();
+        let first = list_series_page(&conn, None, None, SeriesSort::TitleAsc, None, None, 2, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(first.iter().map(|s| s.clean_title.as_str()).collect::<Vec<_>>(), vec!["Amanecer", "Medianoche"]);
 
         let (cursor, key) = series_page_cursor(SeriesSort::TitleAsc, first.last().unwrap());
-        let second = list_series_page(&conn, None, None, SeriesSort::TitleAsc, Some(cursor), key.as_deref(), 2, true).unwrap();
+        let second = list_series_page(&conn, None, None, SeriesSort::TitleAsc, Some(cursor), key.as_deref(), 2, ProfileAccess::UNRESTRICTED).unwrap();
         assert_eq!(second.iter().map(|s| s.clean_title.as_str()).collect::<Vec<_>>(), vec!["Zorro"]);
     }
 

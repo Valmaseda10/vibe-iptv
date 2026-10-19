@@ -271,6 +271,8 @@ enum StreamError {
     BadKind,
     #[error("El proveedor de este contenido ya no está configurado.")]
     ProviderNotFound,
+    #[error("Este contenido no está disponible en este perfil.")]
+    NotAllowed,
     #[error("No se pudo preparar la conexión con el proveedor: {0}")]
     Source(String),
     #[error("La cuenta de este proveedor caducó. Revisa tu suscripción en Ajustes.")]
@@ -302,6 +304,7 @@ impl StreamError {
         match self {
             StreamError::NotFound | StreamError::ProviderNotFound => StatusCode::NOT_FOUND,
             StreamError::BadKind => StatusCode::BAD_REQUEST,
+            StreamError::NotAllowed => StatusCode::FORBIDDEN,
             StreamError::Source(_) | StreamError::Unreachable | StreamError::MpvLaunchFailed(_) => StatusCode::BAD_GATEWAY,
             StreamError::NoData { .. } => StatusCode::GATEWAY_TIMEOUT,
             StreamError::AccountExpired => StatusCode::PAYMENT_REQUIRED,
@@ -497,6 +500,22 @@ async fn get_catchup(
     }
 }
 
+/// Lo que el perfil no puede ver tampoco se reproduce (F14), aunque se pida la URL a mano:
+/// el filtro de las listas no basta.
+async fn ensure_allowed(db_path: &Path, profile_id: i64, kind: &str, id: i64) -> Result<(), StreamError> {
+    let kind = kind.to_string();
+    let allowed = with_db(db_path.to_path_buf(), move |conn| {
+        let access = reads::profile_access(conn, profile_id)?;
+        reads::item_allowed(conn, &kind, id, access)
+    })
+    .await?;
+    if allowed {
+        Ok(())
+    } else {
+        Err(StreamError::NotAllowed)
+    }
+}
+
 fn parse_kind(kind: &str) -> Result<MediaKind, StreamError> {
     match kind {
         "channel" => Ok(MediaKind::Live),
@@ -563,6 +582,7 @@ async fn handle_stream(
 ) -> Result<Response, StreamError> {
     let media_kind = parse_kind(&kind_str)?;
     let (provider_id, remote_id, container_extension) = resolve_stream_target(&state.db_path, media_kind, id, source_id).await?;
+    ensure_allowed(&state.db_path, profile_id, &kind_str, id).await?;
 
     let provider_row = with_db(state.db_path.clone(), move |conn| queries::get_provider(conn, provider_id))
         .await?
@@ -659,6 +679,7 @@ async fn text_subtitle_track(db_path: &Path, url: &Url, requested: Option<i64>) 
 async fn handle_mpv_launch(state: StreamState, kind_str: String, id: i64, profile_id: i64, source_id: Option<i64>) -> Result<Response, StreamError> {
     let media_kind = parse_kind(&kind_str)?;
     let (provider_id, remote_id, container_extension) = resolve_stream_target(&state.db_path, media_kind, id, source_id).await?;
+    ensure_allowed(&state.db_path, profile_id, &kind_str, id).await?;
 
     let provider_row = with_db(state.db_path.clone(), move |conn| queries::get_provider(conn, provider_id))
         .await?
@@ -1213,6 +1234,10 @@ mod tests {
     async fn seed_provider_with_credential(db_path: &Path, base_url: &str, credential_suffix: &str) -> (i64, KeychainGuard) {
         let lock = keychain::TEST_LOCK.lock().await;
         let conn = open_connection_at(db_path).unwrap();
+        // Perfil 1, adulto: las rutas de reproducción comprueban qué puede ver (F14).
+        if crate::db::reads::count_profiles(&conn).unwrap() == 0 {
+            write_queries::insert_profile(&conn, "Pruebas", None, true).unwrap();
+        }
         let provider_id =
             write_queries::insert_provider(&conn, ProviderKind::Xtream, "P", base_url, Some("user"), 1, None).unwrap();
         let credential_ref = format!("vibe-iptv-stream-test-{}-{credential_suffix}", std::process::id());

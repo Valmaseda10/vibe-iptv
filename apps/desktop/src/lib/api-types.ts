@@ -240,9 +240,21 @@ audio_tracks: Array<AudioTrackSummary>,
  */
 subtitle_tracks: Array<SubtitleTrackSummary>, };
 
-export type ProfileInput = { name: string, avatar: string | null, adult_ok: boolean, };
+export type ProfileInput = { name: string, avatar: string | null, adult_ok: boolean, 
+/**
+ * Edad máxima (F14); `null` es sin límite.
+ */
+max_age: number | null, 
+/**
+ * PIN de un perfil adulto, si el cambio deja ver más (ver `check_adult_pin`).
+ */
+adult_pin: string | null, };
 
-export type ProfileSummary = { id: number, name: string, avatar: string | null, has_pin: boolean, adult_ok: boolean, };
+export type ProfileSummary = { id: number, name: string, avatar: string | null, has_pin: boolean, adult_ok: boolean, 
+/**
+ * Edad máxima de lo que ve el perfil (F14); `null` es sin límite.
+ */
+max_age: number | null, };
 
 /**
  * Tipo de proveedor, igual que la columna `kind` de `providers` en `docs/DATA-MODEL.md`.
@@ -287,7 +299,11 @@ export type SetProfilePinInput = {
 /**
  * `None` quita el PIN de este perfil (vuelve a entrarse sin pedir nada).
  */
-pin: string | null, };
+pin: string | null, 
+/**
+ * Si el perfil ya tiene PIN: el actual, o el de un adulto.
+ */
+current_pin: string | null, };
 
 export type SimilarTitleSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, };
 

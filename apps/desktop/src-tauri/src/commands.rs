@@ -413,9 +413,23 @@ fn spawn_tmdb_matching(app: AppHandle) {
             let _ = app_for_progress.emit("sync://progress", &progress);
         });
 
-        match tmdb::run_matching_pass(conn, client, Arc::new(AtomicBool::new(false)), on_progress).await {
+        match tmdb::run_matching_pass(conn, Arc::clone(&client), Arc::new(AtomicBool::new(false)), Arc::clone(&on_progress)).await {
             Ok(summary) => tracing::info!(matched = summary.matched, total = summary.total, "emparejamiento con TMDB completado"),
             Err(err) => tracing::error!(error = %err, "emparejamiento con TMDB fallido"),
+        }
+
+        // Después, la clasificación por edad de todo lo emparejado (F14): sin ella, un
+        // perfil infantil no ve el título.
+        let conn = match schema::open_connection(&app) {
+            Ok(conn) => conn,
+            Err(err) => {
+                tracing::error!(error = %err, "no se pudo abrir la base de datos para los extras de TMDB");
+                return;
+            }
+        };
+        match tmdb::run_extras_pass(conn, client, Arc::new(AtomicBool::new(false)), on_progress).await {
+            Ok(stored) => tracing::info!(stored, "clasificación por edad y extras de TMDB al día"),
+            Err(err) => tracing::error!(error = %err, "paso de extras de TMDB fallido"),
         }
     });
 }

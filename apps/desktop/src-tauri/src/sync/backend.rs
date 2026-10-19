@@ -69,6 +69,9 @@ pub struct RemoteProfile {
     pub name: String,
     pub avatar: Option<String>,
     pub adult_ok: bool,
+    /// Edad máxima (F14); `None` es sin límite.
+    #[serde(default)]
+    pub max_age: Option<i64>,
     pub pin_hash: Option<String>,
     pub updated_at: i64,
     pub deleted: bool,

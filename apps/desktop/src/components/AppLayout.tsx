@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { ProfileSwitcher } from "../features/profiles/ProfileSwitcher";
 import { SyncStatusBanner } from "./SyncStatusBanner";
+import { useActiveProfile } from "../lib/activeProfile";
 import { ReminderNotifier } from "./ReminderNotifier";
 import { apiGetOrNull } from "../lib/api-client";
 import type { RandomTitleResponse } from "../lib/api-types";
@@ -26,6 +27,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [surprising, setSurprising] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const navigate = useNavigate();
+  const { profileId } = useActiveProfile();
   const navRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
 
@@ -73,7 +75,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
     if (surprising) return;
     setSurprising(true);
     try {
-      const pick = await apiGetOrNull<RandomTitleResponse>("/api/random");
+      if (profileId === null) return;
+      const pick = await apiGetOrNull<RandomTitleResponse>(`/api/random?profile_id=${profileId}`);
       if (!pick) return;
       if (pick.kind === "series") navigate({ to: "/series/$seriesId", params: { seriesId: String(pick.id) } });
       else navigate({ to: "/movies/$movieId", params: { movieId: String(pick.id) } });

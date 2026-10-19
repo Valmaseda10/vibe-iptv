@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { apiDelete, apiGet, apiPatch, apiPost, errorMessage } from "../../lib/api-client";
+import { ApiError, apiDelete, apiGet, apiPatch, apiPost, errorMessage } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import { AVATAR_COLORS, AVATAR_ICONS, formatAvatar, parseAvatar } from "../../lib/avatar";
 import type { ProfileSummary } from "../../lib/api-types";
@@ -178,19 +178,28 @@ function ProfileEditForm({
   const [icon, setIcon] = useState<string | null>(initial.icon);
   const [color, setColor] = useState(initial.color);
   const [adultOk, setAdultOk] = useState(profile?.adult_ok ?? false);
+  // Un perfil nuevo empieza como infantil (hasta 12): abrirlo a más pide el PIN de un
+  // adulto si lo hay (F14), y así crear uno para un niño no pide nada.
+  const [maxAge, setMaxAge] = useState<number | null>(profile ? profile.max_age : 12);
   const [pin, setPin] = useState("");
   const [clearPin, setClearPin] = useState(false);
+  const [currentPin, setCurrentPin] = useState("");
+  const [adultPin, setAdultPin] = useState("");
+  const [needsAdultPin, setNeedsAdultPin] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const changingPin = Boolean(profile?.has_pin) && (pin.length > 0 || clearPin);
 
   const saveMutation = useMutation({
     mutationFn: async () => {
       const avatar = formatAvatar(icon, color);
+      const body = { name, avatar, adult_ok: adultOk, max_age: maxAge, adult_pin: adultPin || null };
       if (profile) {
-        await apiPatch(`/api/profiles/${profile.id}`, { name, avatar, adult_ok: adultOk });
-        if (pin) await apiPost(`/api/profiles/${profile.id}/pin`, { pin });
-        else if (clearPin) await apiPost(`/api/profiles/${profile.id}/pin`, { pin: null });
+        await apiPatch(`/api/profiles/${profile.id}`, body);
+        const current_pin = currentPin || adultPin || null;
+        if (pin) await apiPost(`/api/profiles/${profile.id}/pin`, { pin, current_pin });
+        else if (clearPin) await apiPost(`/api/profiles/${profile.id}/pin`, { pin: null, current_pin });
       } else {
-        const created = await apiPost<ProfileSummary>("/api/profiles", { name, avatar, adult_ok: adultOk });
+        const created = await apiPost<ProfileSummary>("/api/profiles", body);
         if (pin) await apiPost(`/api/profiles/${created.id}/pin`, { pin });
       }
     },
@@ -198,7 +207,11 @@ function ProfileEditForm({
       onSaved();
       onClose();
     },
-    onError: (err) => setError(errorMessage(err)),
+    onError: (err) => {
+      // 403: el cambio deja ver más y hace falta el PIN de un adulto (F14).
+      if (err instanceof ApiError && err.status === 403) setNeedsAdultPin(true);
+      setError(errorMessage(err));
+    },
   });
 
   const deleteMutation = useMutation({
@@ -273,6 +286,27 @@ function ProfileEditForm({
           <span>Perfil de adulto (ve contenido marcado como adulto)</span>
         </label>
 
+        <label className="mb-3 block">
+          <span className="mb-1 block text-sm text-neutral-400">Edad máxima de lo que puede ver</span>
+          <select
+            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+            value={maxAge ?? ""}
+            onChange={(e) => setMaxAge(e.target.value === "" ? null : Number(e.target.value))}
+          >
+            <option value="">Sin límite</option>
+            <option value={16}>Hasta 16 años</option>
+            <option value={12}>Hasta 12 años</option>
+            <option value={7}>Hasta 7 años</option>
+            <option value={0}>Solo para todos los públicos</option>
+          </select>
+          {maxAge !== null && (
+            <span className="mt-1 block text-xs text-neutral-500">
+              Solo verá películas y series con esa clasificación o menos. Lo que no tiene clasificación conocida no se le
+              muestra.
+            </span>
+          )}
+        </label>
+
         <label className="mb-1 block">
           <span className="mb-1 block text-sm text-neutral-400">
             {profile?.has_pin ? "Nuevo PIN (deja en blanco para no cambiarlo)" : "PIN (opcional)"}
@@ -289,6 +323,33 @@ function ProfileEditForm({
           <label className="mb-3 flex items-center gap-2 text-sm text-neutral-400">
             <input type="checkbox" checked={clearPin} onChange={(e) => setClearPin(e.target.checked)} />
             <span>Quitar el PIN de este perfil</span>
+          </label>
+        )}
+
+        {changingPin && (
+          <label className="mb-3 block">
+            <span className="mb-1 block text-sm text-neutral-400">PIN actual de este perfil (o el de un adulto)</span>
+            <input
+              type="password"
+              inputMode="numeric"
+              className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+              value={currentPin}
+              onChange={(e) => setCurrentPin(e.target.value)}
+            />
+          </label>
+        )}
+
+        {needsAdultPin && (
+          <label className="mb-3 block">
+            <span className="mb-1 block text-sm text-amber-300">PIN de un perfil adulto, para dejar que este perfil vea más</span>
+            <input
+              type="password"
+              inputMode="numeric"
+              autoFocus
+              className="w-full rounded border border-amber-600/60 bg-neutral-950 px-3 py-2"
+              value={adultPin}
+              onChange={(e) => setAdultPin(e.target.value)}
+            />
           </label>
         )}
 

@@ -116,11 +116,12 @@ pub struct SyncProfile {
     pub name: String,
     pub avatar: Option<String>,
     pub adult_ok: bool,
+    pub max_age: Option<i64>,
     pub pin_hash: Option<String>,
     pub updated_at: i64,
 }
 
-const PROFILE_COLUMNS: &str = "id, remote_id, name, avatar, adult_ok, pin_hash, updated_at";
+const PROFILE_COLUMNS: &str = "id, remote_id, name, avatar, adult_ok, pin_hash, updated_at, max_age";
 
 fn row_to_sync_profile(row: &rusqlite::Row) -> rusqlite::Result<SyncProfile> {
     Ok(SyncProfile {
@@ -131,6 +132,7 @@ fn row_to_sync_profile(row: &rusqlite::Row) -> rusqlite::Result<SyncProfile> {
         adult_ok: row.get::<_, i64>(4)? != 0,
         pin_hash: row.get(5)?,
         updated_at: row.get(6)?,
+        max_age: row.get(7)?,
     })
 }
 
@@ -161,20 +163,21 @@ pub fn upsert_profile_from_remote(
     name: &str,
     avatar: Option<&str>,
     adult_ok: bool,
+    max_age: Option<i64>,
     pin_hash: Option<&str>,
     updated_at: i64,
 ) -> Result<i64> {
     if let Some(existing) = profile_by_remote_id(conn, remote_id)? {
         conn.execute(
-            "UPDATE profiles SET name = ?1, avatar = ?2, adult_ok = ?3, pin_hash = ?4, updated_at = ?5 WHERE id = ?6",
-            params![name, avatar, adult_ok as i64, pin_hash, updated_at, existing.id],
+            "UPDATE profiles SET name = ?1, avatar = ?2, adult_ok = ?3, pin_hash = ?4, updated_at = ?5, max_age = ?7 WHERE id = ?6",
+            params![name, avatar, adult_ok as i64, pin_hash, updated_at, existing.id, max_age],
         )?;
         return Ok(existing.id);
     }
     conn.execute(
-        "INSERT INTO profiles (name, avatar, adult_ok, pin_hash, remote_id, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-        params![name, avatar, adult_ok as i64, pin_hash, remote_id, now_epoch(), updated_at],
+        "INSERT INTO profiles (name, avatar, adult_ok, pin_hash, remote_id, created_at, updated_at, max_age)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![name, avatar, adult_ok as i64, pin_hash, remote_id, now_epoch(), updated_at, max_age],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -336,12 +339,12 @@ mod tests {
     #[test]
     fn a_profile_pulled_from_the_cloud_keeps_the_cloud_timestamp() {
         let conn = temp_db();
-        let id = upsert_profile_from_remote(&conn, "r1", "Ana", None, false, None, 1_234).unwrap();
+        let id = upsert_profile_from_remote(&conn, "r1", "Ana", None, false, Some(12), None, 1_234).unwrap();
         let profile = sync_profile(&conn, id).unwrap().unwrap();
         assert_eq!(profile.updated_at, 1_234);
         assert_eq!(profile.remote_id.as_deref(), Some("r1"));
 
-        let same_id = upsert_profile_from_remote(&conn, "r1", "Ana María", Some("2"), true, None, 2_000).unwrap();
+        let same_id = upsert_profile_from_remote(&conn, "r1", "Ana María", Some("2"), true, None, None, 2_000).unwrap();
         assert_eq!(same_id, id);
         let updated = sync_profile(&conn, id).unwrap().unwrap();
         assert_eq!(updated.name, "Ana María");

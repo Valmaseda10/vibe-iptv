@@ -36,6 +36,8 @@ const MAX_BACKOFF_S: i64 = 3_600;
 /// Ajustes de la cuenta sincronizada en `app_settings`; se borran todos al cerrar sesión.
 const SETTINGS_PREFIX: &str = "cloud.";
 const MERGED_UID_KEY: &str = "cloud.merged_uid";
+/// Límite de edad de un perfil infantil que no dice el suyo (ver migración 017).
+const DEFAULT_KIDS_MAX_AGE: i64 = 12;
 /// De qué cuenta son los perfiles de este PC. Fuera del prefijo `cloud.`: tiene que
 /// sobrevivir al cierre de sesión.
 const DATA_OWNER_KEY: &str = "account.data_owner_uid";
@@ -383,7 +385,10 @@ fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
                     }
                 }
             } else if local.is_none_or(|l| r.updated_at > l.updated_at) {
-                cloud::upsert_profile_from_remote(conn, &r.id, &r.name, r.avatar.as_deref(), r.adult_ok, r.pin_hash.as_deref(), r.updated_at)?;
+                // Un perfil infantil subido antes de F14 no trae límite de edad: el mismo
+                // que da la migración 017 a los infantiles, nunca "sin límite".
+                let max_age = r.max_age.or(if r.adult_ok { None } else { Some(DEFAULT_KIDS_MAX_AGE) });
+                cloud::upsert_profile_from_remote(conn, &r.id, &r.name, r.avatar.as_deref(), r.adult_ok, max_age, r.pin_hash.as_deref(), r.updated_at)?;
             }
         }
         RemoteDoc::Favorite(f) => {

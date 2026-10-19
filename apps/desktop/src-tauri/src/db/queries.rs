@@ -522,18 +522,48 @@ fn join_tmdb_ids(ids: &[i64]) -> Option<String> {
     Some(ids.iter().map(i64::to_string).collect::<Vec<_>>().join(","))
 }
 
+/// Títulos ya emparejados con TMDB a los que todavía no se les han pedido los extras
+/// (clasificación por edad, tráiler, similares): `(id, tmdb_id)`. Ver `tmdb::run_extras_pass`.
+pub fn list_titles_without_extras(conn: &Connection, table: &str) -> Result<Vec<(i64, i64)>> {
+    let table = if table == "series" { "series" } else { "movies" };
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, tmdb_id FROM {table} WHERE tmdb_id IS NOT NULL AND trailer_checked_at IS NULL ORDER BY id"
+    ))?;
+    let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Rellena `age_min` de los títulos con clasificación guardada de antes de la migración
+/// 017 (cuando no existía la columna). Devuelve cuántos.
+pub fn backfill_age_min(conn: &Connection) -> Result<usize> {
+    let mut updated = 0;
+    for table in ["movies", "series"] {
+        let rows: Vec<(i64, String)> = {
+            let mut stmt = conn.prepare(&format!("SELECT id, age_rating FROM {table} WHERE age_rating IS NOT NULL AND age_min IS NULL"))?;
+            let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()?
+        };
+        for (id, rating) in rows {
+            if let Some(age) = crate::catalog::age::min_age(&rating) {
+                updated += conn.execute(&format!("UPDATE {table} SET age_min = ?1 WHERE id = ?2"), params![age, id])?;
+            }
+        }
+    }
+    Ok(updated)
+}
+
 pub fn set_movie_extras(conn: &Connection, movie_id: i64, trailer_key: Option<&str>, age_rating: Option<&str>, similar_tmdb_ids: &[i64]) -> Result<()> {
     conn.execute(
-        "UPDATE movies SET youtube_trailer_key = ?1, age_rating = ?2, similar_tmdb_ids = ?3, trailer_checked_at = ?4 WHERE id = ?5",
-        params![trailer_key, age_rating, join_tmdb_ids(similar_tmdb_ids), now_epoch(), movie_id],
+        "UPDATE movies SET youtube_trailer_key = ?1, age_rating = ?2, similar_tmdb_ids = ?3, trailer_checked_at = ?4, age_min = ?6 WHERE id = ?5",
+        params![trailer_key, age_rating, join_tmdb_ids(similar_tmdb_ids), now_epoch(), movie_id, age_rating.and_then(crate::catalog::age::min_age)],
     )?;
     Ok(())
 }
 
 pub fn set_series_extras(conn: &Connection, series_id: i64, trailer_key: Option<&str>, age_rating: Option<&str>, similar_tmdb_ids: &[i64]) -> Result<()> {
     conn.execute(
-        "UPDATE series SET youtube_trailer_key = ?1, age_rating = ?2, similar_tmdb_ids = ?3, trailer_checked_at = ?4 WHERE id = ?5",
-        params![trailer_key, age_rating, join_tmdb_ids(similar_tmdb_ids), now_epoch(), series_id],
+        "UPDATE series SET youtube_trailer_key = ?1, age_rating = ?2, similar_tmdb_ids = ?3, trailer_checked_at = ?4, age_min = ?6 WHERE id = ?5",
+        params![trailer_key, age_rating, join_tmdb_ids(similar_tmdb_ids), now_epoch(), series_id, age_rating.and_then(crate::catalog::age::min_age)],
     )?;
     Ok(())
 }
@@ -664,6 +694,12 @@ pub fn set_profile_pin_hash(conn: &Connection, profile_id: i64, pin_hash: Option
 }
 
 // ─────────────── Perfiles Netflix ───────────────
+
+/// Límite de edad del perfil (F14); `None` es sin límite.
+pub fn set_profile_max_age(conn: &Connection, profile_id: i64, max_age: Option<i64>) -> Result<()> {
+    conn.execute("UPDATE profiles SET max_age = ?1, updated_at = ?2 WHERE id = ?3", params![max_age, now_epoch(), profile_id])?;
+    Ok(())
+}
 
 pub fn insert_profile(conn: &Connection, name: &str, avatar: Option<&str>, adult_ok: bool) -> Result<i64> {
     let now = now_epoch();
