@@ -26,6 +26,9 @@ const DAY = 86_400;
 const MEDIA = {
   // Directo: MPEG-TS H.264 + AAC, 10 minutos, baja resolución para generarlo rápido.
   live: { file: "directo.ts", seconds: 600, args: ["-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-b:v", "600k", "-c:a", "aac", "-b:a", "96k", "-f", "mpegts"] },
+  // Directo con reloj: `testsrc` pinta los segundos y el audio es MP2 (como Telecinco).
+  // Media hora, para probar a pausar 10 minutos y ver que se retoma en el segundo exacto.
+  liveClock: { file: "directo-reloj.ts", seconds: 1800, source: "testsrc", args: ["-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-b:v", "400k", "-ac", "2", "-c:a", "mp2", "-b:a", "128k", "-f", "mpegts"] },
   // Directo con audio AC3: obliga al remux a recodificar el audio a AAC.
   liveAc3: { file: "directo-ac3.ts", seconds: 300, args: ["-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-b:v", "600k", "-c:a", "ac3", "-b:a", "192k", "-f", "mpegts"] },
   // Película MP4 H.264 + AAC con moov al principio: nivel 1 (proxy con Range).
@@ -100,7 +103,7 @@ const channelSpecs = [
   ["ES| laSexta", "1", "lasexta.es", false], ["DEP| Deportes Uno", "2", "dep1.es", false], ["DEP| Deportes Dos 4K", "2", "dep2.es", false],
   ["DEP| Fútbol Total", "2", "futbol.es", true], ["NOT| 24 Horas", "3", "24h.es", false], ["NOT| Noticias Mundo", "3", "mundo.es", false],
   ["NOT| Canal Economía", "3", null, false], ["INF| Dibus", "4", "dibus.es", false], ["INF| Clan", "4", "clan.es", false],
-  ["XXX| Canal Adulto", "9", null, false],
+  ["XXX| Canal Adulto", "9", null, false], ["ES| Reloj (pruebas de pausa)", "1", null, false],
 ];
 const channels = channelSpecs.map(([name, category, epg, catchup], i) => ({
   num: i + 1,
@@ -363,6 +366,7 @@ createServer((req, res) => {
     const id = Number(/(\d+)\.ts$/.exec(path)?.[1] ?? url.searchParams.get("stream"));
     // Los canales de deportes llevan audio AC3 (el remux tiene que recodificarlo a AAC).
     const channel = channels.find((c) => c.stream_id === id);
+    if (channel && /Reloj/.test(channel.name)) return sendLive(req, res, MEDIA.liveClock);
     return sendLive(req, res, channel?.category_id === "2" ? MEDIA.liveAc3 : MEDIA.live);
   }
   const vod = new RegExp(`^/(movie|series)${credentials}(\\d+)\\.(mp4|mkv)$`).exec(path);

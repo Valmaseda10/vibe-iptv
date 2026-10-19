@@ -706,6 +706,7 @@ pub fn set_profile_remote_id(conn: &Connection, profile_id: i64, remote_id: &str
 // `TitleFields` ya hace para el sincronizador de catálogo.
 
 pub struct EpgProgrammeRow<'a> {
+    pub provider_id: i64,
     pub channel_id: &'a str,
     pub start_ts: i64,
     pub stop_ts: i64,
@@ -716,33 +717,35 @@ pub struct EpgProgrammeRow<'a> {
     pub icon_url: Option<&'a str>,
 }
 
-/// La guía se reemplaza entera en cada sincronización (como `search_index`, ver
-/// `rebuild_search_index`): más simple y barato que reconciliar fila a fila, y XMLTV no
-/// da un identificador estable de programa con el que hacer upsert de todas formas.
-pub fn delete_all_epg_programmes(conn: &Connection) -> Result<()> {
-    conn.execute("DELETE FROM epg_programmes", [])?;
+/// La guía de un proveedor se reemplaza entera en cada sincronización (como
+/// `search_index`, ver `rebuild_search_index`): más simple y barato que reconciliar fila a
+/// fila, y XMLTV no da un identificador estable de programa con el que hacer upsert. Solo
+/// la de ese proveedor (y la de antes de la migración 016, sin proveedor): borrar la de
+/// todos dejaba sin guía a los demás proveedores.
+pub fn delete_epg_programmes_for_provider(conn: &Connection, provider_id: i64) -> Result<()> {
+    conn.execute("DELETE FROM epg_programmes WHERE provider_id = ?1 OR provider_id IS NULL", params![provider_id])?;
     Ok(())
 }
 
 pub fn insert_epg_programmes_batch(conn: &Connection, batch: &[EpgProgrammeRow]) -> Result<()> {
     let mut stmt = conn.prepare(
-        "INSERT INTO epg_programmes (channel_id, start_ts, stop_ts, title, subtitle, description, category, icon_url)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        "INSERT INTO epg_programmes (provider_id, channel_id, start_ts, stop_ts, title, subtitle, description, category, icon_url)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
     )?;
     for p in batch {
-        stmt.execute(params![p.channel_id, p.start_ts, p.stop_ts, p.title, p.subtitle, p.description, p.category, p.icon_url])?;
+        stmt.execute(params![p.provider_id, p.channel_id, p.start_ts, p.stop_ts, p.title, p.subtitle, p.description, p.category, p.icon_url])?;
     }
     Ok(())
 }
 
 /// Cuántos canales con `epg_channel_id` no tienen ni un solo programa en la guía
 /// importada — el informe que pide `docs/PROMPTS.md` ("cuántos canales quedan sin EPG").
-pub fn count_channels_without_epg(conn: &Connection) -> Result<i64> {
+pub fn count_channels_without_epg(conn: &Connection, provider_id: i64) -> Result<i64> {
     conn.query_row(
         "SELECT COUNT(*) FROM channels
-         WHERE epg_channel_id IS NOT NULL
-           AND epg_channel_id NOT IN (SELECT DISTINCT channel_id FROM epg_programmes)",
-        [],
+         WHERE provider_id = ?1 AND epg_channel_id IS NOT NULL
+           AND epg_channel_id NOT IN (SELECT DISTINCT channel_id FROM epg_programmes WHERE provider_id = ?1)",
+        params![provider_id],
         |row| row.get(0),
     )
     .map_err(Into::into)
@@ -1164,9 +1167,10 @@ mod tests {
         upsert_channel(&conn, provider_id, &HashMap::new(), &channel_with_epg, &fields).unwrap();
         upsert_channel(&conn, provider_id, &HashMap::new(), &channel_without_epg, &fields).unwrap();
 
-        assert_eq!(count_channels_without_epg(&conn).unwrap(), 2); // todavía no hay guía importada.
+        assert_eq!(count_channels_without_epg(&conn, provider_id).unwrap(), 2); // todavía no hay guía importada.
 
         let batch = vec![EpgProgrammeRow {
+            provider_id,
             channel_id: "canaluno.es",
             start_ts: 1_700_000_000,
             stop_ts: 1_700_003_600,
@@ -1178,10 +1182,57 @@ mod tests {
         }];
         insert_epg_programmes_batch(&conn, &batch).unwrap();
 
-        assert_eq!(count_channels_without_epg(&conn).unwrap(), 1, "canaluno.es ya tiene guía, singuia.es sigue sin ella");
+        assert_eq!(count_channels_without_epg(&conn, provider_id).unwrap(), 1, "canaluno.es ya tiene guía, singuia.es sigue sin ella");
 
-        delete_all_epg_programmes(&conn).unwrap();
-        assert_eq!(count_channels_without_epg(&conn).unwrap(), 2);
+        delete_epg_programmes_for_provider(&conn, provider_id).unwrap();
+        assert_eq!(count_channels_without_epg(&conn, provider_id).unwrap(), 2);
+    }
+
+    /// Con dos proveedores, sincronizar la guía de uno borraba la del otro (visto al
+    /// añadir un segundo proveedor: el primero se quedó sin guía). Y un mismo
+    /// `epg_channel_id` en los dos no mezcla programas entre proveedores.
+    #[test]
+    fn each_provider_keeps_its_own_guide() {
+        let conn = memory_conn();
+        let first = insert_provider(&conn, ProviderKind::Xtream, "A", "http://a", None, 1, None).unwrap();
+        let second = insert_provider(&conn, ProviderKind::Xtream, "B", "http://b", None, 1, None).unwrap();
+        let channel = |remote: &str| RawChannel {
+            remote_id: remote.into(),
+            category_remote_id: None,
+            raw_name: "La 1".into(),
+            logo_url: None,
+            epg_channel_id: Some("la1.es".into()),
+            has_catchup: false,
+            catchup_days: 0,
+            sort_order: None,
+        };
+        let fields = TitleFields { clean_title: "La 1", year: None, match_key: "n/a", quality: None, language: None };
+        upsert_channel(&conn, first, &HashMap::new(), &channel("a1"), &fields).unwrap();
+        upsert_channel(&conn, second, &HashMap::new(), &channel("b1"), &fields).unwrap();
+        let id_of = |remote: &str| -> i64 { conn.query_row("SELECT id FROM channels WHERE remote_id = ?1", [remote], |r| r.get(0)).unwrap() };
+        let programme = |provider_id: i64, title: &'static str| EpgProgrammeRow {
+            provider_id,
+            channel_id: "la1.es",
+            start_ts: 1_000,
+            stop_ts: 2_000,
+            title,
+            subtitle: None,
+            description: None,
+            category: None,
+            icon_url: None,
+        };
+        insert_epg_programmes_batch(&conn, &[programme(first, "Del primero")]).unwrap();
+        insert_epg_programmes_batch(&conn, &[programme(second, "Del segundo")]).unwrap();
+
+        // Se vuelve a sincronizar el segundo: la guía del primero sigue ahí.
+        delete_epg_programmes_for_provider(&conn, second).unwrap();
+        insert_epg_programmes_batch(&conn, &[programme(second, "Del segundo, nueva")]).unwrap();
+
+        let titles = |channel_id: i64| -> Vec<String> {
+            crate::db::reads::epg_grid(&conn, &[channel_id], 0, 5_000).unwrap().into_iter().map(|p| p.title).collect()
+        };
+        assert_eq!(titles(id_of("a1")), ["Del primero"]);
+        assert_eq!(titles(id_of("b1")), ["Del segundo, nueva"]);
     }
 
     #[test]

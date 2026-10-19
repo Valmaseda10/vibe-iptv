@@ -45,6 +45,12 @@ impl TimeshiftSession {
         self.generation
     }
 
+    /// Carpeta de la grabación, si se pudo crear.
+    #[cfg(test)]
+    pub fn dir(&self) -> Option<&Path> {
+        self.dir.as_deref()
+    }
+
     /// Señal de vida del reproductor.
     pub fn touch(&self) {
         if let Ok(mut last_seen) = self.last_seen.lock() {

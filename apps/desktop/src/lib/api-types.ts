@@ -27,9 +27,17 @@ manual: boolean, };
 
 export type CategorySummary = { id: number, name: string, };
 
-export type ChannelSummary = { id: number, display_name: string, logo_url: string | null, category_id: number | null, has_catchup: boolean, };
+export type ChannelSummary = { id: number, display_name: string, logo_url: string | null, category_id: number | null, has_catchup: boolean, 
+/**
+ * Número del canal en el proveedor, para cambiar tecleándolo (F13).
+ */
+number: number | null, };
 
-export type ChannelsPage = { items: Array<ChannelSummary>, next_cursor: number | null, };
+export type ChannelsPage = { items: Array<ChannelSummary>, next_cursor: number | null, 
+/**
+ * Se manda de vuelta como `after_key` junto a `after` (ver `ChannelsQuery`).
+ */
+next_cursor_key: string | null, };
 
 /**
  * Cómo va la sincronización con la nube, para Ajustes.
@@ -55,6 +63,8 @@ export type EpgGridProgramme = { channel_id: number, title: string, subtitle: st
 export type EpgNowNextResponse = { channel_id: number, current: EpgProgrammeResponse | null, next: EpgProgrammeResponse | null, };
 
 export type EpgProgrammeResponse = { title: string, subtitle: string | null, start_ts: number, stop_ts: number, };
+
+export type EpgSearchResult = { channel: ChannelSummary, title: string, subtitle: string | null, start_ts: number, stop_ts: number, };
 
 /**
  * F "premium" (informe de I+D): antes se calculaba y solo se dejaba en el log — un
@@ -252,6 +262,10 @@ export type RecommendedMovieSummary = { id: number, clean_title: string, year: n
  * Igual que `RecommendedMovieSummary`, para series.
  */
 export type RecommendedSeriesSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, because_of: string, };
+
+export type ReminderInput = { profile_id: number, channel_id: number, start_ts: number, stop_ts: number, title: string, };
+
+export type ReminderResponse = { channel: ChannelSummary, title: string, start_ts: number, stop_ts: number, };
 
 export type ResetPasswordInput = { email: string, 
 /**

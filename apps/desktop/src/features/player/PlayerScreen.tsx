@@ -5,6 +5,7 @@ import { apiGetOrNull, apiPost, useApiBase } from "../../lib/api-client";
 import { AUDIO_PASSTHROUGH } from "../../lib/codecSupport";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type {
+  ChannelSummary,
   ChannelsPage,
   EpgNowNextResponse,
   EpisodeSummary,
@@ -16,6 +17,7 @@ import type {
   SubtitleCuesResponse,
 } from "../../lib/api-types";
 import { ArrowDownIcon, ArrowUpIcon, FullscreenIcon, MuteIcon, PauseIcon, PlayIcon, VolumeIcon } from "../../components/icons";
+import { useLiveTimeshift } from "./useLiveTimeshift";
 
 type Kind = "channel" | "movie" | "episode";
 
@@ -37,6 +39,9 @@ const DEFINITIVE_ERROR_STATUSES = new Set([400, 402, 403, 404, 501, 503]);
 /** Cada cuánto se piden las frases nuevas de subtítulos. Es el núcleo local leyendo un
  * fichero, no el proveedor: puede ser frecuente. */
 const SUBTITLE_POLL_MS = 1_500;
+/** Tras la última cifra tecleada, cuánto se espera antes de cambiar de canal (como en un
+ * mando: "1", "2" → canal 12). */
+const NUMBER_ENTRY_MS = 1_500;
 /** Línea de los subtítulos contando desde abajo: despegados del borde, y por encima de
  * la barra de controles mientras se ve (si no, la tapa). */
 const SUBTITLE_LINE_HIDDEN_CONTROLS = -2;
@@ -206,6 +211,46 @@ export function PlayerScreen() {
   // pasó. Solo se distingue por la presencia de `catchupStart` en la URL de la ruta, no
   // por un `kind` aparte: sigue siendo el mismo canal, solo cambia a qué momento apunta.
   const isCatchup = kind === "channel" && search.catchupStart !== undefined;
+  // Pausar y rebobinar el directo (F13): ver `useLiveTimeshift`.
+  const liveTimeshift = kind === "channel" && !isCatchup;
+
+  // Teclear un número en el directo cambia a ese canal; "0" solo vuelve al anterior (F13).
+  const [typedNumber, setTypedNumber] = useState("");
+  const [numberMessage, setNumberMessage] = useState<string | null>(null);
+  const previousChannelRef = useRef<number | null>(null);
+  const currentChannelRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (kind !== "channel") return;
+    if (currentChannelRef.current != null && currentChannelRef.current !== itemId) previousChannelRef.current = currentChannelRef.current;
+    currentChannelRef.current = itemId;
+  }, [kind, itemId]);
+  useEffect(() => {
+    if (!typedNumber) return;
+    const timer = window.setTimeout(async () => {
+      const typed = typedNumber;
+      setTypedNumber("");
+      if (typed === "0") {
+        const previous = previousChannelRef.current;
+        if (previous == null) setNumberMessage("No hay canal anterior");
+        else navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(previous) }, search: {} });
+        return;
+      }
+      const channel = await apiGetOrNull<ChannelSummary>(`/api/live/channels/by-number/${Number(typed)}?profile_id=${profileId}&near=${itemId}`).catch(() => null);
+      if (channel) navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(channel.id) }, search: {} });
+      else setNumberMessage(`No hay canal ${Number(typed)}`);
+    }, NUMBER_ENTRY_MS);
+    return () => window.clearTimeout(timer);
+  }, [typedNumber, navigate, profileId, itemId]);
+  useEffect(() => {
+    if (!numberMessage) return;
+    const timer = window.setTimeout(() => setNumberMessage(null), 2_000);
+    return () => window.clearTimeout(timer);
+  }, [numberMessage]);
+  const timeshift = useLiveTimeshift({ enabled: liveTimeshift, channelId: itemId, base, videoRef });
+  // Si la grabación falla, se vuelve al directo (otra sesión, sin lo grabado).
+  useEffect(() => {
+    if (timeshift.failed && timeshift.inBuffer) timeshift.leaveBuffer();
+  }, [timeshift]);
   // El audio que la WebView decodifica ella misma no se convierte en el núcleo.
   const passthrough = AUDIO_PASSTHROUGH ? `&audio_passthrough=${AUDIO_PASSTHROUGH}` : "";
   const streamPath = isCatchup
@@ -251,6 +296,9 @@ export function PlayerScreen() {
   // arreglan reintentando (`DEFINITIVE_ERROR_STATUSES`).
   const handleVideoError = useCallback(async () => {
     if (!streamUrl) return;
+    // En pausa, el núcleo deja de mandar el directo (sigue grabando): que se corte no es un
+    // fallo. Y la grabación tiene sus propios errores (`useLiveTimeshift`).
+    if (timeshift.inBuffer || timeshift.isPausedLive()) return;
     const failedPath = streamPath;
     let status: number | null = null;
     let text = "";
@@ -278,7 +326,7 @@ export function PlayerScreen() {
     // prometer algo que reproduciría el momento equivocado.
     setNeedsMpv(status === 501 && !isCatchup);
     setErrorMessage(text || "No se pudo reproducir este contenido.");
-  }, [streamUrl, streamPath, isCatchup, kind, itemId, reconnectAttempt]);
+  }, [streamUrl, streamPath, isCatchup, kind, itemId, reconnectAttempt, timeshift]);
 
   const launchMpv = useCallback(async () => {
     if (!base || profileId === null) return;
@@ -482,9 +530,19 @@ export function PlayerScreen() {
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
     if (!video) return;
+    // En directo: pausar deja el canal grabándose; reanudar sigue desde la grabación,
+    // donde se pausó.
+    if (liveTimeshift && !timeshift.inBuffer) {
+      if (video.paused) timeshift.resumeFromPause();
+      else {
+        video.pause();
+        timeshift.notePaused();
+      }
+      return;
+    }
     if (video.paused) video.play().catch(() => {});
     else video.pause();
-  }, []);
+  }, [liveTimeshift, timeshift]);
 
   const toggleMute = useCallback(() => {
     const video = videoRef.current;
@@ -539,11 +597,20 @@ export function PlayerScreen() {
           break;
         case "ArrowLeft":
           if (kind !== "channel") seekTo(displayCurrentTime - SEEK_STEP_SECONDS);
+          else if (liveTimeshift) timeshift.seekBy(-SEEK_STEP_SECONDS);
           break;
         case "ArrowRight":
           if (kind !== "channel") seekTo(displayCurrentTime + SEEK_STEP_SECONDS);
+          else if (liveTimeshift) timeshift.seekBy(SEEK_STEP_SECONDS);
           break;
         default:
+          // En directo, las cifras son el número de canal (ver `typedNumber`).
+          if (liveTimeshift && /^[0-9]$/.test(e.key)) {
+            e.preventDefault();
+            setNumberMessage(null);
+            setTypedNumber((typed) => (typed + e.key).slice(0, 4));
+            break;
+          }
           // 0-9 salta directo a ese decil del vídeo (0%, 10%... 90%) — mismo atajo que
           // YouTube, y que el mando/teclado ya puede pulsar sin necesitar la barra.
           if (kind !== "channel" && displayDuration && /^[0-9]$/.test(e.key)) {
@@ -555,7 +622,7 @@ export function PlayerScreen() {
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [kind, goBack, togglePlay, toggleMute, toggleFullscreen, zapChannel, seekTo, displayCurrentTime, resetHideTimer]);
+  }, [kind, goBack, togglePlay, toggleMute, toggleFullscreen, zapChannel, seekTo, displayCurrentTime, resetHideTimer, liveTimeshift, timeshift]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -573,9 +640,9 @@ export function PlayerScreen() {
     >
       {canRenderVideo ? (
         <video
-          key={`${streamPath}::${retryNonce}`}
+          key={timeshift.bufferKey ?? `${streamPath}::${retryNonce}`}
           ref={videoRef}
-          src={streamUrl}
+          src={timeshift.inBuffer ? undefined : streamUrl}
           autoPlay
           muted={muted}
           className="h-full w-full"
@@ -633,6 +700,16 @@ export function PlayerScreen() {
       {resumeBanner != null && (
         <div className="absolute left-6 top-6 rounded-lg bg-black/70 px-4 py-2 text-sm text-neutral-200">
           Reanudando desde {formatTime(resumeBanner)}
+        </div>
+      )}
+
+      {(typedNumber || numberMessage) && (
+        <div className="absolute right-8 top-6 rounded-lg bg-black/80 px-5 py-3 text-right" aria-live="polite">
+          {typedNumber ? (
+            <p className="text-4xl font-semibold tabular-nums text-white">{typedNumber === "0" ? "Anterior" : typedNumber}</p>
+          ) : (
+            <p className="text-sm text-neutral-300">{numberMessage}</p>
+          )}
         </div>
       )}
 
@@ -700,6 +777,9 @@ export function PlayerScreen() {
         <div className="absolute right-6 top-6 w-72 rounded-lg bg-black/80 p-4 font-mono text-xs text-neutral-200">
           <p className="mb-2 font-semibold text-neutral-100">Estadísticas (Ctrl+Shift+D)</p>
           <StatRow label="Nivel" value={tierQuery.data?.tier != null ? String(tierQuery.data.tier) : "desconocido"} />
+          {liveTimeshift && (
+            <StatRow label="Modo" value={timeshift.inBuffer ? `grabación (−${formatTime(timeshift.behindLive(videoCurrentTime))})` : "directo"} />
+          )}
           <StatRow label="Vídeo" value={tierQuery.data?.video_codec ?? "—"} />
           <StatRow label="Audio" value={tierQuery.data?.audio_codec ?? "—"} />
           <StatRow label="Contenedor" value={tierQuery.data?.container ?? "—"} />
@@ -716,6 +796,21 @@ export function PlayerScreen() {
         }`}
       >
         {title && <p className="truncate text-lg font-medium text-white">{title}</p>}
+
+        {liveTimeshift && timeshift.inBuffer && timeshift.liveEdge != null && timeshift.windowStart != null ? (
+          <input
+            type="range"
+            min={timeshift.windowStart}
+            max={timeshift.liveEdge}
+            step={1}
+            value={Math.min(Math.max(videoCurrentTime, timeshift.windowStart), timeshift.liveEdge)}
+            onChange={(e) => {
+              if (videoRef.current) videoRef.current.currentTime = Number(e.target.value);
+            }}
+            className="w-full accent-red-600"
+            aria-label="Posición en lo grabado del canal"
+          />
+        ) : null}
 
         {kind !== "channel" && displayDuration ? (
           <input
@@ -753,6 +848,16 @@ export function PlayerScreen() {
                 10s»
               </button>
             </div>
+          )}
+
+          {liveTimeshift && (
+            <LiveTimeshiftControls
+              inBuffer={timeshift.inBuffer}
+              behind={timeshift.behindLive(videoCurrentTime)}
+              onBack={() => timeshift.seekBy(-SEEK_STEP_SECONDS)}
+              onForward={() => timeshift.seekBy(SEEK_STEP_SECONDS)}
+              onGoLive={timeshift.goLive}
+            />
           )}
 
           {kind === "channel" ? (
@@ -832,6 +937,61 @@ export function PlayerScreen() {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/** Rebobinar/avanzar y estado respecto al directo (F13). */
+function LiveTimeshiftControls({
+  inBuffer,
+  behind,
+  onBack,
+  onForward,
+  onGoLive,
+}: {
+  inBuffer: boolean;
+  behind: number;
+  onBack: () => void;
+  onForward: () => void;
+  onGoLive: () => void;
+}) {
+  const atLive = !inBuffer || behind < 8;
+  return (
+    <div className="flex items-center gap-2 text-sm">
+      <button
+        type="button"
+        onClick={onBack}
+        className="rounded px-2 py-1 outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/60"
+        title="Retroceder 10 s (flecha izquierda)"
+      >
+        «10s
+      </button>
+      <button
+        type="button"
+        onClick={onForward}
+        disabled={atLive}
+        className="rounded px-2 py-1 outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/60 disabled:opacity-40"
+        title="Avanzar 10 s (flecha derecha)"
+      >
+        10s»
+      </button>
+      {atLive ? (
+        <span className="flex items-center gap-1.5 rounded bg-red-600 px-2 py-0.5 text-xs font-semibold uppercase tracking-wide text-white">
+          <span className="h-1.5 w-1.5 rounded-full bg-white" />
+          En directo
+        </span>
+      ) : (
+        <>
+          <span className="w-16 tabular-nums text-neutral-300">−{formatTime(behind)}</span>
+          <button
+            type="button"
+            onClick={onGoLive}
+            className="rounded bg-white/10 px-2 py-1 text-xs font-medium outline-none hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/60"
+          >
+            Ir al directo
+          </button>
+        </>
+      )}
     </div>
   );
 }

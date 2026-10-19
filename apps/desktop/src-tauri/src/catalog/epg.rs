@@ -55,6 +55,7 @@ pub struct EpgSyncSummary {
 /// la anterior. `None` si la fuente no ofrece XMLTV (M3U sin `x-tvg-url`, por ejemplo).
 pub async fn run_epg_sync(
     conn: Connection,
+    provider_id: i64,
     source: Arc<dyn Source + Send + Sync>,
     user_agent: String,
     tmp_dir: PathBuf,
@@ -72,7 +73,7 @@ pub async fn run_epg_sync(
     let dest_for_parse = dest.clone();
 
     let (conn, outcome) = tokio::task::spawn_blocking(move || {
-        let outcome = import_into_db(&conn, &dest_for_parse, cutoff_past, cutoff_future);
+        let outcome = import_into_db(&conn, provider_id, &dest_for_parse, cutoff_past, cutoff_future);
         (conn, outcome)
     })
     .await?;
@@ -84,24 +85,25 @@ pub async fn run_epg_sync(
 /// La parte síncrona (parseo + SQL): vive separada de `run_epg_sync` para poder
 /// ejecutarla entera dentro de un único `spawn_blocking`, igual que el resto de
 /// `catalog::sync`.
-fn import_into_db(conn: &Connection, path: &Path, cutoff_past: i64, cutoff_future: i64) -> Result<EpgSyncSummary, EpgError> {
+fn import_into_db(conn: &Connection, provider_id: i64, path: &Path, cutoff_past: i64, cutoff_future: i64) -> Result<EpgSyncSummary, EpgError> {
     let mut programmes = Vec::new();
     parse_xmltv(path, cutoff_past, cutoff_future, |p| programmes.push(p))?;
 
-    queries::delete_all_epg_programmes(conn)?;
+    queries::delete_epg_programmes_for_provider(conn, provider_id)?;
     for chunk in programmes.chunks(BATCH_SIZE) {
         let tx = conn.unchecked_transaction()?;
-        let rows: Vec<queries::EpgProgrammeRow> = chunk.iter().map(programme_to_row).collect();
+        let rows: Vec<queries::EpgProgrammeRow> = chunk.iter().map(|p| programme_to_row(p, provider_id)).collect();
         queries::insert_epg_programmes_batch(&tx, &rows)?;
         tx.commit()?;
     }
 
-    let channels_without_epg = queries::count_channels_without_epg(conn)?;
+    let channels_without_epg = queries::count_channels_without_epg(conn, provider_id)?;
     Ok(EpgSyncSummary { imported: programmes.len() as i64, channels_without_epg })
 }
 
-fn programme_to_row(p: &Programme) -> queries::EpgProgrammeRow<'_> {
+fn programme_to_row(p: &Programme, provider_id: i64) -> queries::EpgProgrammeRow<'_> {
     queries::EpgProgrammeRow {
+        provider_id,
         channel_id: &p.channel_id,
         start_ts: p.start_ts,
         stop_ts: p.stop_ts,
@@ -555,7 +557,7 @@ mod tests {
         queries::upsert_channel(&conn, provider_id, &HashMap::new(), &without_epg, &fields).unwrap();
 
         let source: Arc<dyn Source + Send + Sync> = Arc::new(FakeEpgSource { url: format!("http://{addr}/xmltv.php") });
-        let (_, summary) = run_epg_sync(conn, source, "vibe-iptv-test".to_string(), std::env::temp_dir()).await.unwrap();
+        let (_, summary) = run_epg_sync(conn, provider_id, source, "vibe-iptv-test".to_string(), std::env::temp_dir()).await.unwrap();
         let summary = summary.expect("la fuente sí ofrece XMLTV");
 
         assert_eq!(summary.imported, 1);

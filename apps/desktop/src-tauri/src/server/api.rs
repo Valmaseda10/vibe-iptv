@@ -104,11 +104,21 @@ pub struct ChannelSummary {
     #[ts(type = "number | null")]
     pub category_id: Option<i64>,
     pub has_catchup: bool,
+    /// Número del canal en el proveedor, para cambiar tecleándolo (F13).
+    #[ts(type = "number | null")]
+    pub number: Option<i64>,
 }
 
 impl From<reads::ChannelListItem> for ChannelSummary {
     fn from(row: reads::ChannelListItem) -> Self {
-        Self { id: row.id, display_name: row.display_name, logo_url: row.logo_url, category_id: row.category_id, has_catchup: row.has_catchup }
+        Self {
+            id: row.id,
+            display_name: row.display_name,
+            logo_url: row.logo_url,
+            category_id: row.category_id,
+            has_catchup: row.has_catchup,
+            number: row.number,
+        }
     }
 }
 
@@ -118,6 +128,8 @@ pub struct ChannelsPage {
     pub items: Vec<ChannelSummary>,
     #[ts(type = "number | null")]
     pub next_cursor: Option<i64>,
+    /// Se manda de vuelta como `after_key` junto a `after` (ver `ChannelsQuery`).
+    pub next_cursor_key: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -701,19 +713,26 @@ struct ChannelsQuery {
     profile_id: i64,
     category_id: Option<i64>,
     q: Option<String>,
+    /// Id del último canal de la página anterior (`next_cursor`).
     after: Option<i64>,
+    /// Su número (`next_cursor_key`); vacío si no tenía. Sin él, `after` solo vale para
+    /// canales sin número.
+    after_key: Option<String>,
     limit: Option<i64>,
 }
 
 async fn get_live_channels(State(state): State<CatalogState>, Query(query): Query<ChannelsQuery>) -> Result<Json<ChannelsPage>, ApiError> {
     let limit = clamp_limit(query.limit);
+    let after = query.after.map(|id| (query.after_key.as_deref().and_then(|k| k.parse::<i64>().ok()), id));
     let items = with_db(state.db_path, move |conn| {
         let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
-        reads::list_channels_page(conn, query.category_id, query.q.as_deref(), query.after, limit, include_adult)
+        reads::list_channels_page(conn, query.category_id, query.q.as_deref(), after, limit, include_adult)
     })
     .await?;
-    let next_cursor = if items.len() as i64 == limit { items.last().map(|c| c.id) } else { None };
-    Ok(Json(ChannelsPage { items: items.into_iter().map(Into::into).collect(), next_cursor }))
+    let last = if items.len() as i64 == limit { items.last() } else { None };
+    let next_cursor = last.map(|c| c.id);
+    let next_cursor_key = last.map(|c| c.number.map(|n| n.to_string()).unwrap_or_default());
+    Ok(Json(ChannelsPage { items: items.into_iter().map(Into::into).collect(), next_cursor, next_cursor_key }))
 }
 
 #[derive(Deserialize)]

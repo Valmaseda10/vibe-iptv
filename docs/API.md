@@ -43,9 +43,20 @@ películas recientes. Sin parámetros.
 Categorías de canales en directo. `[{ id, name }]`.
 
 ### `GET /api/live/channels`
-Página de canales. Parámetros: `category_id`, `q` (búsqueda por nombre), `after`,
-`limit` (máx. 100, por defecto 40). Devuelve `{ items: ChannelSummary[], next_cursor }`,
-con `ChannelSummary = { id, display_name, logo_url, category_id, has_catchup }`.
+Página de canales, por número del proveedor y luego id. Parámetros: `category_id`, `q`
+(búsqueda por nombre), `limit` (máx. 100, por defecto 40) y, para la página siguiente,
+`after` + `after_key` (los `next_cursor` y `next_cursor_key` de la anterior, tal cual).
+Devuelve `{ items: ChannelSummary[], next_cursor, next_cursor_key }`, con
+`ChannelSummary = { id, display_name, logo_url, category_id, has_catchup, number }`
+(`number` es el número del canal en el proveedor, o `null`).
+
+### `GET /api/live/channels/by-number/:number?profile_id=&near=`
+El canal con ese número (para teclearlo en el directo). Con varios proveedores el número
+se repite: `near` (el canal que se está viendo) hace ganar al de su proveedor. `404` si no
+hay ninguno o el perfil no puede verlo.
+
+### `GET /api/live/recent?profile_id=&limit=`
+Últimos canales que abrió el perfil, el más reciente primero (12 por defecto).
 
 ### `GET /api/movies`
 Página de películas. Parámetros: `genre`, `year`, `quality`, `sort`
@@ -73,7 +84,22 @@ Programa actual y siguiente de cada canal pedido (ids internos, coma-separados).
 
 ### `GET /api/epg/grid?channel_ids=1,2,3&from=<epoch>&to=<epoch>`
 Todos los programas de esos canales que se solapan con `[from, to)`. `400` si
-`to <= from`.
+`to <= from`. La guía de cada canal es la de su proveedor.
+
+### `GET /api/epg/search?profile_id=&q=&limit=`
+Programas en emisión o futuros cuyo título contiene `q` (al menos dos letras), por orden
+de comienzo: `[{ channel: ChannelSummary, title, subtitle, start_ts, stop_ts }]`. Un mismo
+programa sale una vez por cada canal (o feed) que lo emite.
+
+### Recordatorios
+- `GET /api/reminders?profile_id=` → `[{ channel: ChannelSummary, title, start_ts, stop_ts }]`,
+  los que aún no han terminado, el más próximo primero. Los terminados se borran solos.
+- `POST /api/reminders` con `{ profile_id, channel_id, start_ts, stop_ts, title }`. `400`
+  si el programa ya terminó.
+- `DELETE /api/reminders?profile_id=&channel_id=&start_ts=`.
+
+Son locales del PC, por perfil: no viajan a la nube. El aviso lo da cada cliente (la app
+de escritorio lo enseña un minuto antes de que empiece).
 
 ---
 
@@ -101,6 +127,22 @@ están en la escala del vídeo servido: cero en el punto de `?start=`. `active: 
 el stream en curso no es ese ítem con esa pista y ese `start` (p. ej. el usuario ya
 buscó o cambió de contenido): las frases de esa sesión ya no existen. `text` puede
 llevar las etiquetas de WebVTT (`<i>`, `<b>`).
+
+### Pausar y rebobinar el directo
+Mientras se ve un canal en directo por `/stream/channel/:id`, el núcleo lo graba a la vez
+(mismo proceso, misma conexión con el proveedor) como HLS fMP4 con 30 min de ventana:
+
+- `GET /stream/timeshift/channel/:id/live.m3u8` (y los `init.mp4` / `seg-*.m4s` que
+  lista): la grabación, para un reproductor HLS. `404` si no hay grabación de ese canal.
+- `POST /api/timeshift/:channel_id/keepalive`: el cliente sigue en el canal. **Hay que
+  mandarla cada pocos segundos** mientras se esté en pausa o en la grabación: sin leer el
+  directo ni señales de vida, la sesión se cierra a los 20 s y libera la conexión.
+- `DELETE /api/timeshift/:channel_id`: el cliente se va; la conexión se libera ya.
+
+Mientras la lista empieza en su primer trozo (`#EXT-X-MEDIA-SEQUENCE:0`, los primeros
+30 min), sus segundos son los mismos que los del directo: pausar en el segundo 120 del
+directo es seguir en el 120 de la grabación. Después, solo vale contar respecto al
+borde de la lista. MP2/MP3 llegan como AAC en la grabación (MSE no los acepta).
 
 ### `GET /api/playback/last-error/:kind/:id`
 Por qué falló el último intento de abrir ese stream (`kind` también puede ser

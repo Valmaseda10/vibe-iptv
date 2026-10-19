@@ -285,53 +285,57 @@ pub struct ChannelListItem {
     pub logo_url: Option<String>,
     pub category_id: Option<i64>,
     pub has_catchup: bool,
+    /// Número del canal en el proveedor (`sort_order`, el `num` de Xtream).
+    pub number: Option<i64>,
 }
+
+/// Posición tras la que seguir en `list_channels_page`: el número del último canal visto
+/// (`None` si no tenía) y su id. Tiene que seguir el mismo orden que la consulta; antes
+/// se paginaba por id ordenando por número, y una página podía saltarse canales o
+/// repetirlos en cuanto los ids no seguían el orden de los números.
+pub type ChannelCursor = (Option<i64>, i64);
 
 #[allow(clippy::too_many_arguments)]
 pub fn list_channels_page(
     conn: &Connection,
     category_id: Option<i64>,
     search: Option<&str>,
-    after: Option<i64>,
+    after: Option<ChannelCursor>,
     limit: i64,
     include_adult: bool,
 ) -> Result<Vec<ChannelListItem>> {
-    let mut sql = String::from(
-        "SELECT id, display_name, logo_url, category_id, has_catchup FROM channels WHERE 1=1",
-    );
+    let mut sql = format!("SELECT {CHANNEL_LIST_COLUMNS} FROM channels c WHERE 1=1");
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
     if !include_adult {
-        sql.push_str(" AND (category_id IS NULL OR category_id NOT IN (SELECT id FROM categories WHERE is_adult = 1))");
+        sql.push_str(NOT_ADULT_CHANNEL);
     }
     if let Some(cat) = category_id {
-        sql.push_str(" AND category_id = ?");
+        sql.push_str(" AND c.category_id = ?");
         args.push(Box::new(cat));
     }
     if let Some(q) = search {
-        sql.push_str(" AND display_name LIKE ? ESCAPE '\\'");
+        sql.push_str(" AND c.display_name LIKE ? ESCAPE '\\'");
         args.push(Box::new(like_pattern(q)));
     }
-    if let Some(a) = after {
-        sql.push_str(" AND id > ?");
-        args.push(Box::new(a));
+    // Orden: primero los que tienen número, por número y luego id; después los que no.
+    match after {
+        Some((Some(number), id)) => {
+            sql.push_str(" AND (c.sort_order IS NULL OR c.sort_order > ? OR (c.sort_order = ? AND c.id > ?))");
+            args.push(Box::new(number));
+            args.push(Box::new(number));
+            args.push(Box::new(id));
+        }
+        Some((None, id)) => {
+            sql.push_str(" AND c.sort_order IS NULL AND c.id > ?");
+            args.push(Box::new(id));
+        }
+        None => {}
     }
-    sql.push_str(" ORDER BY sort_order IS NULL, sort_order, id LIMIT ?");
+    sql.push_str(" ORDER BY c.sort_order IS NULL, c.sort_order, c.id LIMIT ?");
     args.push(Box::new(limit));
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params_from_iter(args.iter().map(|b| b.as_ref())), |row| {
-        // logo_url del proveedor se redacta antes de salir de la capa de datos: la API
-        // HTTP no debe filtrar URLs de proveedor (regla R5), aunque un logo en concreto
-        // no suela llevar credenciales.
-        let raw_logo: Option<String> = row.get(2)?;
-        Ok(ChannelListItem {
-            id: row.get(0)?,
-            display_name: row.get(1)?,
-            logo_url: raw_logo.map(|url| redact(&url)),
-            category_id: row.get(3)?,
-            has_catchup: row.get::<_, i64>(4)? != 0,
-        })
-    })?;
+    let rows = stmt.query_map(params_from_iter(args.iter().map(|b| b.as_ref())), channel_list_item)?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
@@ -1090,12 +1094,11 @@ fn programme_row(row: &Row) -> rusqlite::Result<ProgrammeSummary> {
 pub fn epg_now_and_next(conn: &Connection, channel_ids: &[i64], now: i64) -> Result<Vec<NowNextProgramme>> {
     let mut results = Vec::with_capacity(channel_ids.len());
     for &channel_id in channel_ids {
-        let epg_channel_id: Option<String> = conn
-            .query_row("SELECT epg_channel_id FROM channels WHERE id = ?1", params![channel_id], |row| row.get(0))
-            .optional()?
-            .flatten();
+        let channel: Option<(Option<String>, i64)> = conn
+            .query_row("SELECT epg_channel_id, provider_id FROM channels WHERE id = ?1", params![channel_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .optional()?;
 
-        let Some(epg_channel_id) = epg_channel_id else {
+        let Some((Some(epg_channel_id), provider_id)) = channel else {
             results.push(NowNextProgramme { channel_id, current: None, next: None });
             continue;
         };
@@ -1103,16 +1106,17 @@ pub fn epg_now_and_next(conn: &Connection, channel_ids: &[i64], now: i64) -> Res
         let current = conn
             .query_row(
                 "SELECT title, subtitle, start_ts, stop_ts FROM epg_programmes
-                 WHERE channel_id = ?1 AND start_ts <= ?2 AND stop_ts > ?2 ORDER BY start_ts LIMIT 1",
-                params![epg_channel_id, now],
+                 WHERE channel_id = ?1 AND (provider_id IS NULL OR provider_id = ?3) AND start_ts <= ?2 AND stop_ts > ?2
+                 ORDER BY start_ts LIMIT 1",
+                params![epg_channel_id, now, provider_id],
                 programme_row,
             )
             .optional()?;
         let next = conn
             .query_row(
                 "SELECT title, subtitle, start_ts, stop_ts FROM epg_programmes
-                 WHERE channel_id = ?1 AND start_ts > ?2 ORDER BY start_ts LIMIT 1",
-                params![epg_channel_id, now],
+                 WHERE channel_id = ?1 AND (provider_id IS NULL OR provider_id = ?3) AND start_ts > ?2 ORDER BY start_ts LIMIT 1",
+                params![epg_channel_id, now, provider_id],
                 programme_row,
             )
             .optional()?;
@@ -1140,7 +1144,7 @@ pub fn epg_grid(conn: &Connection, channel_ids: &[i64], from_ts: i64, to_ts: i64
     let placeholders = channel_ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
     let sql = format!(
         "SELECT c.id, p.title, p.subtitle, p.start_ts, p.stop_ts, p.category
-         FROM epg_programmes p JOIN channels c ON c.epg_channel_id = p.channel_id
+         FROM epg_programmes p JOIN channels c ON c.epg_channel_id = p.channel_id AND (p.provider_id IS NULL OR p.provider_id = c.provider_id)
          WHERE c.id IN ({placeholders}) AND p.start_ts < ? AND p.stop_ts > ?
          ORDER BY c.id, p.start_ts"
     );
@@ -3055,4 +3059,125 @@ mod tests {
         let conn = memory_conn();
         assert!(epg_grid(&conn, &[], 0, 1000).unwrap().is_empty());
     }
+}
+
+// ─────────────── Funciones de tele del directo (F13) ───────────────
+
+/// Columnas que espera `channel_list_item`, en este orden.
+const CHANNEL_LIST_COLUMNS: &str = "c.id, c.display_name, c.logo_url, c.category_id, c.has_catchup, c.sort_order";
+
+/// Filtro de adultos sobre `channels c`, igual que el de `list_channels_page`.
+const NOT_ADULT_CHANNEL: &str = " AND (c.category_id IS NULL OR c.category_id NOT IN (SELECT id FROM categories WHERE is_adult = 1))";
+
+fn channel_list_item(row: &rusqlite::Row) -> rusqlite::Result<ChannelListItem> {
+    let raw_logo: Option<String> = row.get(2)?;
+    Ok(ChannelListItem {
+        id: row.get(0)?,
+        display_name: row.get(1)?,
+        logo_url: raw_logo.map(|url| redact(&url)),
+        category_id: row.get(3)?,
+        has_catchup: row.get::<_, i64>(4)? != 0,
+        number: row.get(5)?,
+    })
+}
+
+/// El canal con ese número del proveedor (`sort_order`, el `num` de Xtream). Con varios
+/// proveedores el mismo número se repite: gana el del canal que se está viendo (`near`).
+/// Si hay varios feeds del mismo canal, el primero.
+pub fn channel_by_number(conn: &Connection, number: i64, near: Option<i64>, include_adult: bool) -> Result<Option<ChannelListItem>> {
+    let mut sql = format!("SELECT {CHANNEL_LIST_COLUMNS} FROM channels c WHERE c.sort_order = ?1");
+    if !include_adult {
+        sql.push_str(NOT_ADULT_CHANNEL);
+    }
+    sql.push_str(" ORDER BY c.provider_id IS NOT (SELECT provider_id FROM channels WHERE id = ?2), c.id LIMIT 1");
+    conn.query_row(&sql, params![number, near], channel_list_item).optional().map_err(Into::into)
+}
+
+/// Últimos canales que abrió el perfil (cada apertura deja `played_at` en
+/// `playback_state`, ver `queries::record_play_tier`).
+pub fn recent_channels(conn: &Connection, profile_id: i64, include_adult: bool, limit: i64) -> Result<Vec<ChannelListItem>> {
+    let mut sql = format!(
+        "SELECT {CHANNEL_LIST_COLUMNS} FROM playback_state ps JOIN channels c ON c.id = ps.item_id
+         WHERE ps.profile_id = ?1 AND ps.item_kind = 'channel'"
+    );
+    if !include_adult {
+        sql.push_str(NOT_ADULT_CHANNEL);
+    }
+    sql.push_str(" ORDER BY ps.played_at DESC LIMIT ?2");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![profile_id, limit], channel_list_item)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub struct EpgSearchRow {
+    pub channel: ChannelListItem,
+    pub title: String,
+    pub subtitle: Option<String>,
+    pub start_ts: i64,
+    pub stop_ts: i64,
+}
+
+/// Programas en emisión o futuros cuyo título contiene `q` (sin distinguir mayúsculas),
+/// por orden de comienzo. Un mismo programa sale una vez por canal que lo emite.
+pub fn epg_search(conn: &Connection, q: &str, now: i64, include_adult: bool, limit: i64) -> Result<Vec<EpgSearchRow>> {
+    let mut sql = format!(
+        "SELECT {CHANNEL_LIST_COLUMNS}, p.title, p.subtitle, p.start_ts, p.stop_ts
+         FROM epg_programmes p JOIN channels c ON c.epg_channel_id = p.channel_id AND (p.provider_id IS NULL OR p.provider_id = c.provider_id)
+         WHERE p.stop_ts > ?1 AND p.title LIKE ?2 ESCAPE '\\'"
+    );
+    if !include_adult {
+        sql.push_str(NOT_ADULT_CHANNEL);
+    }
+    sql.push_str(" ORDER BY p.start_ts, c.sort_order IS NULL, c.sort_order, c.id LIMIT ?3");
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![now, like_pattern(q), limit], |row| {
+        Ok(EpgSearchRow {
+            channel: channel_list_item(row)?,
+            title: row.get(6)?,
+            subtitle: row.get(7)?,
+            start_ts: row.get(8)?,
+            stop_ts: row.get(9)?,
+        })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub struct ReminderRow {
+    pub channel: ChannelListItem,
+    pub title: String,
+    pub start_ts: i64,
+    pub stop_ts: i64,
+}
+
+/// Recordatorios del perfil que aún no han terminado, el más próximo primero. Borra los
+/// ya terminados.
+pub fn list_reminders(conn: &Connection, profile_id: i64, now: i64) -> Result<Vec<ReminderRow>> {
+    conn.execute("DELETE FROM reminders WHERE stop_ts <= ?1", params![now])?;
+    let sql = format!(
+        "SELECT {CHANNEL_LIST_COLUMNS}, r.title, r.start_ts, r.stop_ts
+         FROM reminders r JOIN channels c ON c.id = r.channel_id
+         WHERE r.profile_id = ?1 ORDER BY r.start_ts"
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params![profile_id], |row| {
+        Ok(ReminderRow { channel: channel_list_item(row)?, title: row.get(6)?, start_ts: row.get(7)?, stop_ts: row.get(8)? })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+pub fn add_reminder(conn: &Connection, profile_id: i64, channel_id: i64, start_ts: i64, stop_ts: i64, title: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO reminders (profile_id, channel_id, start_ts, stop_ts, title, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT(profile_id, channel_id, start_ts) DO UPDATE SET stop_ts = excluded.stop_ts, title = excluded.title",
+        params![profile_id, channel_id, start_ts, stop_ts, title, crate::db::now_epoch()],
+    )?;
+    Ok(())
+}
+
+pub fn delete_reminder(conn: &Connection, profile_id: i64, channel_id: i64, start_ts: i64) -> Result<()> {
+    conn.execute(
+        "DELETE FROM reminders WHERE profile_id = ?1 AND channel_id = ?2 AND start_ts = ?3",
+        params![profile_id, channel_id, start_ts],
+    )?;
+    Ok(())
 }

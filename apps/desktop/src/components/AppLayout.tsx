@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { ProfileSwitcher } from "../features/profiles/ProfileSwitcher";
 import { SyncStatusBanner } from "./SyncStatusBanner";
+import { ReminderNotifier } from "./ReminderNotifier";
 import { apiGetOrNull } from "../lib/api-client";
 import type { RandomTitleResponse } from "../lib/api-types";
 import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon, DiceIcon } from "./icons";
@@ -150,6 +151,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
 
       <main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto">{children}</main>
       <SyncStatusBanner />
+      <ReminderNotifier />
     </div>
   );
 }

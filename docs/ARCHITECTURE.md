@@ -121,6 +121,24 @@ escribe y el reproductor añade las frases al `<video>` según llegan
 OCR o quemarlos en el vídeo, y eso es recodificar. Ver los detalles medidos
 (`-ss 0`, frase en curso) en `DECISIONS.md`, F12.
 
+**Pausar y rebobinar el directo (F13).** En los canales en directo, el mismo proceso
+añade otra salida: la grabación en trozos HLS fMP4 de 2 s, con una ventana deslizante de
+30 min, en una carpeta temporal que se borra al cambiar de canal. Una sola conexión con
+el proveedor (R1).
+
+```
+  ... pipe:1 \
+  -map 0:v:0 -map 0:a:N -c:v copy -c:a <copy | aac si es MP2/MP3> \
+  -f hls -hls_time 2 -hls_list_size 900 -hls_flags delete_segments+independent_segments+temp_file \
+  -hls_segment_type fmp4 -hls_fmp4_init_filename init.mp4 <carpeta>/live.m3u8
+```
+
+El reproductor ve el directo por `pipe:1` (el zapping no cambia) y, al pausar o
+rebobinar, pasa a la grabación con hls.js. La sesión ya no muere con la respuesta HTTP
+(en pausa no se lee el directo): vive mientras se lea o lleguen señales de vida, y ffmpeg
+se lee siempre aunque nadie consuma el directo, porque si se bloquease se pararía también
+la grabación. Detalle en `server::timeshift` y `DECISIONS.md` (F13).
+
 ### Nivel 3 — mpv como respaldo
 Para todo lo demás: H.265 sin soporte de hardware, VC-1, contenedores raros, o cuando
 el nivel 2 falla dos veces seguidas. En v1, mpv se lanza en su propia ventana y se

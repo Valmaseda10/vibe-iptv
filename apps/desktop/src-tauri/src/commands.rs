@@ -476,7 +476,7 @@ fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + 
                 // catálogo ya sincronizado. Si no hay clave de TMDB todavía, la primera
                 // no hace nada; si la fuente no ofrece XMLTV, tampoco la segunda.
                 spawn_tmdb_matching(app.clone());
-                spawn_epg_sync(app, source_for_epg);
+                spawn_epg_sync(app, provider_id, source_for_epg);
             }
             Err(err) => tracing::error!(provider_id, error = %err, "sincronización fallida"),
         }
@@ -486,7 +486,7 @@ fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + 
 /// Paso 8 de `docs/ARCHITECTURE.md`: descarga e importa la guía XMLTV tras cada
 /// sincronización de catálogo. `None` si la fuente no ofrece EPG (M3U sin
 /// `x-tvg-url`): no es un error, solo no hay nada que importar.
-fn spawn_epg_sync(app: AppHandle, source: Arc<dyn Source + Send + Sync>) {
+fn spawn_epg_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + Sync>) {
     tauri::async_runtime::spawn(async move {
         let conn = match schema::open_connection(&app) {
             Ok(conn) => conn,
@@ -496,7 +496,7 @@ fn spawn_epg_sync(app: AppHandle, source: Arc<dyn Source + Send + Sync>) {
             }
         };
         let user_agent = crate::sources::xtream::DEFAULT_USER_AGENT.to_string();
-        match epg::run_epg_sync(conn, source, user_agent, std::env::temp_dir()).await {
+        match epg::run_epg_sync(conn, provider_id, source, user_agent, std::env::temp_dir()).await {
             Ok((_, Some(summary))) => {
                 tracing::info!(imported = summary.imported, canales_sin_epg = summary.channels_without_epg, "guía EPG importada");
                 // F "premium": antes esto solo se veía en el log — un fallo mudo típico

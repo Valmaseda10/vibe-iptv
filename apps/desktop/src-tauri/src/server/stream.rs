@@ -1763,7 +1763,8 @@ mod tests {
         assert!(state.stream_guard.is_busy(), "la grabación sigue ocupando la única conexión (R1)");
 
         // Cerrar el reproductor la termina ya: proceso, permiso y carpeta.
-        let recording_dir = std::fs::read_dir(timeshift::temp_root()).unwrap().filter_map(|e| e.ok()).map(|e| e.path()).find(|p| p.join(&first_segment).exists() || p.join("live.m3u8").exists());
+let recording_dir = state.timeshift.lock().unwrap().as_ref().and_then(|session| session.dir().map(Path::to_path_buf));
+        assert!(recording_dir.as_ref().is_some_and(|d| d.join("live.m3u8").exists()), "la grabación de esta sesión está en disco");
         let close = Request::builder().method("DELETE").uri(format!("/api/timeshift/{channel_id}")).body(Body::empty()).unwrap();
         assert_eq!(stream_router(state.clone()).oneshot(close).await.unwrap().status(), StatusCode::NO_CONTENT);
         for _ in 0..30 {

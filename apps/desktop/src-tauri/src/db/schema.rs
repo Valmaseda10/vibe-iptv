@@ -23,6 +23,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("012_caratulas_proveedor.sql", include_str!("../../migrations/012_caratulas_proveedor.sql")),
     ("013_adultos_manual.sql", include_str!("../../migrations/013_adultos_manual.sql")),
     ("014_pistas_de_subtitulos.sql", include_str!("../../migrations/014_pistas_de_subtitulos.sql")),
+    ("015_recordatorios.sql", include_str!("../../migrations/015_recordatorios.sql")),
+    ("016_guia_por_proveedor.sql", include_str!("../../migrations/016_guia_por_proveedor.sql")),
 ];
 
 /// Ruta del fichero SQLite en el directorio de datos de la aplicación, sin abrirlo.
@@ -63,9 +65,24 @@ pub fn open_readonly_at(path: &Path) -> Result<Connection> {
 /// la API guarda progreso, así que la colisión deja de ser rara. Los bloqueos reales
 /// duran milisegundos: cinco segundos es un margen holgado, no una espera esperada.
 fn configure(conn: &Connection) -> Result<()> {
-    conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "foreign_keys", true)?;
+    // La espera primero: pasar a WAL una base de datos nueva también necesita el cerrojo,
+    // y sin espera una segunda conexión simultánea fallaba al instante ("database is
+    // locked") en el primer arranque.
     conn.busy_timeout(std::time::Duration::from_secs(5))?;
+    // SQLite no aplica esa espera al cambio de modo del diario (podría bloquearse a sí
+    // mismo): con dos conexiones a la vez sobre una base de datos nueva, una recibía
+    // "busy" al instante. Se reintenta un rato.
+    let mut attempts = 0;
+    loop {
+        match conn.pragma_update(None, "journal_mode", "WAL") {
+            Err(rusqlite::Error::SqliteFailure(err, _)) if err.code == rusqlite::ErrorCode::DatabaseBusy && attempts < 100 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            other => break other?,
+        }
+    }
+    conn.pragma_update(None, "foreign_keys", true)?;
     Ok(())
 }
 
@@ -78,7 +95,13 @@ fn run_migrations(conn: &mut Connection) -> Result<()> {
     )?;
 
     for (filename, sql) in MIGRATIONS {
-        let already_applied: bool = conn.query_row(
+        // Se comprueba ya dentro de una transacción de escritura (IMMEDIATE): dos conexiones
+        // que abrían la base de datos a la vez (al arrancar, el servidor y el emparejamiento
+        // con TMDB) veían las dos la migración sin aplicar, la segunda fallaba con "table
+        // already exists" y el servidor local no llegaba a arrancar. Ahora la segunda
+        // espera al cerrojo (busy_timeout) y la encuentra aplicada.
+        let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let already_applied: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM _migrations WHERE filename = ?1)",
             [filename],
             |row| row.get(0),
@@ -86,8 +109,6 @@ fn run_migrations(conn: &mut Connection) -> Result<()> {
         if already_applied {
             continue;
         }
-
-        let tx = conn.transaction()?;
         tx.execute_batch(sql)?;
         tx.execute(
             "INSERT INTO _migrations (filename, applied_at) VALUES (?1, ?2)",
@@ -101,6 +122,34 @@ fn run_migrations(conn: &mut Connection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Al arrancar la app, varias tareas abren la base de datos a la vez; con migraciones
+    /// pendientes, todas tienen que poder abrirla (antes una fallaba y el servidor local no
+    /// arrancaba).
+    #[test]
+    fn concurrent_openers_apply_pending_migrations_once() {
+        use rand::RngExt;
+        let suffix: u64 = rand::rng().random();
+        let path = std::env::temp_dir().join(format!("vibe-iptv-migrations-race-{}-{suffix:x}.sqlite3", std::process::id()));
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    open_connection_at(&path).map(|_| ()).map_err(|err| err.to_string())
+                })
+            })
+            .collect();
+        for handle in handles {
+            assert_eq!(handle.join().unwrap(), Ok(()));
+        }
+        let conn = open_connection_at(&path).unwrap();
+        let applied: i64 = conn.query_row("SELECT COUNT(*) FROM _migrations", [], |r| r.get(0)).unwrap();
+        assert_eq!(applied, MIGRATIONS.len() as i64);
+        let _ = std::fs::remove_file(&path);
+    }
 
     #[test]
     fn applies_migrations_and_creates_expected_tables() {

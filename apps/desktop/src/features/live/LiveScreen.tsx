@@ -27,12 +27,19 @@ export function LiveScreen() {
 
   const channelsQuery = useInfiniteQuery({
     queryKey: ["live-channels", profileId, categoryId],
-    queryFn: ({ pageParam }: { pageParam: number | undefined }) =>
+    queryFn: ({ pageParam }: { pageParam: { after: number; key: string } | undefined }) =>
       apiGet<ChannelsPage>(
-        `/api/live/channels?profile_id=${profileId}&limit=80${categoryId ? `&category_id=${categoryId}` : ""}${pageParam ? `&after=${pageParam}` : ""}`,
+        `/api/live/channels?profile_id=${profileId}&limit=80${categoryId ? `&category_id=${categoryId}` : ""}${
+          pageParam ? `&after=${pageParam.after}&after_key=${encodeURIComponent(pageParam.key)}` : ""
+        }`,
       ),
-    initialPageParam: undefined as number | undefined,
-    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    initialPageParam: undefined as { after: number; key: string } | undefined,
+    getNextPageParam: (lastPage) => (lastPage.next_cursor != null ? { after: lastPage.next_cursor, key: lastPage.next_cursor_key ?? "" } : undefined),
+    enabled: profileId !== null,
+  });
+  const recentQuery = useQuery({
+    queryKey: ["live-recent", profileId],
+    queryFn: () => apiGet<ChannelItem[]>(`/api/live/recent?profile_id=${profileId}&limit=12`),
     enabled: profileId !== null,
   });
 
@@ -128,6 +135,33 @@ export function LiveScreen() {
         </select>
       </div>
 
+      {categoryId === null && (recentQuery.data?.length ?? 0) > 0 && (
+        <section className="px-6 sm:px-10" aria-label="Canales recientes">
+          <h2 className="mb-2 text-sm font-medium text-neutral-400">Recientes</h2>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {recentQuery.data!.map((channel) => (
+              <button
+                key={channel.id}
+                type="button"
+                onClick={() =>
+                  navigate({
+                    to: "/player/$kind/$id",
+                    params: { kind: "channel", id: String(channel.id) },
+                    search: channel.category_id ? { categoryId: String(channel.category_id) } : {},
+                  })
+                }
+                className="flex shrink-0 items-center gap-2 rounded-lg bg-neutral-900 px-3 py-2 text-sm outline-none hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-red-600"
+              >
+                <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500">
+                  {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
+                </span>
+                <span className="max-w-40 truncate">{channel.display_name}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
       <div ref={parentRef} onKeyDown={onKeyDown} className="min-h-0 flex-1 overflow-y-auto px-6 sm:px-10">
         {channelsQuery.isPending ? (
           <div className="flex flex-col gap-2 py-4">
@@ -161,6 +195,7 @@ export function LiveScreen() {
                         }
                         className="flex h-full flex-1 items-center gap-4 rounded-lg px-3 text-left outline-none hover:bg-neutral-900"
                       >
+                        <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500">{channel.number ?? ""}</span>
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500">
                           {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
                         </div>

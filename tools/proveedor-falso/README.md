@@ -25,6 +25,10 @@ usuario `qa`, contraseña `qa`. El puerto se cambia con la variable `PORT`.
   `%TEMP%\vibe-proveedor-falso`):
   - directo en MPEG-TS con AAC (los canales de deportes, con AC3), enviado al ritmo de
     reproducción como un canal de verdad;
+  - "Reloj (pruebas de pausa)": media hora de directo con un contador de segundos en
+    pantalla y audio MP2, para comprobar a ojo que pausar y rebobinar el directo retoma
+    en el segundo exacto. Ojo: el proveedor manda al ritmo medio del fichero, no al de
+    sus marcas de tiempo, así que tras muchos minutos va algo por detrás del reloj;
   - películas en MP4 (nivel 1); en MKV con dos pistas de audio y dos de subtítulos SRT
     (nivel 2). En el MKV, `testsrc` pinta un contador de segundos y cada frase dice en qué
     segundo debe verse ("Segundo 30"), así que una captura enseña si van a tiempo;

@@ -1375,6 +1375,88 @@ El proveedor falso conserva esa película ("Akira") para notar si deja de ser as
 
 ---
 
+## 2026-10-19 — F13 Directo de nivel TiviMate
+
+Criterio de aceptación cumplido. Se pausó el canal "Reloj" del proveedor falso durante
+10 minutos (601 s): siguió grabando, se reanudó desde la grabación, se rebobinó y se
+volvió al directo, con una sola conexión con el proveedor todo el rato. El proveedor
+falso no registró ningún solapamiento.
+
+**Pausar y rebobinar el directo.**
+- **Mismo ffmpeg, dos salidas.** El directo sigue saliendo por la respuesta rápida de
+  siempre, así que el zapping no cambia. A la vez se graba en disco en trozos HLS fMP4 de
+  2 s, con una ventana deslizante de 30 min (1–2 GB en HD). Se borra al cambiar de canal
+  o al cerrar el reproductor. Una sola conexión con el proveedor (R1).
+- **Comprobado antes de escribir código** que hls.js reproduce esa grabación en la
+  WebView2 con canales reales: el 24 Horas del usuario (1080i entrelazado, E-AC-3), AAC
+  y E-AC-3.
+- **Audio MPEG en la grabación.** MSE no acepta audio MPEG dentro de MP4, así que el MP2
+  (Telecinco) se convierte a AAC solo en la grabación; el directo lo sigue copiando.
+- **La sesión ya no muere con la respuesta HTTP**: en pausa, el reproductor deja de leer
+  el directo.
+  - ffmpeg se sigue leyendo aunque nadie consuma el directo; si no, se pararía también la
+    grabación.
+  - La sesión vive mientras se lea el directo o lleguen señales de vida cada 5 s.
+  - Se cierra a los 20 s de silencio, al cambiar de canal o al salir del reproductor. En
+    este último caso el reproductor la cierra con DELETE y la conexión se libera al
+    momento.
+  - StreamGuard gana `run_while` para esto.
+- **Dónde reanudar.** Las dos salidas empiezan en cero (medido), así que en los primeros
+  30 min el segundo de la grabación es el mismo que el del directo. Se reanuda en ese
+  segundo exacto, 2 s antes: mejor repetir un instante que saltarlo.
+  - Cuando la ventana ya se ha deslizado, hls.js cuenta desde otro punto y se usa "N
+    segundos por detrás del directo".
+  - La primera versión usaba solo esto último y, con el proveedor falso (que no manda a
+    tiempo real), 10 min de pausa daban 9 s de desfase. Medido después del cambio: pausa
+    en el segundo 6,9, reanuda en el ~4,9.
+- **Arreglado al probar:** con rutas de Windows, el muxer HLS de ffmpeg dejaba
+  `init.mp4` en el directorio de trabajo. Se le pasan las rutas con barras normales.
+
+**Resto de F13.**
+- **Número de canal.** Se teclea en el directo ("1", "2" → canal 12 al segundo y medio).
+  "0" solo vuelve al canal anterior. Con dos proveedores el número se repite, y gana el
+  del canal que se está viendo.
+- **Canales recientes** en Directo, por perfil.
+- **Recordatorios** (migración 015, locales y por perfil). Se ponen pulsando un programa
+  futuro en la guía, o desde la búsqueda. El aviso sale en cualquier pantalla un minuto
+  antes, con "Ver ahora".
+- **Búsqueda en la guía:** lo que se emite ahora o más tarde.
+- **Guía sin el límite de 60 canales.**
+  - Las filas son virtuales y los canales llegan por páginas al desplazarse.
+  - La programación se pide por bloques de filas visibles.
+  - Muestra el número de cada canal y una línea roja en "ahora".
+  - Medido con el catálogo real: se llega a la fila 365 desplazándose y solo hay unas 16
+    filas pintadas a la vez.
+  - Es virtual en vertical; en horizontal la ventana sigue siendo de 4 h movible con las
+    flechas, así que no hace falta virtualizar ese eje.
+
+**Fallos encontrados por el camino y arreglados.**
+- **La guía de un proveedor borraba la de los demás** (migración 016). Sincronizar la
+  guía hacía `DELETE FROM epg_programmes`, de todos los proveedores. Visto al añadir el
+  proveedor falso: el usuario se quedó sin guía. Ahora cada programa lleva su proveedor y
+  solo casa con canales del mismo. La guía del usuario vuelve con su próxima
+  sincronización.
+- **Paginación de canales.** Se ordenaba por número y se pedía la página siguiente por
+  id. En cuanto los ids no siguen el orden de los números (canales añadidos al
+  resincronizar), las páginas se saltaban canales o los repetían. Ahora el cursor es
+  número + id, con test.
+- **Carrera al aplicar migraciones.** Al arrancar, dos tareas abren la base de datos a la
+  vez (el servidor y, desde hoy, retomar TMDB). Las dos veían la migración pendiente, la
+  segunda fallaba ("table already exists") y **el servidor local no arrancaba**.
+  - Ahora se comprueba dentro de una transacción IMMEDIATE.
+  - Además, pasar a WAL una base de datos nueva no respeta la espera de SQLite y se
+    reintenta.
+  - Test con 8 conexiones a la vez; con el comportamiento anterior falla.
+
+`cargo test`: 480 pasan.
+
+**Pendiente.**
+- Recordatorios: solo con la app abierta (no hay aviso del sistema operativo) y no
+  viajan entre dispositivos.
+- El catch-up sigue sin pausa propia: ya es un programa grabado, se busca como en VOD.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la
