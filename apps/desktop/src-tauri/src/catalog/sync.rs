@@ -182,6 +182,28 @@ pub async fn run(
         on_progress(SyncProgress { provider_id, stage: "series".into(), current: 0, total: 0 });
     }
 
+    // Paso 5: fuera lo que el proveedor ya no ofrece. Una lista vacía de un tipo se toma
+    // por un fallo pasajero del panel, no por "lo ha quitado todo": no borra nada.
+    let seen = [
+        (queries::ProviderCatalogTable::Channels, channels.iter().map(|c| c.remote_id.clone()).collect::<Vec<_>>()),
+        (queries::ProviderCatalogTable::MovieSources, movies.iter().map(|m| m.remote_id.clone()).collect()),
+        (queries::ProviderCatalogTable::SeriesSources, series.iter().map(|s| s.remote_id.clone()).collect()),
+    ];
+    let (next_conn, removed) = run_blocking(conn, move |conn| {
+        let mut removed = 0;
+        for (table, ids) in &seen {
+            if !ids.is_empty() {
+                removed += queries::delete_unseen_remote_ids(conn, provider_id, *table, ids)?;
+            }
+        }
+        Ok(removed)
+    })
+    .await?;
+    conn = next_conn;
+    if removed > 0 {
+        tracing::info!(provider_id, removed, "retirado del catálogo lo que el proveedor ya no ofrece");
+    }
+
     let (next_conn, ()) = run_blocking(conn, move |conn| queries::mark_provider_synced(conn, provider_id)).await?;
     conn = next_conn;
 
@@ -408,6 +430,24 @@ mod tests {
         assert_eq!(summary.channels, 3);
         assert_eq!(summary.movies, 2);
         assert_eq!(summary.series, 1);
+    }
+
+    /// Lo que el proveedor retira (o cambia de id, como pasó con las listas M3U de URLs
+    /// firmadas) desaparece del catálogo; una lista vacía no borra nada.
+    #[tokio::test]
+    async fn sync_removes_what_the_provider_no_longer_offers_but_not_on_an_empty_list() {
+        let conn = memory_conn();
+        let id = provider_id(&conn);
+        let run_with = |conn, source: FakeSource| run(conn, id, Arc::new(source), StreamGuard::new(), Arc::new(AtomicBool::new(false)), |_| {});
+
+        let (conn, _) = run_with(conn, FakeSource::with_counts(5, 4, 3)).await.unwrap();
+        let (conn, summary) = run_with(conn, FakeSource::with_counts(2, 1, 3)).await.unwrap();
+        assert_eq!((summary.channels, summary.movies, summary.series), (2, 1, 3));
+        let movies: i64 = conn.query_row("SELECT COUNT(*) FROM movies", [], |r| r.get(0)).unwrap();
+        assert_eq!(movies, 1, "la ficha sin ninguna fuente también se va");
+
+        let (_conn, summary) = run_with(conn, FakeSource::with_counts(0, 0, 0)).await.unwrap();
+        assert_eq!((summary.channels, summary.movies, summary.series), (2, 1, 3));
     }
 
     #[tokio::test]

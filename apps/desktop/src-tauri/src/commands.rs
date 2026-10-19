@@ -270,6 +270,10 @@ pub fn delete_provider(app: AppHandle, provider_id: i64) -> CmdResult<()> {
     let provider = queries::get_provider(&conn, provider_id).map_err(|err| err.to_string())?;
 
     queries::delete_provider(&conn, provider_id).map_err(|err| err.to_string())?;
+    // Un proveedor nuevo puede heredar el mismo id: que no herede también su lista.
+    if let Ok(mut cache) = M3U_CACHE.lock() {
+        cache.retain(|(id, _)| *id != provider_id);
+    }
     queries::delete_orphaned_movies_and_series(&conn).map_err(|err| err.to_string())?;
     queries::rebuild_search_index(&conn).map_err(|err| err.to_string())?;
 
@@ -297,11 +301,34 @@ pub(crate) async fn build_source_for_provider(row: queries::ProviderRow) -> CmdR
             Ok(Arc::new(XtreamSource::new(row.base_url, username, password, None).map_err(|err| err.to_string())?))
         }
         ProviderKind::M3u => {
+            if let Some(source) = cached_m3u_source(row.id) {
+                return Ok(source);
+            }
             let credential_ref = row.credential_ref.ok_or("proveedor sin URL guardada")?;
             let url = keychain::read_secret(&credential_ref).map_err(|err| err.to_string())?;
-            Ok(Arc::new(fetch_m3u_source(&url).await?))
+            let source = Arc::new(fetch_m3u_source(&url).await?);
+            if let Ok(mut cache) = M3U_CACHE.lock() {
+                cache.retain(|(id, _)| *id != row.id);
+                cache.push((row.id, (std::time::Instant::now(), Arc::clone(&source))));
+            }
+            Ok(source)
         }
     }
+}
+
+/// Última lista M3U descargada de cada proveedor. Una lista de panel puede pesar más de
+/// 70 MB (medido con la del usuario: 73 MB, 12 s), y se descargaba entera en cada
+/// reproducción solo para buscar una URL. Se reutiliza un rato, incluida la que deja la
+/// sincronización; pasado ese rato se descarga otra vez, por si el panel caduca las URLs
+/// firmadas que pone en ella.
+static M3U_CACHE: std::sync::Mutex<Vec<(i64, (std::time::Instant, Arc<M3uSource>))>> = std::sync::Mutex::new(Vec::new());
+const M3U_REUSE_FOR: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
+fn cached_m3u_source(provider_id: i64) -> Option<Arc<dyn Source + Send + Sync>> {
+    let mut cache = M3U_CACHE.lock().ok()?;
+    cache.retain(|(_, (fetched_at, _))| fetched_at.elapsed() < M3U_REUSE_FOR);
+    let source = cache.iter().find(|(id, _)| *id == provider_id).map(|(_, (_, source))| Arc::clone(source))?;
+    Some(source)
 }
 
 #[tauri::command]

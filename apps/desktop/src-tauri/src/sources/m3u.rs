@@ -3,8 +3,6 @@
 //! `docs/XTREAM-API.md`.
 
 use std::collections::HashMap;
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::io::BufRead;
 use std::sync::LazyLock;
 
@@ -59,6 +57,7 @@ impl M3uSource {
         let mut urls_by_id: HashMap<String, String> = HashMap::new();
         let mut epg_url = None;
         let mut pending: Option<ExtInfEntry> = None;
+        let mut seen_identities: HashMap<String, u32> = HashMap::new();
 
         for line in reader.lines() {
             let line = line.map_err(|err| SourceError::M3uRead(err.to_string()))?;
@@ -89,7 +88,7 @@ impl M3uSource {
 
             let url = line.to_string();
             let kind = classify(&url, entry.group_title.as_deref());
-            let remote_id = opaque_id(&url);
+            let remote_id = stable_id(kind, &entry, &mut seen_identities);
             let extension = extension_from_url(&url);
             urls_by_id.insert(remote_id.clone(), url);
 
@@ -320,10 +319,25 @@ fn extract_episode(title: &str) -> Option<(String, u32, u32)> {
 /// puede traer credenciales en cualquier posición de la ruta bajo un segmento distinto
 /// (`/vod/`, `/stream/`, lo que sea). Un hash del contenido nunca puede filtrar un
 /// substring del original, sea cual sea su forma.
-fn opaque_id(url: &str) -> String {
-    let mut hasher = DefaultHasher::new();
-    url.hash(&mut hasher);
-    format!("m3u:{:016x}", hasher.finish())
+/// Identificador de una entrada que se mantiene entre descargas de la lista. No sale de
+/// la URL: hay paneles que firman cada URL con un token nuevo en cada descarga (medido con
+/// la lista real del usuario: ni una de 222.671 coincidía entre dos descargas seguidas),
+/// y el canal sincronizado no se volvía a encontrar al ir a reproducirlo. Sale de lo que
+/// describe la entrada (tipo, grupo, nombre, `tvg-id`) y de cuántas iguales van antes,
+/// para que dos entradas idénticas no choquen. Tampoco lleva credenciales (R5).
+fn stable_id(kind: MediaKind, entry: &ExtInfEntry, seen: &mut HashMap<String, u32>) -> String {
+    use sha2::{Digest, Sha256};
+    let identity = format!(
+        "{kind:?}\u{1f}{}\u{1f}{}\u{1f}{}",
+        entry.group_title.as_deref().unwrap_or_default(),
+        entry.display_name,
+        entry.tvg_id.as_deref().unwrap_or_default()
+    );
+    let occurrence = seen.entry(identity.clone()).or_insert(0);
+    let digest = Sha256::digest(format!("{identity}\u{1f}{occurrence}").as_bytes());
+    *occurrence += 1;
+    let hex: String = digest.iter().take(8).map(|b| format!("{b:02x}")).collect();
+    format!("m3u:{hex}")
 }
 
 fn extension_from_url(url: &str) -> Option<String> {
@@ -571,6 +585,34 @@ mod tests {
         assert_eq!(url.as_str(), "http://panel.example.com:8080/live/demo/demo/2.ts");
     }
 
+    /// Paneles que firman cada URL con un token nuevo en cada descarga (la lista real del
+    /// usuario): lo sincronizado tiene que seguir encontrándose en la descarga siguiente,
+    /// y reproducirse con la URL nueva.
+    #[tokio::test]
+    async fn ids_survive_a_new_download_where_every_url_changed() {
+        let list = |token: &str| {
+            format!(
+                "#EXTM3U\n\
+                 #EXTINF:-1 tvg-id=\"uno.es\" group-title=\"España\",Canal Uno\nhttp://p.example/t/{token}/a.ts\n\
+                 #EXTINF:-1 group-title=\"España\",Canal Uno\nhttp://p.example/t/{token}/b.ts\n\
+                 #EXTINF:-1 group-title=\"España\",Canal Uno\nhttp://p.example/t/{token}/c.ts\n\
+                 #EXTINF:-1 group-title=\"Cine\",Película (2020)\nhttp://p.example/t/{token}/d.mp4\n"
+            )
+        };
+        let first = M3uSource::parse(std::io::Cursor::new(list("tok-1"))).unwrap();
+        let second = M3uSource::parse(std::io::Cursor::new(list("tok-2"))).unwrap();
+
+        let ids = |source: &M3uSource| -> Vec<String> {
+            source.channels.iter().map(|c| c.remote_id.clone()).chain(source.movies.iter().map(|m| m.remote_id.clone())).collect()
+        };
+        assert_eq!(ids(&first), ids(&second), "el id no puede depender de la URL");
+        let unique: std::collections::HashSet<_> = ids(&first).into_iter().collect();
+        assert_eq!(unique.len(), 4, "dos entradas idénticas no pueden compartir id");
+
+        let item = StreamRef { kind: MediaKind::Live, remote_id: first.channels[2].remote_id.clone(), container_extension: None };
+        assert_eq!(second.stream_url(&item).unwrap().as_str(), "http://p.example/t/tok-2/c.ts", "se reproduce con la URL nueva");
+    }
+
     #[test]
     fn detects_get_php_url_as_embedded_xtream_credentials() {
         let creds = detect_embedded_xtream_credentials(
@@ -588,3 +630,4 @@ mod tests {
         assert!(detect_embedded_xtream_credentials("http://panel.example.com:8080/live/user/pass/1.ts").is_none());
     }
 }
+

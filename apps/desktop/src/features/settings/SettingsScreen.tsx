@@ -279,9 +279,18 @@ export function SettingsScreen() {
               {m3uStatus.channel_count} canales, {m3uStatus.movie_count} películas, {m3uStatus.series_count} series
             </p>
             {m3uStatus.suggested_xtream && (
-              <div className="mt-2 flex items-center gap-3 rounded bg-neutral-800 p-3">
-                <span>Esta URL es en realidad un proveedor Xtream.</span>
-                <button type="button" className="rounded bg-red-600 px-3 py-1 hover:bg-red-500" onClick={applySuggestion}>
+              <div className="mt-3 flex flex-col gap-3 rounded border border-red-600/60 bg-neutral-800 p-4">
+                <p className="font-medium">Recomendado: esta lista viene de un panel Xtream.</p>
+                <p className="text-sm text-neutral-300">
+                  Como Xtream, el catálogo se carga en segundos sin descargar la lista entera, y tienes guía, series completas y
+                  contenido pasado de los canales que lo ofrezcan.
+                </p>
+                <button
+                  type="button"
+                  autoFocus
+                  className="self-start rounded bg-red-600 px-4 py-2 font-medium outline-none hover:bg-red-500 focus:ring-2 focus:ring-white/70"
+                  onClick={applySuggestion}
+                >
                   Usar como Xtream
                 </button>
               </div>

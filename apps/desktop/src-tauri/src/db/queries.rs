@@ -329,6 +329,40 @@ pub fn upsert_series(conn: &Connection, provider_id: i64, category_map: &HashMap
     Ok(())
 }
 
+/// Tablas del catálogo con filas por proveedor y `remote_id`.
+#[derive(Debug, Clone, Copy)]
+pub enum ProviderCatalogTable {
+    Channels,
+    MovieSources,
+    SeriesSources,
+}
+
+/// Quita de este proveedor lo que no vino en la última sincronización (`seen`): lo que
+/// el proveedor retiró, y lo que cambió de `remote_id`. Antes no se borraba nunca, y el
+/// catálogo acumulaba contenido que ya no se podía reproducir. Devuelve cuántas filas.
+pub fn delete_unseen_remote_ids(conn: &Connection, provider_id: i64, table: ProviderCatalogTable, seen: &[String]) -> Result<usize> {
+    let table = match table {
+        ProviderCatalogTable::Channels => "channels",
+        ProviderCatalogTable::MovieSources => "movie_sources",
+        ProviderCatalogTable::SeriesSources => "series_sources",
+    };
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch("CREATE TEMP TABLE IF NOT EXISTS sync_seen (remote_id TEXT PRIMARY KEY); DELETE FROM sync_seen;")?;
+    {
+        let mut insert = tx.prepare("INSERT OR IGNORE INTO sync_seen (remote_id) VALUES (?1)")?;
+        for remote_id in seen {
+            insert.execute(params![remote_id])?;
+        }
+    }
+    let deleted = tx.execute(
+        &format!("DELETE FROM {table} WHERE provider_id = ?1 AND remote_id NOT IN (SELECT remote_id FROM sync_seen)"),
+        params![provider_id],
+    )?;
+    tx.execute("DELETE FROM sync_seen", [])?;
+    tx.commit()?;
+    Ok(deleted)
+}
+
 /// Borra `movies`/`series` sin ninguna fuente asociada. Recalcular `match_key` con
 /// normalización real (F3) puede dejar huérfanas las filas placeholder de F2 al
 /// resincronizar: el `ON CONFLICT(match_key)` ya no coincide con la fila vieja.
