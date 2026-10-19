@@ -321,7 +321,9 @@ pub(crate) async fn build_source_for_provider(row: queries::ProviderRow) -> CmdR
 /// reproducción solo para buscar una URL. Se reutiliza un rato, incluida la que deja la
 /// sincronización; pasado ese rato se descarga otra vez, por si el panel caduca las URLs
 /// firmadas que pone en ella.
-static M3U_CACHE: std::sync::Mutex<Vec<(i64, (std::time::Instant, Arc<M3uSource>))>> = std::sync::Mutex::new(Vec::new());
+static M3U_CACHE: std::sync::Mutex<Vec<CachedM3u>> = std::sync::Mutex::new(Vec::new());
+/// Proveedor, cuándo se descargó y la lista ya parseada.
+type CachedM3u = (i64, (std::time::Instant, Arc<M3uSource>));
 const M3U_REUSE_FOR: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 fn cached_m3u_source(provider_id: i64) -> Option<Arc<dyn Source + Send + Sync>> {
@@ -366,8 +368,29 @@ pub fn export_diagnostics_log(app: AppHandle, log: State<'_, crate::util::diag_l
     Ok(path.display().to_string())
 }
 
+/// Una sola pasada de TMDB a la vez: dos a la vez pedirían los mismos títulos dos veces y
+/// gastarían el límite de peticiones de TMDB.
+static MATCHING_TMDB: AtomicBool = AtomicBool::new(false);
+
+struct MatchingGuard;
+impl Drop for MatchingGuard {
+    fn drop(&mut self) {
+        MATCHING_TMDB.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Al abrir la app: si una pasada de TMDB quedó a medias (la app se cerró), sigue con lo
+/// pendiente en vez de esperar a la próxima sincronización, que puede tardar 12 h.
+pub fn resume_tmdb_matching(app: AppHandle) {
+    spawn_tmdb_matching(app);
+}
+
 fn spawn_tmdb_matching(app: AppHandle) {
+    if MATCHING_TMDB.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return; // ya hay una pasada en marcha: recogerá lo pendiente.
+    }
     tauri::async_runtime::spawn(async move {
+        let _matching = MatchingGuard;
         let api_key = match keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF) {
             Ok(key) => key,
             Err(_) => return, // sin clave todavía: nada que hacer, no es un error

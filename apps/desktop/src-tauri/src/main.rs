@@ -78,6 +78,8 @@ fn main() {
             // mirar cada hora: con la app abierta días seguidos, catálogo y guía caducaban
             // (la EPG solo trae siete días). La sincronización ya se pausa sola mientras
             // hay reproducción (R1).
+            commands::resume_tmdb_matching(app.handle().clone());
+
             let app_handle_for_autosync = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
