@@ -29,5 +29,7 @@ function snapshot() {
     if (!label || label.length > 120) continue;
     items.push({ AXLabel: label, frame: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } });
   }
+  // La ruta actual, para que la prueba sepa en qué pantalla está de verdad.
+  items.push({ AXLabel: `ruta:${window.location.pathname}`, frame: { x: 0, y: 0, width: 0, height: 0 } });
   return items;
 }
