@@ -264,7 +264,9 @@ final class VibePlayerController: UIViewController {
 
     // MARK: - Pistas
 
-    private func trackMenu(names: () -> [Any], indexes: () -> [Any], current: () -> Int32, select: @escaping (Int32) -> Void) -> UIMenu {
+    private func trackMenu(
+        names: @escaping () -> [Any], indexes: @escaping () -> [Any], current: @escaping () -> Int32, select: @escaping (Int32) -> Void
+    ) -> UIMenu {
         UIMenu(children: [UIDeferredMenuElement.uncached { completion in
             let names = names().map { "\($0)" }
             let indexes = indexes().compactMap { ($0 as? NSNumber)?.int32Value }
