@@ -285,7 +285,7 @@ fn json_as_i64(value: &serde_json::Value) -> Option<i64> {
 /// `{"error": "..."}`), ya en palabras del usuario. Algunos paneles solo admiten
 /// conexiones desde ciertos países y lo dicen así; fuera de ellos no hay nada que
 /// arreglar en la app.
-fn rejection_reason(body: &[u8]) -> Option<String> {
+pub(crate) fn rejection_reason(body: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let message = value.get("message").or_else(|| value.get("error"))?.as_str()?.trim();
     if message.is_empty() {

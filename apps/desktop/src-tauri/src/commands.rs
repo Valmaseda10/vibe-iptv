@@ -451,6 +451,10 @@ async fn fetch_m3u_text(url: &str) -> CmdResult<String> {
     let response = client.get(url).send().await.map_err(|_| format!("no se pudo descargar {}", redact(url)))?;
     let status = response.status();
     if !status.is_success() {
+        let body = response.bytes().await.unwrap_or_default();
+        if let Some(reason) = crate::sources::xtream::rejection_reason(&body) {
+            return Err(reason);
+        }
         return Err(format!("el proveedor respondió {status} al pedir la lista {}", redact(url)));
     }
     let text = response.text().await.map_err(|_| format!("no se pudo leer {}", redact(url)))?;
@@ -481,6 +485,10 @@ mod tests {
         let base = serve(
             Router::new()
                 .route("/prohibido", get(|| async { (StatusCode::FORBIDDEN, "Forbidden") }))
+                .route(
+                    "/pais",
+                    get(|| async { (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({"message": "Validation failed, Country is not allowed"}))) }),
+                )
                 .route("/html", get(|| async { "<html>Acceso denegado</html>" }))
                 .route(
                     "/lista",
@@ -494,6 +502,8 @@ mod tests {
 
         let err = fetch_m3u_text(&format!("{base}/prohibido")).await.unwrap_err();
         assert!(err.contains("403"), "{err}");
+        let err = fetch_m3u_text(&format!("{base}/pais")).await.unwrap_err();
+        assert!(err.contains("país"), "{err}");
         let err = fetch_m3u_text(&format!("{base}/html")).await.unwrap_err();
         assert!(err.contains("no es una lista M3U"), "{err}");
         let text = fetch_m3u_text(&format!("{base}/lista")).await.unwrap();
