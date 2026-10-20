@@ -79,10 +79,48 @@ body {
     -webkit-tap-highlight-color: transparent;
     -webkit-touch-callout: none;
   }
+  /* Respuesta inmediata al dedo, como en una app nativa: todo lo que se toca se hunde un
+     poco al pulsar. `manipulation` quita cualquier espera por si fuera un doble toque. */
+  a,
+  button,
+  select,
+  [role="button"],
+  [role="menuitem"] {
+    touch-action: manipulation;
+    transition:
+      transform 120ms ease,
+      opacity 120ms ease,
+      background-color 120ms ease;
+  }
+  a:active,
+  button:active,
+  [role="button"]:active,
+  [role="menuitem"]:active {
+    opacity: 0.6;
+  }
+  [data-card]:active {
+    opacity: 1;
+    transform: scale(0.96);
+  }
   input:not([type="checkbox"]):not([type="radio"]),
   textarea {
     font-size: max(16px, 1em);
   }
+}
+
+/* Entrada suave de cada pantalla (ver `AppLayout`). */
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.page-enter {
+  animation: page-enter 180ms ease-out both;
 }
 
 /* Quien pide menos movimiento (macOS/Windows "reducir movimiento") lo pide para toda la

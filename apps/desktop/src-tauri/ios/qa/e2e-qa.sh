@@ -14,7 +14,27 @@ fail=0
 step=0
 
 shot() { step=$((step + 1)); xcrun simctl io "$UDID" screenshot "$OUT/$(printf %02d $step)-$1.png" >/dev/null 2>&1; }
-a11y() { idb ui describe-all --udid "$UDID" --json > "$OUT/a11y.json" 2>/dev/null || echo "[]" > "$OUT/a11y.json"; }
+# Lo que se ve: lo nativo según idb (reproductor) y, delante, lo de dentro del WebView,
+# que idb no ve; la página lo escribe en `qa-ui.json` (ver `src/lib/qaSnapshot.ts`).
+WEB_MAP=""
+a11y() {
+  idb ui describe-all --udid "$UDID" --json > "$OUT/a11y-nativo.json" 2>/dev/null || echo "[]" > "$OUT/a11y-nativo.json"
+  if [ -z "$WEB_MAP" ]; then
+    local data
+    data=$(xcrun simctl get_app_container "$UDID" "$bundle" data 2>/dev/null)
+    [ -n "$data" ] && WEB_MAP=$(find "$data" -name qa-ui.json 2>/dev/null | head -1)
+  fi
+  python3 - "$OUT/a11y-nativo.json" "${WEB_MAP:-/nonexistent}" "$OUT/a11y.json" <<'PY'
+import json, sys
+def load(p):
+    try:
+        return json.load(open(p))
+    except Exception:
+        return []
+native, web = load(sys.argv[1]), load(sys.argv[2])
+json.dump(native + web, open(sys.argv[3], "w"), ensure_ascii=False)
+PY
+}
 # Centro del primer elemento cuya etiqueta es exactamente $1 (o la contiene, con $2=contiene).
 find_label() {
   python3 - "$OUT/a11y.json" "$1" "${2:-exacta}" <<'PY'
@@ -57,7 +77,7 @@ xcrun simctl install "$UDID" "$APP"
 SIMCTL_CHILD_VIBE_QA_E2E=1 SIMCTL_CHILD_VIBE_QA_PROVIDER_URL="http://127.0.0.1:8899" SIMCTL_CHILD_RUST_BACKTRACE=1 \
   xcrun simctl launch "$UDID" "$bundle" >/dev/null
 sleep 15
-a11y; read -r W H < <(python3 -c "import json;d=json.load(open('$OUT/a11y.json'));f=d[0]['frame'];print(int(f['width']),int(f['height']))" 2>/dev/null || echo "390 844")
+a11y; read -r W H < <(python3 -c "import json;d=json.load(open('$OUT/a11y-nativo.json'));f=d[0]['frame'];print(int(f['width']),int(f['height']))" 2>/dev/null || echo "390 844")
 echo "pantalla: ${W}x${H}"
 
 # Perfil.
@@ -68,7 +88,7 @@ check "entra en Inicio tras elegir perfil" 'wait_visible "Inicio" exacta 20'
 
 # La barra de pestañas tiene que estar pegada abajo (el usuario la veía muy arriba).
 a11y
-read -r _ _ tab_bottom < <(find_label "Inicio")
+read -r _ _ tab_bottom < <(find_label "Navegación principal")
 echo "barra de pestañas: borde inferior en ${tab_bottom:-?} de ${H}"
 check "la barra de pestañas llega abajo del todo" '[ -n "$tab_bottom" ] && [ $((H - tab_bottom)) -le 40 ]'
 

@@ -8,7 +8,9 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import type {
   ChannelsPage,
   EpgNowNextResponse,
+  EpisodeSummary,
   MovieDetailResponse,
+  NativePlayItem,
   NativePlayerEvent,
   NativePlayRequest,
   PlaybackProgressResponse,
@@ -23,12 +25,39 @@ const RESUME_MIN_SECONDS = 5;
 /** Si el título no llega en este tiempo (núcleo lento, ficha sin datos), se reproduce igual. */
 const TITLE_WAIT_MS = 2_000;
 
+/** Pistas de audio y subtítulos que eligió cada perfil, para repetirlas (F15). */
+type TrackPreference = { audio: string | null; subtitle: string | null };
+
+function readTrackPreference(profileId: number | null): TrackPreference {
+  if (profileId === null) return { audio: null, subtitle: null };
+  try {
+    const raw = localStorage.getItem(`vibe.tracks.${profileId}`);
+    return raw ? (JSON.parse(raw) as TrackPreference) : { audio: null, subtitle: null };
+  } catch {
+    return { audio: null, subtitle: null };
+  }
+}
+
+function saveTrackPreference(profileId: number | null, preference: TrackPreference) {
+  if (profileId === null) return;
+  try {
+    localStorage.setItem(`vibe.tracks.${profileId}`, JSON.stringify(preference));
+  } catch {
+    // Sin almacenamiento (modo privado): no se recuerda, no pasa nada.
+  }
+}
+
+function episodeLabel(episode: EpisodeSummary): string {
+  return `T${episode.season} · ${episode.number}. ${episode.title ?? `Episodio ${episode.number}`}`;
+}
+
 /** Reproducción en iPhone y iPad (F15). La hace VLC en una pantalla nativa que tapa
- * esta (ver `src-tauri/src/native_player.rs`); aquí solo se decide qué reproducir, se
- * guarda el progreso que cuenta el reproductor y se responde al zapping y al cierre.
+ * esta (ver `src-tauri/src/native_player.rs`); aquí se decide qué reproducir, se le pasan
+ * la lista de canales o episodios (el zapping lo hace el propio reproductor, al instante),
+ * el siguiente episodio y las pistas preferidas, y se guarda el progreso que cuenta.
  *
- * El stream va con `passthrough=true`: el núcleo no tiene ffmpeg en iOS y VLC abre
- * cualquier contenedor y códec por sí mismo. */
+ * El VOD va con `passthrough=true` (el núcleo no tiene ffmpeg en iOS: VLC abre cualquier
+ * contenedor); el directo, desde la grabación del núcleo para poder pausarlo. */
 export function NativePlayerScreen() {
   const { kind, id } = useParams({ from: "/player/$kind/$id" }) as { kind: Kind; id: string };
   const search = useSearch({ from: "/player/$kind/$id" });
@@ -60,31 +89,35 @@ export function NativePlayerScreen() {
       ),
     enabled: kind === "channel" && profileId !== null,
   });
-  const channelEpgQuery = useQuery({
-    queryKey: ["player-epg-now", itemId],
-    queryFn: () => apiGetOrNull<EpgNowNextResponse[]>(`/api/epg/now?channel_ids=${itemId}`),
-    enabled: kind === "channel" && !isCatchup,
+  const channelIds = useMemo(() => (channelsQuery.data?.items ?? []).map((c) => c.id).join(","), [channelsQuery.data]);
+  const epgNowQuery = useQuery({
+    queryKey: ["player-epg-now-list", channelIds],
+    queryFn: () => apiGetOrNull<EpgNowNextResponse[]>(`/api/epg/now?channel_ids=${channelIds}`),
+    enabled: kind === "channel" && !isCatchup && channelIds.length > 0,
+    staleTime: 60_000,
   });
 
-  const currentEpisode = seriesQuery.data?.episodes.find((e) => e.id === itemId);
-  const nextEpisode = useMemo(
-    () => (currentEpisode ? findNextEpisode(seriesQuery.data?.episodes ?? [], currentEpisode) : undefined),
-    [seriesQuery.data, currentEpisode],
+  const nowByChannel = useMemo(() => {
+    const map = new Map<number, string>();
+    for (const entry of epgNowQuery.data ?? []) if (entry.current) map.set(entry.channel_id, entry.current.title);
+    return map;
+  }, [epgNowQuery.data]);
+
+  const episodes = useMemo(
+    () => [...(seriesQuery.data?.episodes ?? [])].sort((a, b) => a.season - b.season || a.number - b.number),
+    [seriesQuery.data],
   );
+  const currentEpisode = episodes.find((e) => e.id === itemId);
+  const nextEpisode = useMemo(() => (currentEpisode ? findNextEpisode(episodes, currentEpisode) : undefined), [episodes, currentEpisode]);
   const currentChannel = channelsQuery.data?.items.find((c) => c.id === itemId);
 
   const title =
-    kind === "movie"
-      ? movieQuery.data?.clean_title
-      : kind === "episode"
-        ? seriesQuery.data?.clean_title
-        : currentChannel?.display_name;
+    kind === "movie" ? movieQuery.data?.clean_title : kind === "episode" ? seriesQuery.data?.clean_title : currentChannel?.display_name;
   const subtitle =
-    kind === "episode" && currentEpisode
-      ? `T${currentEpisode.season} · ${currentEpisode.number}. ${currentEpisode.title ?? `Episodio ${currentEpisode.number}`}`
-      : kind === "channel"
-        ? (channelEpgQuery.data?.[0]?.current?.title ?? null)
-        : null;
+    kind === "episode" && currentEpisode ? episodeLabel(currentEpisode) : kind === "channel" ? (nowByChannel.get(itemId) ?? null) : null;
+
+  const channelPath = useCallback((channelId: number) => `/stream/live-buffer/channel/${channelId}?profile_id=${profileId}`, [profileId]);
+  const episodePath = useCallback((episodeId: number) => `/stream/episode/${episodeId}?profile_id=${profileId}&passthrough=true`, [profileId]);
 
   // Continuar viendo: el VOD arranca donde se dejó.
   useEffect(() => {
@@ -114,16 +147,43 @@ export function NativePlayerScreen() {
   const streamPath = isCatchup
     ? `/stream/catchup/${itemId}?profile_id=${profileId}&start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}&passthrough=true`
     : liveBuffer
-      ? `/stream/live-buffer/channel/${itemId}?profile_id=${profileId}`
-      : `/stream/${kind}/${itemId}?profile_id=${profileId}${search.source ? `&source=${search.source}` : ""}&passthrough=true`;
+      ? channelPath(itemId)
+      : kind === "episode"
+        ? episodePath(itemId)
+        : `/stream/${kind}/${itemId}?profile_id=${profileId}${search.source ? `&source=${search.source}` : ""}&passthrough=true`;
+
+  // Lo que el reproductor puede abrir por su cuenta: los canales de la categoría (con lo
+  // que emiten) o los episodios de la serie, y el siguiente episodio.
+  const items: NativePlayItem[] = useMemo(() => {
+    if (!base) return [];
+    if (liveBuffer) {
+      return (channelsQuery.data?.items ?? []).map((c) => ({
+        id: c.id,
+        title: c.display_name,
+        subtitle: nowByChannel.get(c.id) ?? null,
+        number: c.number ?? null,
+        url: `${base}${channelPath(c.id)}`,
+      }));
+    }
+    if (kind === "episode") {
+      return episodes.map((e) => ({ id: e.id, title: seriesQuery.data?.clean_title ?? "", subtitle: episodeLabel(e), number: null, url: `${base}${episodePath(e.id)}` }));
+    }
+    return [];
+  }, [base, liveBuffer, kind, channelsQuery.data, nowByChannel, episodes, seriesQuery.data, channelPath, episodePath]);
+  const currentIndex = items.findIndex((item) => item.id === itemId);
+  const next: NativePlayItem | null =
+    kind === "episode" && nextEpisode && base
+      ? { id: nextEpisode.id, title: seriesQuery.data?.clean_title ?? "", subtitle: episodeLabel(nextEpisode), number: null, url: `${base}${episodePath(nextEpisode.id)}` }
+      : null;
 
   const ready = base != null && profileId !== null && startSeconds !== null && (title != null || titleWaitOver);
   const playedPathRef = useRef<string | null>(null);
   const lastRequestRef = useRef<NativePlayRequest | null>(null);
 
-  const play = useCallback(() => {
-    if (!base || startSeconds === null) return;
-    const request: NativePlayRequest = {
+  const buildRequest = useCallback((): NativePlayRequest | null => {
+    if (!base || startSeconds === null) return null;
+    const tracks = readTrackPreference(profileId);
+    return {
       url: `${base}${streamPath}`,
       title: title ?? "",
       subtitle,
@@ -131,17 +191,40 @@ export function NativePlayerScreen() {
       live: kind === "channel" && !isCatchup,
       live_buffer: liveBuffer,
       message: null,
+      kind,
+      items,
+      current_index: currentIndex >= 0 ? currentIndex : null,
+      next,
+      preferred_audio: tracks.audio,
+      preferred_subtitle: tracks.subtitle,
+      update_only: false,
     };
+  }, [base, startSeconds, profileId, streamPath, title, subtitle, kind, isCatchup, liveBuffer, items, currentIndex, next]);
+
+  const play = useCallback(() => {
+    const request = buildRequest();
+    if (!request) return;
     lastRequestRef.current = request;
     setError(null);
     invoke("native_player_play", { request }).catch((err: unknown) => setError(errorMessage(err)));
-  }, [base, streamPath, title, subtitle, startSeconds, kind, isCatchup, liveBuffer]);
+  }, [buildRequest]);
 
   useEffect(() => {
     if (!ready || playedPathRef.current === streamPath) return;
     playedPathRef.current = streamPath;
     play();
   }, [ready, streamPath, play]);
+
+  // La lista o el siguiente episodio llegan (o cambian) con el reproductor ya abierto: se
+  // le pasan sin recargar el vídeo.
+  const itemsKey = `${items.map((i) => `${i.id}:${i.subtitle ?? ""}`).join("|")}#${currentIndex}#${next?.id ?? ""}`;
+  useEffect(() => {
+    if (!lastRequestRef.current || playedPathRef.current !== streamPath) return;
+    const request = buildRequest();
+    if (!request) return;
+    invoke("native_player_play", { request: { ...request, update_only: true } }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [itemsKey]);
 
   const goBack = useCallback(() => {
     if (kind === "movie") navigate({ to: "/movies/$movieId", params: { movieId: id } });
@@ -150,9 +233,9 @@ export function NativePlayerScreen() {
   }, [kind, id, search.seriesId, isCatchup, navigate]);
 
   // Los eventos llegan a un solo oyente; lo que cambia de un render a otro se lee de aquí.
-  const latestRef = useRef({ kind, itemId, profileId, nextEpisode, channels: channelsQuery.data?.items, search, goBack, isCatchup });
+  const latestRef = useRef({ kind, itemId, profileId, channels: channelsQuery.data?.items, search, goBack, isCatchup, channelPath, episodePath });
   useEffect(() => {
-    latestRef.current = { kind, itemId, profileId, nextEpisode, channels: channelsQuery.data?.items, search, goBack, isCatchup };
+    latestRef.current = { kind, itemId, profileId, channels: channelsQuery.data?.items, search, goBack, isCatchup, channelPath, episodePath };
   });
 
   useEffect(() => {
@@ -178,30 +261,34 @@ export function NativePlayerScreen() {
           const position = payload.ended && payload.duration_s ? payload.duration_s : payload.position_s;
           saveProgress(position, payload.duration_s);
           playedPathRef.current = null;
+          lastRequestRef.current = null;
           // Suelta ya la conexión con el proveedor: la grabación del directo no tiene que
           // esperar a quedarse sin lectores.
           if (latest.kind === "channel") apiDelete("/api/live-buffer").catch(() => {});
-          if (payload.ended && latest.kind === "episode" && latest.nextEpisode) {
-            navigate({
-              to: "/player/$kind/$id",
-              params: { kind: "episode", id: String(latest.nextEpisode.id) },
-              search: { seriesId: latest.search.seriesId },
-            });
-          } else {
-            latest.goBack();
+          latest.goBack();
+          break;
+        }
+        case "switched": {
+          // El reproductor ya está reproduciendo el nuevo canal o episodio: la interfaz solo
+          // se pone al día (ruta, recientes, progreso) sin pedirle que vuelva a empezar.
+          if (latest.kind === "channel") {
+            playedPathRef.current = latest.channelPath(payload.id);
+            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(payload.id) }, search: { categoryId: latest.search.categoryId } });
+          } else if (latest.kind === "episode") {
+            playedPathRef.current = latest.episodePath(payload.id);
+            navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(payload.id) }, search: { seriesId: latest.search.seriesId } });
           }
           break;
         }
+        case "tracks":
+          saveTrackPreference(latest.profileId, { audio: payload.audio, subtitle: payload.subtitle });
+          break;
         case "zap": {
-          const items = latest.channels ?? [];
-          const index = items.findIndex((c) => c.id === latest.itemId);
-          const next = index === -1 ? undefined : items[index + payload.direction];
-          if (next) {
-            navigate({
-              to: "/player/$kind/$id",
-              params: { kind: "channel", id: String(next.id) },
-              search: { categoryId: latest.search.categoryId },
-            });
+          const list = latest.channels ?? [];
+          const index = list.findIndex((c) => c.id === latest.itemId);
+          const target = index === -1 ? undefined : list[index + payload.direction];
+          if (target) {
+            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(target.id) }, search: { categoryId: latest.search.categoryId } });
           }
           break;
         }

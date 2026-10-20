@@ -194,6 +194,15 @@ export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | nul
 next_cursor_key: string | null, };
 
 /**
+ * Un canal o episodio que el reproductor puede abrir por su cuenta.
+ */
+export type NativePlayItem = { id: number, title: string, 
+/**
+ * Programa en emisión o nombre del episodio.
+ */
+subtitle: string | null, number: number | null, url: string, };
+
+/**
  * Lo que la interfaz pide reproducir.
  */
 export type NativePlayRequest = { 
@@ -222,12 +231,39 @@ live_buffer: boolean,
  * Si viene, no se reproduce nada: el reproductor ya abierto enseña este mensaje (el
  * motivo real de un fallo, que la interfaz pide al núcleo tras el error de VLC).
  */
-message: string | null, };
+message: string | null, 
+/**
+ * `channel`, `movie` o `episode`.
+ */
+kind: string, 
+/**
+ * Canales de la categoría (o episodios de la serie) para cambiar sin salir del
+ * reproductor: el zapping lo hace el propio reproductor, al instante, y luego avisa con
+ * [`NativePlayerEvent::Switched`].
+ */
+items: Array<NativePlayItem>, 
+/**
+ * Posición del que se reproduce dentro de `items`.
+ */
+current_index: number | null, 
+/**
+ * Siguiente episodio, para la cuenta atrás al llegar a los créditos.
+ */
+next: NativePlayItem | null, 
+/**
+ * Idioma o nombre de pista de audio y subtítulos que prefiere el perfil.
+ */
+preferred_audio: string | null, preferred_subtitle: string | null, 
+/**
+ * Solo actualiza `items`, `next` y las preferencias del reproductor abierto, sin
+ * volver a cargar el vídeo (tras un cambio hecho por el propio reproductor).
+ */
+update_only: boolean, };
 
 /**
  * Lo que cuenta el reproductor nativo.
  */
-export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, } | { "type": "zap", direction: number, } | { "type": "error", message: string, };
+export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 

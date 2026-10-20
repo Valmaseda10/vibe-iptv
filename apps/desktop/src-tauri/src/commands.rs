@@ -266,6 +266,27 @@ pub fn seed_qa_e2e(app: AppHandle, stream_guard: Arc<StreamGuard>) {
     });
 }
 
+/// Pruebas del simulador: `true` si la app arrancó en modo de punta a punta (`VIBE_QA_E2E`).
+/// En la app que se instala (compilación de lanzamiento) siempre `false`.
+#[tauri::command]
+pub fn qa_e2e_enabled() -> bool {
+    cfg!(debug_assertions) && std::env::var("VIBE_QA_E2E").is_ok()
+}
+
+/// Pruebas del simulador: guarda el mapa de la pantalla web en `qa-ui.json` (datos de la
+/// app) para que `ios/qa/e2e-qa.sh` encuentre los botones: idb no ve dentro del WebView.
+#[tauri::command]
+pub fn qa_ui_snapshot(app: AppHandle, json: String) {
+    if !qa_e2e_enabled() {
+        return;
+    }
+    let Ok(dir) = app.path().app_data_dir() else { return };
+    let tmp = dir.join("qa-ui.json.tmp");
+    if std::fs::write(&tmp, json).is_ok() {
+        let _ = std::fs::rename(&tmp, dir.join("qa-ui.json"));
+    }
+}
+
 /// Doce horas desde la última sincronización con éxito (RF2 del PRD): pasado ese
 /// tiempo, el catálogo y sobre todo el EPG envejecen en silencio si el usuario no
 /// pulsa "Sincronizar" a mano en Ajustes.

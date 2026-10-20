@@ -40,6 +40,43 @@ pub struct NativePlayRequest {
     /// motivo real de un fallo, que la interfaz pide al núcleo tras el error de VLC).
     #[serde(default)]
     pub message: Option<String>,
+    /// `channel`, `movie` o `episode`.
+    #[serde(default)]
+    pub kind: String,
+    /// Canales de la categoría (o episodios de la serie) para cambiar sin salir del
+    /// reproductor: el zapping lo hace el propio reproductor, al instante, y luego avisa con
+    /// [`NativePlayerEvent::Switched`].
+    #[serde(default)]
+    pub items: Vec<NativePlayItem>,
+    /// Posición del que se reproduce dentro de `items`.
+    #[serde(default)]
+    pub current_index: Option<u32>,
+    /// Siguiente episodio, para la cuenta atrás al llegar a los créditos.
+    #[serde(default)]
+    pub next: Option<NativePlayItem>,
+    /// Idioma o nombre de pista de audio y subtítulos que prefiere el perfil.
+    #[serde(default)]
+    pub preferred_audio: Option<String>,
+    #[serde(default)]
+    pub preferred_subtitle: Option<String>,
+    /// Solo actualiza `items`, `next` y las preferencias del reproductor abierto, sin
+    /// volver a cargar el vídeo (tras un cambio hecho por el propio reproductor).
+    #[serde(default)]
+    pub update_only: bool,
+}
+
+/// Un canal o episodio que el reproductor puede abrir por su cuenta.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct NativePlayItem {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub title: String,
+    /// Programa en emisión o nombre del episodio.
+    pub subtitle: Option<String>,
+    #[ts(type = "number | null")]
+    pub number: Option<i64>,
+    pub url: String,
 }
 
 /// Lo que cuenta el reproductor nativo.
@@ -56,6 +93,14 @@ pub enum NativePlayerEvent {
     Zap { direction: i32 },
     /// VLC no pudo abrir o seguir reproduciendo el stream.
     Error { message: String },
+    /// El reproductor cambió por su cuenta a otro canal o episodio de `items` (o al
+    /// siguiente episodio): la interfaz se pone al día sin volver a pedir la reproducción.
+    Switched {
+        #[ts(type = "number")]
+        id: i64,
+    },
+    /// El usuario eligió pistas: se recuerdan para el perfil.
+    Tracks { audio: Option<String>, subtitle: Option<String> },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -86,6 +131,13 @@ pub fn native_player_play(request: NativePlayRequest) -> Result<(), NativePlayer
     platform::present(&request)
 }
 
+/// Comando Tauri: si la conexión actual gasta datos (móvil) o no hay red. En escritorio
+/// siempre `false`. Con `true` no se reproduce el tráiler de fondo de las fichas.
+#[tauri::command]
+pub fn network_is_metered() -> bool {
+    platform::network_is_metered()
+}
+
 #[cfg(target_os = "ios")]
 mod platform {
     use std::ffi::{c_char, CStr, CString};
@@ -99,11 +151,20 @@ mod platform {
 
     extern "C" {
         fn vibe_player_present(json: *const c_char);
+        fn vibe_network_start();
+        fn vibe_network_is_metered() -> bool;
+    }
+
+    pub fn network_is_metered() -> bool {
+        // SAFETY: función de Swift sin argumentos ni estado compartido con Rust.
+        unsafe { vibe_network_is_metered() }
     }
 
     /// Guarda el `AppHandle` con el que se reenvían los eventos a la interfaz.
     pub fn install(app: AppHandle) {
         let _ = APP.set(app);
+        // SAFETY: función de Swift sin argumentos; solo arranca un `NWPathMonitor`.
+        unsafe { vibe_network_start() };
         // Prueba automática del reproductor en el simulador (`.github/workflows/ios.yml`):
         // con `VIBE_QA_PLAYER_URL`, abre el reproductor con ese vídeo nada más arrancar.
         // Solo en compilaciones de depuración: la app que se instala nunca lo mira.
@@ -121,6 +182,13 @@ mod platform {
                     live,
                     live_buffer: false,
                     message: None,
+                    kind: if live { "channel".into() } else { "movie".into() },
+                    items: vec![],
+                    current_index: None,
+                    next: None,
+                    preferred_audio: None,
+                    preferred_subtitle: None,
+                    update_only: false,
                 };
                 let _ = present(&request);
             });
@@ -164,6 +232,10 @@ mod platform {
 
     pub fn install(_app: tauri::AppHandle) {}
 
+    pub fn network_is_metered() -> bool {
+        false
+    }
+
     pub fn present(_request: &NativePlayRequest) -> Result<(), NativePlayerError> {
         Err(NativePlayerError::Unsupported)
     }
@@ -190,12 +262,17 @@ mod tests {
             parse_event(r#"{"type":"error","message":"no se pudo abrir"}"#),
             Some(NativePlayerEvent::Error { message: "no se pudo abrir".into() })
         );
+        assert_eq!(parse_event(r#"{"type":"switched","id":42}"#), Some(NativePlayerEvent::Switched { id: 42 }));
+        assert_eq!(
+            parse_event(r#"{"type":"tracks","audio":"Español","subtitle":null}"#),
+            Some(NativePlayerEvent::Tracks { audio: Some("Español".into()), subtitle: None })
+        );
         assert_eq!(parse_event(r#"{"type":"otra_cosa"}"#), None);
     }
 
     #[test]
     fn outside_ios_the_command_says_it_is_not_available() {
-        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false, message: None };
+        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false, message: None, kind: "movie".into(), items: vec![], current_index: None, next: None, preferred_audio: None, preferred_subtitle: None, update_only: false };
         assert!(matches!(native_player_play(request), Err(NativePlayerError::Unsupported)));
     }
 }

@@ -1,14 +1,16 @@
 import { useEffect, useState } from "react";
 import { useCanGoBack, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ApiError, apiGet, apiPost, errorMessage, useApiBase, imagePath } from "../../lib/api-client";
+import { ApiError, apiGet, apiGetOrNull, apiPost, errorMessage, useApiBase, imagePath } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { TrailerModal } from "../../components/TrailerModal";
 import { Row } from "../../components/Row";
 import { PosterCard } from "../../components/PosterCard";
-import type { MovieDetailResponse } from "../../lib/api-types";
+import type { MovieDetailResponse, PlaybackProgressResponse } from "../../lib/api-types";
+import { DETAIL_ACTION } from "../../components/detailAction";
+import { BackdropTrailer } from "../../components/BackdropTrailer";
 
 export function MovieDetailScreen() {
   const { movieId } = useParams({ from: "/movies/$movieId" });
@@ -24,6 +26,15 @@ export function MovieDetailScreen() {
   const queryClient = useQueryClient();
   const [trailerOpen, setTrailerOpen] = useState(false);
   const [selectedSourceId, setSelectedSourceId] = useState<number | null>(null);
+  // "Continuar" con su barra de progreso, como en Netflix (F15).
+  const progressQuery = useQuery({
+    queryKey: ["progress", "movie", movieId, profileId],
+    queryFn: () => apiGetOrNull<PlaybackProgressResponse>(`/api/playback/progress?profile_id=${profileId}&item_kind=movie&item_id=${movieId}`),
+    enabled: profileId !== null,
+  });
+  const resume = progressQuery.data && !progressQuery.data.finished && progressQuery.data.position_s > 5 ? progressQuery.data : null;
+  const resumePercent = resume?.duration_s ? Math.min(100, (resume.position_s / resume.duration_s) * 100) : null;
+  const remainingMin = resume?.duration_s ? Math.max(1, Math.round((resume.duration_s - resume.position_s) / 60)) : null;
   const { data, isPending, isError, error } = useQuery({
     queryKey: ["movie", movieId, profileId],
     queryFn: () => apiGet<MovieDetailResponse>(`/api/movies/${movieId}${profileId != null ? `?profile_id=${profileId}` : ""}`),
@@ -69,8 +80,9 @@ export function MovieDetailScreen() {
 
   return (
     <div className="relative min-h-full">
-      <div className="absolute inset-0 h-[60vh] overflow-hidden">
+      <div className="absolute inset-0 h-[60vh] overflow-hidden" style={{ ["--trailer-h" as string]: "60vh" }}>
         {backdrop && <img src={backdrop} alt="" className="h-full w-full object-cover" />}
+        {backdrop && data.trailer_key && <BackdropTrailer youtubeKey={data.trailer_key} />}
         {poster && <img src={poster} alt="" className="h-full w-full scale-110 object-cover opacity-40 blur-2xl" />}
         <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/70 to-transparent" />
         <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/90 via-neutral-950/10 to-transparent" />
@@ -112,50 +124,58 @@ export function MovieDetailScreen() {
           </div>
         )}
 
-        <div className="flex items-center gap-3 pt-2">
-          <button
-            type="button"
-            onClick={() =>
-              navigate({
-                to: "/player/$kind/$id",
-                params: { kind: "movie", id: movieId },
-                search: activeSourceId ? { source: activeSourceId } : {},
-              })
-            }
-            // Con mando, abrir una ficha y pulsar OK debe reproducir: el foco llega aquí.
-            autoFocus
-            className="rounded-lg bg-red-600 px-6 py-3 font-medium text-white outline-none hover:bg-red-500"
-          >
-            ▶ Reproducir
-          </button>
-          <button
-            type="button"
-            onClick={() => toggleFavorite("movie", data.id, !isFavorite("movie", data.id))}
-            aria-pressed={isFavorite("movie", data.id)}
-            className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-3 text-sm outline-none hover:bg-neutral-900"
-          >
-            <HeartIcon filled={isFavorite("movie", data.id)} className={`h-5 w-5 ${isFavorite("movie", data.id) ? "text-red-500" : ""}`} />
-            {isFavorite("movie", data.id) ? "En favoritos" : "Añadir a favoritos"}
-          </button>
-          <button
-            type="button"
-            onClick={() => watchedMutation.mutate(!data.watched)}
-            aria-pressed={data.watched}
-            className={`flex items-center gap-2 rounded-lg border px-4 py-3 text-sm outline-none ${
-              data.watched ? "border-emerald-700 text-emerald-500 hover:bg-emerald-950/40" : "border-neutral-700 hover:bg-neutral-900"
-            }`}
-          >
-            {data.watched ? "✓ Vista" : "Marcar como vista"}
-          </button>
-          {data.trailer_key && (
+        <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:items-start">
+          <div className="flex flex-col gap-1.5">
             <button
               type="button"
-              onClick={() => setTrailerOpen(true)}
-              className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-3 text-sm outline-none hover:bg-neutral-900"
+              onClick={() =>
+                navigate({
+                  to: "/player/$kind/$id",
+                  params: { kind: "movie", id: movieId },
+                  search: activeSourceId ? { source: activeSourceId } : {},
+                })
+              }
+              // Con mando, abrir una ficha y pulsar OK debe reproducir: el foco llega aquí.
+              autoFocus
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-white px-6 py-3 font-semibold text-black outline-none hover:bg-neutral-200 sm:w-auto sm:bg-red-600 sm:text-white sm:hover:bg-red-500"
             >
-              🎬 Tráiler
+              ▶ {resume ? "Continuar" : "Reproducir"}
             </button>
-          )}
+            {resume && resumePercent != null && (
+              <div className="flex items-center gap-2 text-xs text-neutral-400">
+                <div className="h-1 flex-1 overflow-hidden rounded bg-neutral-700 sm:w-32 sm:flex-none">
+                  <div className="h-full bg-red-600" style={{ width: `${resumePercent}%` }} />
+                </div>
+                {remainingMin != null && <span>Quedan {remainingMin} min</span>}
+              </div>
+            )}
+          </div>
+          <div className="grid grid-cols-3 gap-1 sm:flex sm:gap-3">
+            <button
+              type="button"
+              onClick={() => toggleFavorite("movie", data.id, !isFavorite("movie", data.id))}
+              aria-pressed={isFavorite("movie", data.id)}
+              className={DETAIL_ACTION}
+            >
+              <HeartIcon filled={isFavorite("movie", data.id)} className={`h-6 w-6 sm:h-5 sm:w-5 ${isFavorite("movie", data.id) ? "text-red-500" : ""}`} />
+              {isFavorite("movie", data.id) ? "En mi lista" : "Mi lista"}
+            </button>
+            <button
+              type="button"
+              onClick={() => watchedMutation.mutate(!data.watched)}
+              aria-pressed={data.watched}
+              className={`${DETAIL_ACTION} ${data.watched ? "text-emerald-400 sm:border-emerald-700" : ""}`}
+            >
+              <span className="text-xl leading-none sm:text-base">{data.watched ? "✓" : "○"}</span>
+              {data.watched ? "Vista" : "Marcar vista"}
+            </button>
+            {data.trailer_key && (
+              <button type="button" onClick={() => setTrailerOpen(true)} className={DETAIL_ACTION}>
+                <span className="text-xl leading-none sm:text-base">🎬</span>
+                Tráiler
+              </button>
+            )}
+          </div>
         </div>
 
         {trailerOpen && data.trailer_key && (

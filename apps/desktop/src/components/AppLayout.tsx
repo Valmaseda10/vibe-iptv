@@ -55,6 +55,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
     }
   }
 
+  // Cada pantalla empieza arriba: antes se heredaba el desplazamiento de la anterior.
+  useEffect(() => {
+    mainRef.current?.scrollTo({ top: 0 });
+  }, [pathname]);
+
   // Al abrir la app, o tras una navegación que desmonta el elemento enfocado, el foco
   // queda en <body> y las flechas no hacían nada: con un mando no hay Tab para empezar.
   // La primera flecha enfoca el primer elemento del contenido.
@@ -155,7 +160,9 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </nav>
 
       <main ref={mainRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
-        {children}
+        <div key={pathname} className="page-enter h-full">
+          {children}
+        </div>
       </main>
       <MobileTabBar onSurprise={surpriseMe} surprising={surprising} />
       <SyncStatusBanner />

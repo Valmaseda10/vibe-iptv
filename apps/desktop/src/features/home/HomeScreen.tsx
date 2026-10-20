@@ -3,7 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { invoke } from "@tauri-apps/api/core";
 import { apiDelete, apiGet, imagePath, useApiBase } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
-import type { FeaturedItem, HomeResponse, ProviderSummary } from "../../lib/api-types";
+import type { FavoriteItem, FeaturedItem, HomeResponse, ProviderSummary } from "../../lib/api-types";
 import { Row } from "../../components/Row";
 import { PosterCard, PosterCardSkeleton } from "../../components/PosterCard";
 import { ProviderStatusPill } from "./ProviderStatusPill";
@@ -22,6 +22,13 @@ export function HomeScreen() {
     queryFn: () => apiGet<HomeResponse>(`/api/home?profile_id=${profileId}`),
     enabled: profileId !== null,
   });
+  // "Mi lista" (como Netflix): misma clave que los corazones, así se actualiza al instante.
+  const favoritesQuery = useQuery({
+    queryKey: ["favorites", profileId],
+    queryFn: () => apiGet<FavoriteItem[]>(`/api/favorites?profile_id=${profileId}`),
+    enabled: profileId !== null,
+  });
+  const myList = (favoritesQuery.data ?? []).filter((f) => (f.item_kind === "movie" || f.item_kind === "series") && f.title);
 
   // Optimista: la fila se siente al instante como Netflix, en vez de esperar la
   // respuesta del servidor para que el ítem desaparezca.
@@ -106,6 +113,23 @@ export function HomeScreen() {
           ))}
         </Row>
       ) : null}
+
+      {myList.length > 0 && (
+        <Row title="Mi lista">
+          {myList.map((item) => (
+            <PosterCard
+              key={`fav-${item.item_kind}-${item.item_id}`}
+              title={item.title}
+              posterPath={item.poster_path}
+              onOpen={() =>
+                item.item_kind === "movie"
+                  ? navigate({ to: "/movies/$movieId", params: { movieId: String(item.item_id) } })
+                  : navigate({ to: "/series/$seriesId", params: { seriesId: String(item.item_id) } })
+              }
+            />
+          ))}
+        </Row>
+      )}
 
       {!isPending && data && data.recommended.length > 0 && (
         <Row title="Recomendado para ti">

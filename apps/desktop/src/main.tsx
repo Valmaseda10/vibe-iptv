@@ -6,6 +6,8 @@ import { router } from "./router";
 import { ActiveProfileProvider } from "./lib/activeProfile";
 import { SyncStatusProvider } from "./lib/syncStatus";
 import { onApiBaseChange, recoverApiBase } from "./lib/api-client";
+import { startQaSnapshots } from "./lib/qaSnapshot";
+import { IS_IOS } from "./lib/platform";
 import "./styles/globals.css";
 
 // Sin esto (`staleTime` a 0 por defecto de TanStack Query) cada vez que se vuelve a
@@ -32,6 +34,11 @@ onApiBaseChange((base) => {
   queryClient.setQueryData(["server-base-url"], base);
   queryClient.invalidateQueries();
 });
+// iOS solo aplica `:active` (el aspecto de "pulsado") si la página escucha los toques:
+// sin esto, ningún botón reaccionaba al dedo y todo parecía lento.
+document.addEventListener("touchstart", () => {}, { passive: true });
+if (IS_IOS) startQaSnapshots();
+
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") recoverApiBase().catch(() => {});
 });

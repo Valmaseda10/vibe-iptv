@@ -6,6 +6,8 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { TrailerModal } from "../../components/TrailerModal";
+import { DETAIL_ACTION } from "../../components/detailAction";
+import { BackdropTrailer } from "../../components/BackdropTrailer";
 import { Row } from "../../components/Row";
 import { PosterCard } from "../../components/PosterCard";
 import type { EpisodeSummary, SeriesDetailResponse } from "../../lib/api-types";
@@ -70,11 +72,18 @@ export function SeriesDetailScreen() {
   // Mismo criterio que la ficha de película: sin fondo de TMDB, el póster ocupa su lugar.
   const poster = backdrop ? null : imagePath(base, data.poster_path, "w500");
   const episodesOfSeason = seasons.find((s) => s.season === activeSeason)?.episodes ?? [];
+  // "Continuar T·E" (como Netflix): el episodio que sigue al último visto; sin ninguno
+  // visto, el primero; con todos vistos, también el primero, para volver a empezar.
+  const allEpisodes = seasons.flatMap((s) => s.episodes);
+  const lastWatched = allEpisodes.reduce((last, episode, index) => (episode.watched ? index : last), -1);
+  const startedWatching = lastWatched >= 0 && lastWatched < allEpisodes.length - 1;
+  const upNext = allEpisodes[startedWatching ? lastWatched + 1 : 0];
 
   return (
     <div className="relative min-h-full">
-      <div className="absolute inset-0 h-[50vh] overflow-hidden">
+      <div className="absolute inset-0 h-[50vh] overflow-hidden" style={{ ["--trailer-h" as string]: "50vh" }}>
         {backdrop && <img src={backdrop} alt="" className="h-full w-full object-cover" />}
+        {backdrop && data.trailer_key && <BackdropTrailer youtubeKey={data.trailer_key} />}
         {poster && <img src={poster} alt="" className="h-full w-full scale-110 object-cover opacity-40 blur-2xl" />}
         <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/70 to-transparent" />
       </div>
@@ -92,25 +101,33 @@ export function SeriesDetailScreen() {
         </div>
         {data.overview && <p className="max-w-2xl text-neutral-300">{data.overview}</p>}
 
-        <div className="flex items-center gap-3 pt-2">
-          <button
-            type="button"
-            onClick={() => toggleFavorite("series", data.id, !isFavorite("series", data.id))}
-            aria-pressed={isFavorite("series", data.id)}
-            className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-3 text-sm outline-none hover:bg-neutral-900"
-          >
-            <HeartIcon filled={isFavorite("series", data.id)} className={`h-5 w-5 ${isFavorite("series", data.id) ? "text-red-500" : ""}`} />
-            {isFavorite("series", data.id) ? "En favoritos" : "Añadir a favoritos"}
-          </button>
-          {data.trailer_key && (
+        <div className="flex flex-col gap-3 pt-2 sm:flex-row sm:items-start">
+          {upNext && (
             <button
               type="button"
-              onClick={() => setTrailerOpen(true)}
-              className="flex items-center gap-2 rounded-lg border border-neutral-700 px-4 py-3 text-sm outline-none hover:bg-neutral-900"
+              onClick={() => navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(upNext.id) }, search: { seriesId } })}
+              className="flex w-full items-center justify-center gap-2 rounded-lg bg-white px-6 py-3 font-semibold text-black outline-none hover:bg-neutral-200 sm:w-auto sm:bg-red-600 sm:text-white sm:hover:bg-red-500"
             >
-              🎬 Tráiler
+              ▶ {startedWatching ? "Continuar" : "Ver"} T{upNext.season} · E{upNext.number}
             </button>
           )}
+          <div className="grid grid-cols-3 gap-1 sm:flex sm:gap-3">
+            <button
+              type="button"
+              onClick={() => toggleFavorite("series", data.id, !isFavorite("series", data.id))}
+              aria-pressed={isFavorite("series", data.id)}
+              className={DETAIL_ACTION}
+            >
+              <HeartIcon filled={isFavorite("series", data.id)} className={`h-6 w-6 sm:h-5 sm:w-5 ${isFavorite("series", data.id) ? "text-red-500" : ""}`} />
+              {isFavorite("series", data.id) ? "En mi lista" : "Mi lista"}
+            </button>
+            {data.trailer_key && (
+              <button type="button" onClick={() => setTrailerOpen(true)} className={DETAIL_ACTION}>
+                <span className="text-xl leading-none sm:text-base">🎬</span>
+                Tráiler
+              </button>
+            )}
+          </div>
         </div>
 
         {trailerOpen && data.trailer_key && (
