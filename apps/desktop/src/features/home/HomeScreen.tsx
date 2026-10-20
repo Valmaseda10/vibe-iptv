@@ -6,6 +6,7 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import type { FeaturedItem, HomeResponse, ProviderSummary } from "../../lib/api-types";
 import { Row } from "../../components/Row";
 import { PosterCard, PosterCardSkeleton } from "../../components/PosterCard";
+import { ProviderStatusPill } from "./ProviderStatusPill";
 
 export function HomeScreen() {
   const navigate = useNavigate();
@@ -56,7 +57,11 @@ export function HomeScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-8 pb-8 sm:gap-10">
+    <div className="relative flex flex-col gap-8 pb-8 sm:gap-10">
+      {/* Arriba a la derecha, sobre el banner: ¿responde la lista ahora mismo? */}
+      <div className="absolute right-4 top-3 z-20 sm:right-10 sm:top-5">
+        <ProviderStatusPill />
+      </div>
       {isPending ? <HeroBannerSkeleton /> : data?.featured ? <HeroBanner featured={data.featured} /> : null}
 
       {/* Sin banner (sin clave de TMDB no hay fondos), el título necesita su propio margen. */}

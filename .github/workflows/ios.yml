@@ -22,6 +22,10 @@ on:
         description: "Probar el reproductor en el simulador con toques reales (idb)"
         type: boolean
         default: false
+      qa_e2e:
+        description: "Prueba de punta a punta en iPhone e iPad simulados con el proveedor falso"
+        type: boolean
+        default: false
 
 concurrency:
   group: ios
@@ -130,7 +134,7 @@ jobs:
 
       # Prueba de humo opcional: arranca la app en un iPhone simulado y guarda capturas.
       - name: Compilar para el simulador
-        if: inputs.simulator || inputs.qa_player
+        if: inputs.simulator || inputs.qa_player || inputs.qa_e2e
         run: npx tauri ios build --target aarch64-sim --debug --ci --build-number ${{ github.run_number }}
 
       - name: Abrir en el simulador y capturar
@@ -167,12 +171,12 @@ jobs:
           retention-days: 7
 
       - uses: actions/setup-python@v5
-        if: inputs.qa_player
+        if: inputs.qa_player || inputs.qa_e2e
         with:
           python-version: "3.11"
 
       - name: Instalar idb (toques en el simulador)
-        if: inputs.qa_player
+        if: inputs.qa_player || inputs.qa_e2e
         run: |
           brew tap facebook/fb
           brew trust facebook/fb || true
@@ -200,4 +204,42 @@ jobs:
           path: |
             ${{ runner.temp }}/qa-player
             ${{ runner.temp }}/companion.log
+          retention-days: 7
+
+      - name: Proveedor falso (necesita ffmpeg)
+        if: inputs.qa_e2e
+        run: |
+          brew install ffmpeg >/dev/null
+          (cd .. && cd .. && nohup node tools/proveedor-falso/server.mjs > "$RUNNER_TEMP/proveedor-falso.log" 2>&1 &)
+          for _ in $(seq 1 180); do curl -sf "http://127.0.0.1:8899/player_api.php?username=qa&password=qa" >/dev/null && break; sleep 2; done
+          tail -5 "$RUNNER_TEMP/proveedor-falso.log"
+
+      - name: Prueba de punta a punta (iPhone y iPad)
+        if: inputs.qa_e2e
+        run: |
+          set -uo pipefail
+          app=$(find src-tauri/gen/apple/build -name "*.app" -path "*sim*" | head -n 1)
+          [ -z "$app" ] && app=$(find src-tauri/gen/apple/build -name "*.app" | head -n 1)
+          status=0
+          for kind in iPhone iPad; do
+            device=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) for x in d[k] if x['name'].startswith('$kind')))")
+            echo "== $kind ($device)"
+            xcrun simctl boot "$device" || true
+            xcrun simctl bootstatus "$device" -b
+            pkill -f idb_companion || true
+            idb_companion --udid "$device" > "$RUNNER_TEMP/companion-$kind.log" 2>&1 &
+            sleep 8
+            idb connect localhost 10882 || true
+            bash src-tauri/ios/qa/e2e-qa.sh "$device" "$app" "$RUNNER_TEMP/qa-e2e/$kind" || status=1
+            xcrun simctl shutdown "$device" || true
+          done
+          exit $status
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.qa_e2e && always()
+        with:
+          name: qa-e2e
+          path: |
+            ${{ runner.temp }}/qa-e2e
+            ${{ runner.temp }}/proveedor-falso.log
           retention-days: 7

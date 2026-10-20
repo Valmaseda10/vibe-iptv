@@ -67,6 +67,11 @@ pub struct AccountStatusResponse {
 /// Sin red de por medio: hay sesión si hay una guardada. Si la nube la revoca, el motor
 /// de sincronización la borra al intentar renovarla y la siguiente consulta ya lo ve.
 async fn get_status(State(state): State<AccountState>) -> Json<AccountStatusResponse> {
+    // Prueba de punta a punta en el simulador (ver `commands::seed_qa_e2e`): sin cuenta.
+    #[cfg(debug_assertions)]
+    if std::env::var("VIBE_QA_E2E").is_ok() {
+        return Json(AccountStatusResponse { logged_in: true, email: Some("qa@local".into()), sync: None });
+    }
     let Some(session) = session::load() else {
         return Json(AccountStatusResponse { logged_in: false, email: None, sync: None });
     };
@@ -95,7 +100,10 @@ struct CredentialsInput {
     password: String,
 }
 
-async fn signed_in(db_path: &Path, session: Session) -> Json<AccountStatusResponse> {
+/// Lo que el inicio de sesión espera a la primera bajada de la nube.
+const FIRST_MERGE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+
+async fn signed_in(db_path: &Path, cloud: &dyn CloudBackend, session: Session) -> Json<AccountStatusResponse> {
     let email = session.email.clone();
     // Antes de que la app enseñe nada: si los perfiles de este PC eran de otra cuenta,
     // fuera. Si fallara, la fusión lo vuelve a intentar antes de subir nada.
@@ -103,20 +111,27 @@ async fn signed_in(db_path: &Path, session: Session) -> Json<AccountStatusRespon
         tracing::warn!(error = %err, "no se pudo comprobar de quién son los perfiles locales");
     }
     session::save(&session);
-    // La fusión con lo que haya en la nube la hace el motor en segundo plano: el login
-    // responde en cuanto la nube acepta las credenciales.
+    // La primera bajada de la nube antes de responder (con tope): sin ella, la pantalla
+    // de perfiles de un dispositivo nuevo se pintaba vacía y obligaba a crear uno aunque la
+    // cuenta ya tuviera otros, que solo aparecían después (F15, visto en el iPhone). Si la
+    // nube tarda, el motor la termina en segundo plano y la pantalla se actualiza sola.
+    match tokio::time::timeout(FIRST_MERGE_TIMEOUT, engine::initial_merge_if_needed(db_path, cloud, &session)).await {
+        Ok(Err(err)) => tracing::warn!(error = %err, "no se pudo hacer la primera fusión al iniciar sesión"),
+        Err(_) => tracing::warn!("la primera fusión con la nube tarda; sigue en segundo plano"),
+        Ok(Ok(())) => {}
+    }
     engine::wake();
     Json(AccountStatusResponse { logged_in: true, email: Some(email), sync: None })
 }
 
 async fn post_signup(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, CloudError> {
     let session = state.cloud.sign_up(input.email.trim(), &input.password).await?;
-    Ok(signed_in(&state.db_path, session).await)
+    Ok(signed_in(&state.db_path, state.cloud.as_ref(), session).await)
 }
 
 async fn post_login(State(state): State<AccountState>, Json(input): Json<CredentialsInput>) -> Result<Json<AccountStatusResponse>, CloudError> {
     let session = state.cloud.sign_in(input.email.trim(), &input.password).await?;
-    Ok(signed_in(&state.db_path, session).await)
+    Ok(signed_in(&state.db_path, state.cloud.as_ref(), session).await)
 }
 
 /// Cierra sesión localmente siempre. Antes intenta un último envío de lo pendiente,
@@ -163,7 +178,7 @@ pub struct ResetPasswordInput {
 async fn post_reset_password(State(state): State<AccountState>, Json(input): Json<ResetPasswordInput>) -> Result<Json<AccountStatusResponse>, CloudError> {
     state.cloud.confirm_password_reset(&input.token_or_link, &input.new_password).await?;
     let session = state.cloud.sign_in(input.email.trim(), &input.new_password).await?;
-    Ok(signed_in(&state.db_path, session).await)
+    Ok(signed_in(&state.db_path, state.cloud.as_ref(), session).await)
 }
 
 #[derive(Deserialize)]

@@ -149,8 +149,10 @@ pub async fn add_provider(
     stream_guard: State<'_, Arc<StreamGuard>>,
     input: AddProviderInput,
 ) -> CmdResult<ProviderSummary> {
-    let stream_guard: Arc<StreamGuard> = stream_guard.inner().clone();
+    add_provider_inner(app, stream_guard.inner().clone(), input).await
+}
 
+async fn add_provider_inner(app: AppHandle, stream_guard: Arc<StreamGuard>, input: AddProviderInput) -> CmdResult<ProviderSummary> {
     let (source, base_url_for_db, username_for_db, secret): (Arc<dyn Source + Send + Sync>, String, Option<String>, Option<String>) =
         match input.kind {
             ProviderKind::Xtream => {
@@ -230,6 +232,38 @@ pub struct SyncFinished {
     pub movies: i64,
     #[ts(type = "number")]
     pub series: i64,
+}
+
+/// Prueba de punta a punta en el simulador de iOS (`ios/qa/`): con `VIBE_QA_E2E`, la app
+/// arranca con un perfil y el proveedor falso de `VIBE_QA_PROVIDER_URL` (usuario y
+/// contraseña "qa"), ya sincronizándose. Solo en compilaciones de depuración: la app que se
+/// instala nunca lo mira.
+#[cfg(debug_assertions)]
+pub fn seed_qa_e2e(app: AppHandle, stream_guard: Arc<StreamGuard>) {
+    if std::env::var("VIBE_QA_E2E").is_err() {
+        return;
+    }
+    let base_url = std::env::var("VIBE_QA_PROVIDER_URL").unwrap_or_else(|_| "http://127.0.0.1:8899".to_string());
+    tauri::async_runtime::spawn(async move {
+        let Ok(conn) = schema::open_connection(&app) else { return };
+        if crate::db::reads::count_profiles(&conn).unwrap_or(0) == 0 {
+            let _ = queries::insert_profile(&conn, "QA", None, true);
+        }
+        if queries::list_providers(&conn).map(|rows| rows.is_empty()).unwrap_or(false) {
+            let input = AddProviderInput {
+                kind: ProviderKind::Xtream,
+                name: "Proveedor de pruebas".into(),
+                base_url,
+                username: Some("qa".into()),
+                password: Some("qa".into()),
+                m3u_url: None,
+                user_agent: None,
+            };
+            if let Err(err) = add_provider_inner(app, stream_guard, input).await {
+                tracing::error!(error = %err, "no se pudo dar de alta el proveedor de pruebas");
+            }
+        }
+    });
 }
 
 /// Doce horas desde la última sincronización con éxito (RF2 del PRD): pasado ese

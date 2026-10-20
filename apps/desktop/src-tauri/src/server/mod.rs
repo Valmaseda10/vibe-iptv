@@ -3,6 +3,7 @@ pub mod api;
 pub mod lan;
 pub mod live_buffer;
 pub mod profiles;
+pub mod provider_status;
 pub mod routes;
 pub mod stream;
 pub mod timeshift;
@@ -204,6 +205,7 @@ fn full_router(
         .merge(lan::lan_router(lan_state.clone()))
         .merge(account::account_router(account::AccountState { db_path: db_path.clone(), cloud }))
         .merge(tv::tv_router(tv::TvState { db_path: db_path.clone() }))
+        .merge(provider_status::provider_status_router(provider_status::ProviderStatusState::new(db_path.clone())))
         .merge(profiles::profiles_router(profiles::ProfilesState { db_path }))
         .layer(axum::middleware::from_fn_with_state(lan_state, lan::require_local_or_paired))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))

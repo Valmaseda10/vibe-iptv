@@ -298,6 +298,15 @@ export type ProfileSummary = { id: number, name: string, avatar: string | null, 
 max_age: number | null, };
 
 /**
+ * Si un proveedor responde ahora mismo, y si no, por qué.
+ */
+export type ProviderAvailability = { provider_id: number, name: string, available: boolean, 
+/**
+ * Motivo en palabras del usuario cuando no responde.
+ */
+message: string | null, };
+
+/**
  * Tipo de proveedor, igual que la columna `kind` de `providers` en `docs/DATA-MODEL.md`.
  */
 export type ProviderKind = "xtream" | "m3u";

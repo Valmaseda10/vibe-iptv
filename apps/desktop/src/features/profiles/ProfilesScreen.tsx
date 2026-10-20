@@ -19,9 +19,12 @@ export function ProfilesScreen() {
   const [pinInput, setPinInput] = useState("");
   const [enterError, setEnterError] = useState<string | null>(null);
 
+  // Recién iniciada la sesión en un dispositivo nuevo, los perfiles de la cuenta pueden
+  // estar llegando todavía de la nube: mientras no haya ninguno, se vuelve a mirar.
   const profilesQuery = useQuery({
     queryKey: ["profiles"],
     queryFn: () => apiGet<ProfileSummary[]>("/api/profiles"),
+    refetchInterval: (query) => (query.state.data?.length === 0 && query.state.dataUpdateCount < 15 ? 2000 : false),
   });
 
   function invalidate() {

@@ -90,6 +90,8 @@ pub fn run() {
             // (la EPG solo trae siete días). La sincronización ya se pausa sola mientras
             // hay reproducción (R1).
             commands::resume_tmdb_matching(app.handle().clone());
+            #[cfg(debug_assertions)]
+            commands::seed_qa_e2e(app.handle().clone(), stream_guard.clone());
             native_player::install(app.handle().clone());
 
             let app_handle_for_autosync = app.handle().clone();
