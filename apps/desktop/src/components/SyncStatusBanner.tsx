@@ -13,7 +13,7 @@ export function SyncStatusBanner() {
     <div
       role="status"
       aria-live="polite"
-      className="pointer-events-none fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom))] left-4 z-30 md:bottom-4 flex items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/95 px-3 py-2 text-xs text-neutral-300 shadow-lg backdrop-blur"
+      className="pointer-events-none fixed bottom-[calc(4.5rem+env(safe-area-inset-bottom))] left-4 z-30 desk:bottom-4 flex items-center gap-2 rounded-lg border border-neutral-800 bg-neutral-900/95 px-3 py-2 text-xs text-neutral-300 shadow-lg backdrop-blur"
     >
       {active ? (
         <>

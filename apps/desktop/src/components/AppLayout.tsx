@@ -94,11 +94,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="flex h-full flex-col bg-neutral-950 text-neutral-100 md:flex-row">
+    <div className="flex h-full flex-col bg-neutral-950 text-neutral-100 desk:flex-row">
       <nav
         ref={navRef}
         onKeyDown={onNavKeyDown}
-        className={`hidden shrink-0 flex-col border-r md:flex border-neutral-900 bg-neutral-950 py-4 transition-[width] duration-150 ${collapsed ? "w-16" : "w-56"}`}
+        className={`hidden shrink-0 flex-col border-r desk:flex border-neutral-900 bg-neutral-950 py-4 transition-[width] duration-150 ${collapsed ? "w-16" : "w-56"}`}
         aria-label="Navegación principal"
       >
         <div className={`mb-3 flex items-center gap-2 px-4 ${collapsed ? "justify-center px-0" : ""}`}>

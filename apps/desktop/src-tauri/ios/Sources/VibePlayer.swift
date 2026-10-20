@@ -159,6 +159,7 @@ final class VibePlayerController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         UIApplication.shared.isIdleTimerDisabled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.qaDumpHierarchy("6 s tras abrir") }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
@@ -551,7 +552,29 @@ final class VibePlayerController: UIViewController {
         showOverlay(autoHide: false)
     }
 
+    /// Solo en la prueba automática del simulador (ver `ios/qa/player-qa.sh`): vuelca qué
+    /// vistas hay y en qué orden, para saber qué tapa a qué.
+    private static let qaMode = ProcessInfo.processInfo.environment["VIBE_QA_PLAYER_URL"] != nil
+
+    private func qaDumpHierarchy(_ label: String) {
+        guard Self.qaMode else { return }
+        var lines = ["VIBE-QA jerarquía (\(label))"]
+        func walk(_ v: UIView, _ depth: Int) {
+            let pad = String(repeating: "  ", count: depth)
+            lines.append("\(pad)\(type(of: v)) frame=\(v.frame.integral) alpha=\(v.alpha) hidden=\(v.isHidden) touch=\(v.isUserInteractionEnabled) gestos=\(v.gestureRecognizers?.count ?? 0)")
+            for sub in v.subviews { walk(sub, depth + 1) }
+        }
+        for scene in UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }) {
+            for window in scene.windows {
+                lines.append("ventana \(type(of: window)) nivel=\(window.windowLevel.rawValue) clave=\(window.isKeyWindow)")
+                walk(window, 1)
+            }
+        }
+        for line in lines { NSLog("%@", line) }
+    }
+
     @objc private func toggleOverlay() {
+        if Self.qaMode { NSLog("VIBE-QA toque recibido, controles visibles=%d", overlayVisible ? 1 : 0) }
         if overlayVisible { hideOverlay() } else { showOverlay() }
     }
 

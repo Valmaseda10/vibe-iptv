@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* "desk": hay sitio para la barra lateral (tableta u ordenador). Un iPhone tumbado es
+   ancho pero muy bajo: ahí sigue la barra de pestañas (F15). */
+@custom-variant desk (@media (min-width: 768px) and (min-height: 560px));
+
 :root {
   color-scheme: dark;
 }

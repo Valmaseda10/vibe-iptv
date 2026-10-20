@@ -76,7 +76,7 @@ function ResultSection({ title, hits, onOpen }: { title: string; hits: SearchRes
   return (
     <section className="flex flex-col gap-3">
       <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">{title}</h2>
-      <div className="flex flex-wrap gap-4">
+      <div className="grid grid-cols-3 gap-3 sm:flex sm:flex-wrap sm:gap-4">
         {hits.map((hit) => (
           <SearchResultCard key={`${hit.item_kind}-${hit.item_id}`} title={hit.title} posterPath={hit.poster_path} onOpen={() => onOpen(hit.item_id)} />
         ))}
@@ -99,7 +99,7 @@ function SearchResultCard({ title, posterPath, onOpen }: { title: string; poster
           onOpen();
         }
       }}
-      className="group flex w-32 shrink-0 flex-col gap-2 rounded text-left outline-none sm:w-36"
+      className="group flex w-full min-w-0 flex-col gap-2 rounded text-left outline-none sm:w-36 sm:shrink-0"
     >
       <div className="aspect-[2/3] w-full overflow-hidden rounded-lg bg-neutral-800 ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] group-focus-visible:scale-[1.03]">
         {src ? (
@@ -108,7 +108,7 @@ function SearchResultCard({ title, posterPath, onOpen }: { title: string; poster
           <div className="flex h-full w-full items-center justify-center p-2 text-center text-xs text-neutral-500">{title}</div>
         )}
       </div>
-      <p className="truncate text-sm text-neutral-100">{title}</p>
+      <p className="w-full min-w-0 truncate text-sm text-neutral-100">{title}</p>
     </button>
   );
 }

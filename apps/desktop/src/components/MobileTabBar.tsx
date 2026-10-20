@@ -90,7 +90,7 @@ export function MobileTabBar({ onSurprise, surprising }: { onSurprise: () => voi
 
       <nav
         aria-label="Navegación principal"
-        className="relative z-50 flex shrink-0 border-t border-neutral-900 bg-neutral-950 pb-[env(safe-area-inset-bottom)] md:hidden"
+        className="relative z-50 flex shrink-0 border-t border-neutral-900 bg-neutral-950 pb-[env(safe-area-inset-bottom)] desk:hidden"
       >
         {TABS.map(({ to, label, icon: ItemIcon }) => {
           const active = to === "/" ? pathname === "/" : pathname.startsWith(to);
