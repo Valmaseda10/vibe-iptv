@@ -64,6 +64,18 @@ app nuevos por semana.
 - **Sin ratón.** Nada puede depender de `hover` para aparecer, y los botones pequeños
   amplían su zona táctil.
 
+## Pruebas
+
+- **Interfaz:** Playwright con WebKit (el motor del iPhone) a tamaño iPhone, iPad e iPhone
+  en horizontal, contra la app de escritorio en marcha. Chromium no veía cosas que WebKit
+  sí (tarjetas que se ensanchaban, rejillas que se arrastraban de lado).
+- **Reproductor nativo:** el flujo de GitHub con `qa_player` compila para el simulador,
+  abre el reproductor con un vídeo sintético (`ios/qa/prueba.mkv`) y lo maneja con toques
+  reales (idb): controles al empezar, se esconden solos, tocar los enseña, +30 s, cerrar,
+  y lo mismo en modo directo. Deja capturas y el volcado de accesibilidad de cada paso.
+- **Qué saber qué versión hay instalada:** Ajustes de la app ("Compilación ios-N") y
+  Ajustes del iPhone → General → Almacenamiento → VIBE IPTV (versión 0.1.0.N).
+
 ## Cómo está montado
 
 ```
