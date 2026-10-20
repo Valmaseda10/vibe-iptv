@@ -102,6 +102,12 @@ tap_label "Más"; sleep 1; tap_label "Ajustes"; sleep 3; shot "ajustes"
 
 # Película: ficha, reproducir, +30 s, cerrar.
 tap_label "Películas"; sleep 3
+# Mantener pulsada una portada abre el menú de acciones (Mi lista…).
+a11y; xy=$(find_label "Metropolis" contiene)
+if [ -n "$xy" ]; then set -- $xy; idb ui tap --udid "$UDID" --duration 0.9 "$1" "$2"; fi
+sleep 1; shot menu-mantener
+check "mantener pulsada una portada abre su menú" 'wait_visible "Mi lista" contiene 5'
+tap_label "Cancelar" exacta 5; sleep 1
 tap_label "Metropolis" contiene 10 || tap_label "1927" contiene 5
 sleep 3; shot ficha-pelicula
 tap_label "Reproducir" contiene 10

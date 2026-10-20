@@ -1,6 +1,7 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { useApiBase, imagePath } from "../lib/api-client";
 import { HeartIcon } from "./icons";
+import { PosterActionSheet } from "./PosterActionSheet";
 
 type PosterCardProps = {
   title: string;
@@ -27,17 +28,34 @@ type PosterCardProps = {
   /** Ocupa el ancho de su celda en vez del fijo de las filas: la rejilla de pantallas
    * estrechas (iPhone, F15) reparte el ancho entre sus columnas. */
   fluid?: boolean;
+  /** Película o serie: al mantenerla pulsada (pantallas táctiles) sale el menú con
+   * "Mi lista" aunque la tarjeta no pinte el corazón. */
+  menuItem?: { kind: "movie" | "series"; id: number };
 };
+
+/** Lo que tarda una pulsación en convertirse en "mantener pulsado" (como iOS). */
+const LONG_PRESS_MS = 450;
 
 /** Tarjeta de portada 2:3. Reserva el espacio siempre (aspect-ratio fijo) para no saltar
  * el layout mientras carga la imagen; accesible por teclado (Enter abre, foco visible). */
-export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew, onRemove, fluid }: PosterCardProps) {
+export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew, onRemove, fluid, menuItem }: PosterCardProps) {
   const { data: base } = useApiBase();
   const src = imagePath(base, posterPath, "w342");
   const [loaded, setLoaded] = useState(false);
   // Una carátula del proveedor puede no cargar (enlace caído): mejor el título que el
   // icono de imagen rota.
   const [failed, setFailed] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const hasMenu = Boolean(favorite || menuItem || onRemove);
+  const pressTimer = useRef<number | undefined>(undefined);
+  const pressStart = useRef<{ x: number; y: number } | null>(null);
+  // Tras mantener pulsado, el "click" que llega al soltar no debe abrir la ficha.
+  const swallowClick = useRef(false);
+
+  function cancelPress() {
+    window.clearTimeout(pressTimer.current);
+    pressStart.current = null;
+  }
 
   return (
     <div className={`group relative ${fluid ? "w-full min-w-0" : "w-40 shrink-0 sm:w-44"}`}>
@@ -45,7 +63,33 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
         type="button"
         data-card
         data-grid-index={gridIndex}
-        onClick={onOpen}
+        onClick={() => {
+          if (swallowClick.current) {
+            swallowClick.current = false;
+            return;
+          }
+          onOpen();
+        }}
+        onPointerDown={(e) => {
+          if (e.pointerType !== "touch" || !hasMenu) return;
+          swallowClick.current = false;
+          pressStart.current = { x: e.clientX, y: e.clientY };
+          window.clearTimeout(pressTimer.current);
+          pressTimer.current = window.setTimeout(() => {
+            pressStart.current = null;
+            swallowClick.current = true;
+            setMenuOpen(true);
+          }, LONG_PRESS_MS);
+        }}
+        onPointerMove={(e) => {
+          const start = pressStart.current;
+          if (start && Math.hypot(e.clientX - start.x, e.clientY - start.y) > 10) cancelPress();
+        }}
+        onPointerUp={cancelPress}
+        onPointerCancel={cancelPress}
+        onContextMenu={(e) => {
+          if (hasMenu) e.preventDefault();
+        }}
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
@@ -113,6 +157,10 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
         >
           ✕
         </button>
+      )}
+
+      {menuOpen && (
+        <PosterActionSheet title={title} onOpen={onOpen} onClose={() => setMenuOpen(false)} menuItem={menuItem} favorite={favorite} onRemove={onRemove} />
       )}
     </div>
   );

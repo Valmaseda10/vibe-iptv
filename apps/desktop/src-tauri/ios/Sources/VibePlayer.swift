@@ -622,13 +622,14 @@ final class VibePlayerController: UIViewController {
     private func applyPreferredTracks() {
         guard let request = request else { tracksApplied = true; return }
         // Las pistas se conocen un instante después de empezar a reproducir.
-        guard let audioNames = player.audioTrackNames, !audioNames.isEmpty else { return }
+        let audioNames: [Any] = player.audioTrackNames
+        guard !audioNames.isEmpty else { return }
         tracksApplied = true
         if let wanted = request.preferred_audio?.lowercased(), !wanted.isEmpty {
-            selectTrack(wanted, names: audioNames, indexes: player.audioTrackIndexes ?? []) { self.player.currentAudioTrackIndex = $0 }
+            selectTrack(wanted, names: audioNames, indexes: player.audioTrackIndexes) { self.player.currentAudioTrackIndex = $0 }
         }
         if let wanted = request.preferred_subtitle?.lowercased(), !wanted.isEmpty {
-            selectTrack(wanted, names: player.videoSubTitlesNames ?? [], indexes: player.videoSubTitlesIndexes ?? []) { self.player.currentVideoSubTitleIndex = $0 }
+            selectTrack(wanted, names: player.videoSubTitlesNames, indexes: player.videoSubTitlesIndexes) { self.player.currentVideoSubTitleIndex = $0 }
         }
     }
 

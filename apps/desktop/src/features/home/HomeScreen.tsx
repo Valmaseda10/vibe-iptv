@@ -121,6 +121,7 @@ export function HomeScreen() {
               key={`fav-${item.item_kind}-${item.item_id}`}
               title={item.title}
               posterPath={item.poster_path}
+              menuItem={{ kind: item.item_kind === "movie" ? "movie" : "series", id: item.item_id }}
               onOpen={() =>
                 item.item_kind === "movie"
                   ? navigate({ to: "/movies/$movieId", params: { movieId: String(item.item_id) } })
@@ -140,6 +141,7 @@ export function HomeScreen() {
               posterPath={movie.poster_path}
               subtitle={`Porque te gustó ${movie.because_of}`}
               onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
+              menuItem={{ kind: "movie", id: movie.id }}
             />
           ))}
         </Row>
@@ -154,6 +156,7 @@ export function HomeScreen() {
               posterPath={series.poster_path}
               subtitle={`Porque te gustó ${series.because_of}`}
               onOpen={() => navigate({ to: "/series/$seriesId", params: { seriesId: String(series.id) } })}
+              menuItem={{ kind: "series", id: series.id }}
             />
           ))}
         </Row>
@@ -171,6 +174,7 @@ export function HomeScreen() {
               posterPath={movie.poster_path}
               subtitle={movie.year ? String(movie.year) : undefined}
               onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
+              menuItem={{ kind: "movie", id: movie.id }}
             />
           ))}
         </Row>
@@ -185,6 +189,7 @@ export function HomeScreen() {
               posterPath={series.poster_path}
               subtitle={series.year ? String(series.year) : undefined}
               onOpen={() => navigate({ to: "/series/$seriesId", params: { seriesId: String(series.id) } })}
+              menuItem={{ kind: "series", id: series.id }}
             />
           ))}
         </Row>
@@ -202,6 +207,7 @@ export function HomeScreen() {
               subtitle={movie.year ? String(movie.year) : undefined}
               isNew={movie.is_new}
               onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
+              menuItem={{ kind: "movie", id: movie.id }}
             />
           ))}
           {data && data.recent_movies.length === 0 && <p className="text-neutral-500">Todavía no hay películas sincronizadas.</p>}
@@ -221,6 +227,7 @@ export function HomeScreen() {
                 subtitle={movie.year ? String(movie.year) : undefined}
                 isNew={movie.is_new}
                 onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
+                menuItem={{ kind: "movie", id: movie.id }}
               />
             ))}
           </Row>
