@@ -217,7 +217,12 @@ live: boolean,
  * El directo viene de la grabación del núcleo (`/stream/live-buffer/...`): se puede
  * pausar, y retroceder o adelantar pidiendo la misma URL con `&behind_s=N`.
  */
-live_buffer: boolean, };
+live_buffer: boolean, 
+/**
+ * Si viene, no se reproduce nada: el reproductor ya abierto enseña este mensaje (el
+ * motivo real de un fallo, que la interfaz pide al núcleo tras el error de VLC).
+ */
+message: string | null, };
 
 /**
  * Lo que cuenta el reproductor nativo.

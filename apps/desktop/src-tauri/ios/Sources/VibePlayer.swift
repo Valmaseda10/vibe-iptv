@@ -27,6 +27,8 @@ private struct PlayRequest: Decodable {
     /// El directo sale de la grabación del núcleo: se puede pausar y moverse por ella
     /// pidiendo la misma URL con `&behind_s=N` (ver `server::live_buffer`).
     let live_buffer: Bool?
+    /// El motivo real de un fallo, para enseñarlo en el reproductor ya abierto.
+    let message: String?
 }
 
 @_cdecl("vibe_player_present")
@@ -61,9 +63,15 @@ final class VibePlayerController: UIViewController {
     /// Abre el reproductor, o cambia lo que reproduce si ya está abierto (zapping).
     fileprivate static func show(_ request: PlayRequest) {
         if let controller = current, controller.presentingViewController != nil {
-            controller.load(request)
+            if let message = request.message {
+                controller.spinner.stopAnimating()
+                controller.showMessage(message)
+            } else {
+                controller.load(request)
+            }
             return
         }
+        if request.message != nil { return }
         guard let presenter = topViewController() else { return }
         let controller = VibePlayerController()
         controller.modalPresentationStyle = .fullScreen

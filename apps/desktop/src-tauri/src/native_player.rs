@@ -36,6 +36,10 @@ pub struct NativePlayRequest {
     /// El directo viene de la grabación del núcleo (`/stream/live-buffer/...`): se puede
     /// pausar, y retroceder o adelantar pidiendo la misma URL con `&behind_s=N`.
     pub live_buffer: bool,
+    /// Si viene, no se reproduce nada: el reproductor ya abierto enseña este mensaje (el
+    /// motivo real de un fallo, que la interfaz pide al núcleo tras el error de VLC).
+    #[serde(default)]
+    pub message: Option<String>,
 }
 
 /// Lo que cuenta el reproductor nativo.
@@ -109,7 +113,15 @@ mod platform {
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_secs(4));
                 let request =
-                    NativePlayRequest { url, title: "Prueba del reproductor".into(), subtitle: Some("QA".into()), start_seconds: 0.0, live, live_buffer: false };
+                    NativePlayRequest {
+                    url,
+                    title: "Prueba del reproductor".into(),
+                    subtitle: Some("QA".into()),
+                    start_seconds: 0.0,
+                    live,
+                    live_buffer: false,
+                    message: None,
+                };
                 let _ = present(&request);
             });
         }
@@ -183,7 +195,7 @@ mod tests {
 
     #[test]
     fn outside_ios_the_command_says_it_is_not_available() {
-        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false };
+        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false, message: None };
         assert!(matches!(native_player_play(request), Err(NativePlayerError::Unsupported)));
     }
 }

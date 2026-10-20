@@ -288,6 +288,9 @@ enum StreamError {
     NotAllowed,
     #[error("No se pudo preparar la conexión con el proveedor: {0}")]
     Source(String),
+    /// El proveedor rechazó el stream y dijo por qué (p. ej. bloqueo por país).
+    #[error("{0}")]
+    Rejected(String),
     #[error("La cuenta de este proveedor caducó. Revisa tu suscripción en Ajustes.")]
     AccountExpired,
     #[error("No se pudo conectar con el proveedor. Puede que hayas alcanzado el límite de conexiones simultáneas, que la cuenta esté caída, o que no haya conexión a internet. Inténtalo de nuevo en un momento.")]
@@ -319,6 +322,7 @@ impl StreamError {
             StreamError::BadKind => StatusCode::BAD_REQUEST,
             StreamError::NotAllowed => StatusCode::FORBIDDEN,
             StreamError::Source(_) | StreamError::Unreachable | StreamError::MpvLaunchFailed(_) => StatusCode::BAD_GATEWAY,
+            StreamError::Rejected(_) => StatusCode::FORBIDDEN,
             StreamError::NoData { .. } => StatusCode::GATEWAY_TIMEOUT,
             StreamError::AccountExpired => StatusCode::PAYMENT_REQUIRED,
             StreamError::BinariesMissing | StreamError::MpvMissing => StatusCode::SERVICE_UNAVAILABLE,
@@ -571,7 +575,7 @@ async fn handle_live_buffer(state: StreamState, channel_id: i64, profile_id: i64
                 StreamError::Unreachable
             })?;
             if !upstream.status().is_success() {
-                return Err(StreamError::Unreachable);
+                return Err(upstream_refusal(upstream).await);
             }
             record_tier(&state.db_path, profile_id, "channel", channel_id, 1).await;
             state
@@ -1076,7 +1080,7 @@ async fn proxy_passthrough(url: Url, range: Option<HeaderValue>, permit: StreamP
 
     let status = upstream.status();
     if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
-        return Err(StreamError::Unreachable);
+        return Err(upstream_refusal(upstream).await);
     }
 
     let mut builder = Response::builder().status(status);
@@ -1088,6 +1092,19 @@ async fn proxy_passthrough(url: Url, range: Option<HeaderValue>, permit: StreamP
 
     let body = Body::from_stream(pump_upstream(upstream.bytes_stream(), permit, guard));
     builder.body(body).map_err(|_| StreamError::Internal)
+}
+
+/// El proveedor respondió con un error: si dice por qué (`{"message": "..."}`, como el
+/// bloqueo por país), ese motivo; si no, el mensaje genérico de no poder conectar.
+async fn upstream_refusal(upstream: reqwest::Response) -> StreamError {
+    let body = tokio::time::timeout(std::time::Duration::from_secs(3), upstream.bytes()).await;
+    match body {
+        Ok(Ok(bytes)) => match crate::sources::xtream::rejection_reason(&bytes[..bytes.len().min(4096)]) {
+            Some(reason) => StreamError::Rejected(reason),
+            None => StreamError::Unreachable,
+        },
+        _ => StreamError::Unreachable,
+    }
 }
 
 /// Pasa al cliente los bytes del proveedor desde una tarea propia que suelta la conexión
@@ -1558,6 +1575,54 @@ mod tests {
         assert_eq!(response.into_body().collect().await.unwrap().to_bytes().as_ref(), &bytes[1000..2000]);
 
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// El motivo con el que el proveedor rechaza un stream llega a "último error", que es
+    /// lo que el reproductor enseña (bloqueo por país, visto con el proveedor del usuario).
+    #[tokio::test]
+    async fn a_provider_refusal_reason_reaches_the_last_error() {
+        let router = Router::new().route(
+            "/live/user/pass/4.ts",
+            get(|| async { (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({"message": "Validation failed, Country is not allowed"}))) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let db_path = temp_db_path("refusal");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &format!("http://{addr}"), "refusal").await;
+        let channel_id: i64 = {
+            let conn = open_connection_at(&db_path).unwrap();
+            let channel = RawChannel {
+                remote_id: "4".into(),
+                category_remote_id: None,
+                raw_name: "Canal".into(),
+                logo_url: None,
+                epg_channel_id: None,
+                has_catchup: false,
+                catchup_days: 0,
+                sort_order: None,
+            };
+            let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
+            write_queries::upsert_channel(&conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+            conn.query_row("SELECT id FROM channels WHERE remote_id = '4'", [], |r| r.get(0)).unwrap()
+        };
+        let router = stream_router(base_state(db_path.clone(), None, None));
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(format!("/stream/live-buffer/channel/{channel_id}?profile_id=1")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let response = router
+            .oneshot(Request::builder().uri(format!("/api/playback/last-error/channel/{channel_id}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let text = String::from_utf8_lossy(&body);
+        assert!(text.contains("país"), "{text}");
         let _ = std::fs::remove_file(&db_path);
     }
 

@@ -13,6 +13,7 @@ import type {
   NativePlayRequest,
   PlaybackProgressResponse,
   SeriesDetailResponse,
+  StreamFailure,
 } from "../../lib/api-types";
 import { findNextEpisode } from "./episodes";
 
@@ -118,6 +119,7 @@ export function NativePlayerScreen() {
 
   const ready = base != null && profileId !== null && startSeconds !== null && (title != null || titleWaitOver);
   const playedPathRef = useRef<string | null>(null);
+  const lastRequestRef = useRef<NativePlayRequest | null>(null);
 
   const play = useCallback(() => {
     if (!base || startSeconds === null) return;
@@ -128,7 +130,9 @@ export function NativePlayerScreen() {
       start_seconds: startSeconds,
       live: kind === "channel" && !isCatchup,
       live_buffer: liveBuffer,
+      message: null,
     };
+    lastRequestRef.current = request;
     setError(null);
     invoke("native_player_play", { request }).catch((err: unknown) => setError(errorMessage(err)));
   }, [base, streamPath, title, subtitle, startSeconds, kind, isCatchup, liveBuffer]);
@@ -146,9 +150,9 @@ export function NativePlayerScreen() {
   }, [kind, id, search.seriesId, isCatchup, navigate]);
 
   // Los eventos llegan a un solo oyente; lo que cambia de un render a otro se lee de aquí.
-  const latestRef = useRef({ kind, itemId, profileId, nextEpisode, channels: channelsQuery.data?.items, search, goBack });
+  const latestRef = useRef({ kind, itemId, profileId, nextEpisode, channels: channelsQuery.data?.items, search, goBack, isCatchup });
   useEffect(() => {
-    latestRef.current = { kind, itemId, profileId, nextEpisode, channels: channelsQuery.data?.items, search, goBack };
+    latestRef.current = { kind, itemId, profileId, nextEpisode, channels: channelsQuery.data?.items, search, goBack, isCatchup };
   });
 
   useEffect(() => {
@@ -201,9 +205,21 @@ export function NativePlayerScreen() {
           }
           break;
         }
-        case "error":
+        case "error": {
+          // VLC solo sabe que no pudo; el núcleo sabe por qué (bloqueo por país, cuenta en
+          // uso, caducada...). Se pide y se enseña en el propio reproductor.
           setError(payload.message);
+          const failureKind = latest.isCatchup ? "catchup" : latest.kind;
+          apiGetOrNull<StreamFailure>(`/api/playback/last-error/${failureKind}/${latest.itemId}`)
+            .then((failure) => {
+              const request = lastRequestRef.current;
+              if (!failure?.message || !request) return;
+              setError(failure.message);
+              invoke("native_player_play", { request: { ...request, message: failure.message } }).catch(() => {});
+            })
+            .catch(() => {});
           break;
+        }
       }
     });
     return () => {
