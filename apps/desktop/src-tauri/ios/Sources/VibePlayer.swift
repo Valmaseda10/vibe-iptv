@@ -437,8 +437,38 @@ final class VibePlayerController: UIViewController {
         return Double(length) / 1000
     }
 
+    /// Pruebas del simulador (`ios/qa/e2e-qa.sh`): con `VIBE_QA_E2E`, el estado del
+    /// reproductor en `qa-player.json` cada medio segundo, para comprobar posición, pausa o
+    /// canal sin depender de lo que idb vea. En la app instalada esa variable no existe.
+    private static let qaStateURL: URL? = {
+        let env = ProcessInfo.processInfo.environment
+        guard env["VIBE_QA_E2E"] != nil || env["VIBE_QA_PLAYER_URL"] != nil,
+              let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir.appendingPathComponent("qa-player.json")
+    }()
+
+    private func writeQaState(open: Bool) {
+        guard let url = Self.qaStateURL else { return }
+        var state: [String: Any] = ["open": open]
+        if open, let current = current {
+            state["position"] = positionSeconds
+            state["playing"] = player.isPlaying
+            state["live"] = current.live
+            state["behind"] = isLiveBuffer ? currentBehind : 0
+            state["title"] = titleLabel.text ?? ""
+            state["subtitle"] = subtitleLabel.text ?? ""
+            state["controls"] = overlayVisible
+            state["list"] = !listPanel.isHidden
+        }
+        if let data = try? JSONSerialization.data(withJSONObject: state) {
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
     private func tick() {
         guard let current = current, !closed else { return }
+        writeQaState(open: true)
         switch player.state {
         case .opening, .buffering:
             if !player.isPlaying { spinner.startAnimating() } else { spinner.stopAnimating() }
@@ -528,6 +558,7 @@ final class VibePlayerController: UIViewController {
     private func close(ended: Bool) {
         guard !closed else { return }
         closed = true
+        writeQaState(open: false)
         let position = isLive ? 0 : positionSeconds
         let duration: Any = durationSeconds ?? NSNull()
         tickTimer?.invalidate()

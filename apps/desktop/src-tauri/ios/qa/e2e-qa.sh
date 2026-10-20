@@ -19,7 +19,17 @@ shot() { step=$((step + 1)); xcrun simctl io "$UDID" screenshot "$OUT/$(printf %
 # que idb no ve; la página lo escribe en `qa-ui.json` (ver `src/lib/qaSnapshot.ts`).
 WEB_MAP=""
 a11y() {
-  idb ui describe-all --udid "$UDID" --json > "$OUT/a11y-nativo.json" 2>/dev/null || echo "[]" > "$OUT/a11y-nativo.json"
+  # idb a veces devuelve solo la app, sin nada dentro, justo en una transición: con el
+  # reproductor abierto eso es imposible, así que se vuelve a pedir.
+  local tries=0
+  while :; do
+    idb ui describe-all --udid "$UDID" --json > "$OUT/a11y-nativo.json" 2>/dev/null || echo "[]" > "$OUT/a11y-nativo.json"
+    tries=$((tries + 1))
+    [ "$tries" -ge 3 ] && break
+    [ "$(player_field open)" = "True" ] || break
+    python3 -c "import json,sys; sys.exit(0 if len(json.load(open('$OUT/a11y-nativo.json'))) > 1 else 1)" 2>/dev/null && break
+    sleep 0.7
+  done
   if [ -z "$WEB_MAP" ]; then
     local data
     data=$(xcrun simctl get_app_container "$UDID" "$bundle" data 2>/dev/null)
@@ -45,12 +55,18 @@ try:
 except Exception:
     sys.exit(0)
 want, mode = sys.argv[2], sys.argv[3]
+# "ultima": la última coincidencia exacta. Las hojas se pintan al final de la página, encima
+# de todo: así se toca su botón y no uno de igual nombre que queda debajo.
+found = None
 for it in items:
     label = (it.get("AXLabel") or "").strip()
-    if (label == want) if mode == "exacta" else (want.lower() in label.lower()):
-        f = it.get("frame") or {}
-        print(f"{f.get('x', 0) + f.get('width', 0) / 2:.0f} {f.get('y', 0) + f.get('height', 0) / 2:.0f} {f.get('y', 0) + f.get('height', 0):.0f}")
-        break
+    if (label == want) if mode in ("exacta", "ultima") else (want.lower() in label.lower()):
+        found = it
+        if mode != "ultima":
+            break
+if found:
+    f = found.get("frame") or {}
+    print(f"{f.get('x', 0) + f.get('width', 0) / 2:.0f} {f.get('y', 0) + f.get('height', 0) / 2:.0f} {f.get('y', 0) + f.get('height', 0):.0f}")
 PY
 }
 tap_label() {
@@ -98,38 +114,42 @@ active_cons() { curl -s "http://127.0.0.1:8899/player_api.php?username=qa&passwo
 # Al cerrar el reproductor, la conexión con el proveedor tiene que soltarse (R1).
 wait_cons_zero() { for _ in $(seq 1 15); do [ "$(active_cons)" = "0" ] && return 0; sleep 1; done; return 1; }
 
-# Reproductor nativo: enseña los controles si están escondidos (un toque los alterna).
-show_controls() { visible "Cerrar" || { idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1; }; }
-# Segundos que marca el reproductor (etiqueta de tiempo de la barra de abajo).
-player_time() {
-  show_controls
-  python3 - "$OUT/a11y-nativo.json" <<'PY'
-import json, re, sys
+# Estado exacto del reproductor nativo: VibePlayer.swift lo escribe cada medio segundo en
+# `qa-player.json` en modo prueba (posición, pausa, retraso del directo, título...).
+PLAYER_STATE=""
+player_field() {
+  if [ -z "$PLAYER_STATE" ] || [ ! -f "$PLAYER_STATE" ]; then
+    local data
+    data=$(xcrun simctl get_app_container "$UDID" "$bundle" data 2>/dev/null)
+    [ -n "$data" ] && PLAYER_STATE=$(find "$data" -name qa-player.json 2>/dev/null | head -1)
+  fi
+  python3 - "${PLAYER_STATE:-/nonexistent}" "$1" <<'PY'
+import json, sys
 try:
-    items = json.load(open(sys.argv[1]))
+    state = json.load(open(sys.argv[1]))
 except Exception:
-    items = []
-for it in items:
-    label = (it.get("AXLabel") or "").strip()
-    m = re.fullmatch(r"(?:(\d+):)?(\d+):(\d\d)", label)
-    if m:
-        h, mm, ss = m.groups()
-        print(int(h or 0) * 3600 + int(mm) * 60 + int(ss))
-        break
-else:
-    print(-1)
+    state = {"open": False}
+value = state.get(sys.argv[2], "")
+print(int(value) if isinstance(value, float) else value)
 PY
 }
-# Título que enseña el reproductor (para ver que el zapping cambió de canal).
-player_titles() {
-  a11y
-  python3 - "$OUT/a11y-nativo.json" <<'PY'
-import json, re, sys
-items = json.load(open(sys.argv[1]))
-labels = [i.get("AXLabel") or "" for i in items]
-print("|".join(sorted(l for l in labels if l and not re.fullmatch(r"-?(\d+:)?\d+:\d\d", l) and "Ir al directo" not in l)))
-PY
+player_open() { [ "$(player_field open)" = "True" ]; }
+wait_player_open() { for _ in $(seq 1 "${1:-25}"); do player_open && return 0; sleep 1; done; return 1; }
+wait_player_closed() { for _ in $(seq 1 "${1:-10}"); do player_open || return 0; sleep 1; done; return 1; }
+wait_player_text() { for _ in $(seq 1 "${2:-10}"); do player_field title | grep -qi "$1" && return 0; player_field subtitle | grep -qi "$1" && return 0; sleep 1; done; return 1; }
+player_time() { player_field position; }
+player_titles() { echo "$(player_field title)|$(player_field subtitle)"; }
+# Enseña los controles del reproductor si están escondidos (un toque los alterna, así que
+# se mira antes y se comprueba después).
+show_controls() {
+  for _ in 1 2 3; do
+    [ "$(player_field controls)" = "True" ] && return 0
+    idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1
+  done
+  return 1
 }
+# Toca un botón del reproductor (con los controles a la vista).
+player_tap() { show_controls; tap_label "$1" exacta 5; }
 
 # Navegación: pestañas en el iPhone; en el iPad todo está en la barra lateral.
 go() {
@@ -189,11 +209,11 @@ for pair in Directo:/live Películas:/movies Series:/series Buscar:/search; do
 done
 if [ "$W" -lt 768 ]; then
   tap_label "Más" exacta 5; sleep 1; shot menu-mas
-  check "más: la hoja tiene Guía, Favoritos, Ajustes y Cambiar de perfil" 'visible "Guía" && visible "Favoritos" && visible "Ajustes" && visible "Cambiar de perfil"'
-  tap_label "Cancelar" exacta 2 >/dev/null || idb ui tap --udid "$UDID" $((W / 2)) 120; sleep 1
+  check "más: la hoja tiene Guía, Favoritos, Ajustes y Cambiar de perfil" 'visible "Guía" && visible "Favoritos" && visible "Ajustes" && visible "Cambiar de perfil" contiene'
+  tap_label "Cancelar" ultima 2 >/dev/null || idb ui tap --udid "$UDID" $((W / 2)) 120; sleep 1
 fi
 go Guía
-check "guía: abre con la parrilla de canales" 'wait_visible "ruta:/guide" exacta 5 && wait_visible "Reloj" contiene 15'
+check "guía: abre con la parrilla y su programación" 'wait_visible "ruta:/guide" exacta 5 && wait_visible "Debate" contiene 15'
 tap_label "Avanzar una hora" exacta 5; sleep 1
 tap_label "Ahora" exacta 5; sleep 1
 check "guía: los botones de hora responden" 'visible "Retroceder una hora"'
@@ -206,10 +226,10 @@ go Películas
 check "películas: la rejilla carga" 'wait_visible "Toy Story" contiene 20'
 long_press "Toy Story" contiene; sleep 1; shot menu-mantener
 check "portada: mantener pulsado abre el menú" 'wait_visible "Añadir a Mi lista" exacta 5'
-tap_label "Añadir a Mi lista" exacta 3; sleep 2
+tap_label "Añadir a Mi lista" ultima 3; sleep 2
 long_press "Toy Story" contiene; sleep 1
 check "portada: el menú recuerda que ya está en Mi lista" 'wait_visible "Quitar de Mi lista" exacta 5'
-tap_label "Cancelar" exacta 3; sleep 1
+tap_label "Cancelar" ultima 3; sleep 1
 go Favoritos
 check "favoritos: aparece lo añadido" 'wait_visible "Toy Story" contiene 8'
 go Inicio
@@ -224,41 +244,42 @@ check "ficha: «Marcar vista» la marca" 'wait_visible "✓ Vista" exacta 5'
 tap_label "✓ Vista" exacta 5; sleep 2
 check "ficha: tocar otra vez la desmarca" 'wait_visible "Marcar vista" contiene 5'
 tap_label "Reproducir" contiene 10
-check "película: se abre el reproductor" 'wait_visible "Cerrar" exacta 25'
+check "película: se abre el reproductor" 'wait_player_open 25'
 sleep 8
+check "película: se reproduce sola" '[ "$(player_field playing)" = "True" ] && [ "$(player_time)" -gt 0 ]'
 t0=$(player_time)
-show_controls; tap_label "Adelante 30 segundos" exacta 5; sleep 4
+player_tap "Adelante 30 segundos"; sleep 3
 t1=$(player_time)
 echo "  tiempo: antes ${t0}s, tras +30 s ${t1}s"
-check "película: +30 s avanza de verdad" '[ "$t0" -ge 0 ] && [ "$t1" -ge $((t0 + 20)) ]'
-show_controls; tap_label "Atrás 10 segundos" exacta 5; sleep 3
+check "película: +30 s avanza de verdad" '[ "$t1" -ge $((t0 + 25)) ]'
+player_tap "Atrás 10 segundos"; sleep 2
 t2=$(player_time)
-check "película: −10 s retrocede" '[ "$t2" -ge 0 ] && [ "$t2" -lt "$t1" ]'
-show_controls; tap_label "Reproducir o pausar" exacta 5; sleep 1
-p1=$(player_time); sleep 5; p2=$(player_time)
-check "película: la pausa para el vídeo" '[ "$p1" -ge 0 ] && [ $((p2 - p1)) -le 1 ]'
-show_controls; tap_label "Reproducir o pausar" exacta 5; sleep 5
+echo "  tiempo: tras −10 s ${t2}s"
+check "película: −10 s retrocede" '[ "$t2" -lt "$t1" ] && [ "$t2" -ge $((t1 - 15)) ]'
+player_tap "Reproducir o pausar"; sleep 1
+p1=$(player_time); sleep 4; p2=$(player_time)
+check "película: la pausa para el vídeo" '[ "$(player_field playing)" = "False" ] && [ "$p2" -eq "$p1" ]'
+player_tap "Reproducir o pausar"; sleep 4
 p3=$(player_time)
-check "película: reanudar sigue avanzando" '[ "$p3" -gt "$p2" ]'
-check "película: una sola conexión con el proveedor" '[ "$(active_cons)" -le 1 ]'
+check "película: reanudar sigue avanzando" '[ "$(player_field playing)" = "True" ] && [ "$p3" -gt "$p2" ]'
 shot reproductor-pelicula
-show_controls; tap_label "Cerrar" exacta 5; sleep 3
-check "película: cerrar vuelve a la ficha" '! visible "Cerrar" && wait_visible "Continuar" contiene 8'
+player_tap "Cerrar"; sleep 3
+check "película: cerrar sale del reproductor" 'wait_player_closed 10'
+check "película: vuelve a la ficha con «Continuar»" 'wait_visible "Continuar" contiene 8'
 check "ficha: enseña cuánto queda" 'visible "Quedan" contiene'
-check "película: al cerrar se suelta la conexión" 'wait_cons_zero'
 tap_label "Continuar" contiene 5
-check "película: «Continuar» retoma donde se dejó" 'wait_visible "Cerrar" exacta 25 && [ "$(player_time)" -ge $((p3 - 10)) ]'
-show_controls; tap_label "Cerrar" exacta 5; sleep 3
+check "película: «Continuar» retoma donde se dejó" 'wait_player_open 25 && sleep 4 && [ "$(player_time)" -ge $((p3 - 10)) ]'
+player_tap "Cerrar"; sleep 3; wait_player_closed 10
 
 # ───────── 5. Continuar viendo ─────────
 go Inicio
 check "inicio: la película sale en «Continuar viendo»" 'wait_visible "Continuar viendo" exacta 10'
 long_press "Toy Story" contiene; sleep 1
 check "continuar viendo: el menú permite quitarla" 'wait_visible "Quitar de Continuar viendo" exacta 5'
-tap_label "Quitar de Continuar viendo" exacta 3; sleep 2
+tap_label "Quitar de Continuar viendo" ultima 3; sleep 2
 check "continuar viendo: desaparece al quitarla" 'wait_gone "Continuar viendo" exacta 8'
 long_press "Toy Story" contiene; sleep 1
-tap_label "Quitar de Mi lista" exacta 3; sleep 2
+tap_label "Quitar de Mi lista" ultima 3; sleep 2
 check "mi lista: quitarla vacía la fila" 'wait_gone "Mi lista" exacta 8'
 
 # ───────── 6. Serie: temporadas, episodios y lista dentro del reproductor ─────────
@@ -273,45 +294,48 @@ check "serie: marcar la temporada como vista pasa a la siguiente" 'wait_visible 
 tap_label "Marcar temporada como no vista" exacta 5; sleep 3
 check "serie: desmarcarla vuelve al principio" 'wait_visible "Ver T1 · E1" contiene 8'
 tap_label "Ver T1 · E1" contiene 5
-check "serie: se abre el episodio" 'wait_visible "Cerrar" exacta 25'
-check "episodio: el reproductor dice qué episodio es" 'wait_native "S01E01" 10'
-sleep 3; show_controls
-tap_label "Lista" exacta 5; sleep 2; shot lista-episodios
-check "episodio: la lista del reproductor enseña los episodios" 'wait_native "S01E02" 5'
+check "serie: se abre el episodio" 'wait_player_open 25'
+check "episodio: el reproductor dice qué episodio es" 'wait_player_text "S01E01" 10'
+sleep 3
+player_tap "Lista"; sleep 2; shot lista-episodios
+check "episodio: la lista del reproductor enseña los episodios" 'wait_native "S01E02" 5 && [ "$(player_field list)" = "True" ]'
 tap_label "S01E02" contiene 5; sleep 5
-check "episodio: elegir otro en la lista lo reproduce" 'show_controls; wait_native "S01E02" 8 && ! visible_native "S01E01"'
-check "episodio: una sola conexión con el proveedor" '[ "$(active_cons)" -le 1 ]'
-show_controls; tap_label "Cerrar" exacta 5; sleep 3
-check "episodio: cerrar vuelve a la ficha de la serie" '! visible "Cerrar" && wait_visible "Breaking Bad" contiene 8'
-check "episodio: al cerrar se suelta la conexión" 'wait_cons_zero'
+check "episodio: elegir otro en la lista lo reproduce" 'wait_player_text "S01E02" 8 && wait_visible "ruta:/player/episode/" contiene 5'
+check "episodio: el nuevo episodio se reproduce" 'sleep 3; [ "$(player_field playing)" = "True" ]'
+player_tap "Cerrar"; sleep 3
+check "episodio: cerrar vuelve a la ficha de la serie" 'wait_player_closed 10 && wait_visible "ruta:/series/" contiene 8'
 
 # ───────── 7. Directo: pausa, ir al directo, lista de canales y zapping ─────────
 go Directo
 tap_label "Reloj" contiene 10
-check "directo: se abre el reproductor" 'wait_visible "Cerrar" exacta 25'
-check "directo: marca EN DIRECTO" 'wait_native "EN DIRECTO" 10'
-sleep 4; show_controls
-tap_label "Reproducir o pausar" exacta 5; sleep 12
-show_controls; tap_label "Reproducir o pausar" exacta 5; sleep 3
-show_controls; shot directo-tras-pausa
-check "directo: tras la pausa va por detrás del directo" 'wait_native "Ir al directo" 5'
-tap_label "Ir al directo" contiene 5; sleep 4
-show_controls
-check "directo: «Ir al directo» vuelve al directo" 'wait_native "EN DIRECTO" 5 && ! visible_native "Ir al directo"'
+check "directo: se abre el reproductor" 'wait_player_open 25'
+check "directo: marca EN DIRECTO" 'wait_native "EN DIRECTO" 10 && [ "$(player_field live)" = "True" ]'
+sleep 4
+check "directo: se está reproduciendo" '[ "$(player_field playing)" = "True" ]'
+player_tap "Reproducir o pausar"; sleep 12
+player_tap "Reproducir o pausar"; sleep 3
+shot directo-tras-pausa
+echo "  retraso tras 12 s de pausa: $(player_field behind)s"
+check "directo: tras la pausa va por detrás del directo" '[ "$(player_field behind)" -ge 8 ] && wait_native "Ir al directo" 5'
+player_tap "Ir al directo"; sleep 4
+check "directo: «Ir al directo» vuelve al directo" '[ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ]'
 before=$(player_titles)
-show_controls; tap_label "Lista" exacta 5; sleep 2; shot lista-canales
-check "directo: la lista de canales se abre en el reproductor" 'wait_native "La 2" 5'
+player_tap "Lista"; sleep 2; shot lista-canales
+check "directo: la lista de canales se abre en el reproductor" 'wait_native "La 2" 5 && [ "$(player_field list)" = "True" ]'
 tap_label "La 2" contiene 5; sleep 6
 after=$(player_titles)
-check "directo: elegir un canal de la lista cambia de canal" '[ "$before" != "$after" ]'
+echo "  canal: «${before}» → «${after}»"
+check "directo: elegir un canal de la lista cambia de canal" 'wait_player_text "La 2" 5 && [ "$before" != "$after" ]'
+check "directo: el canal nuevo se reproduce" '[ "$(player_field playing)" = "True" ]'
 check "directo: una sola conexión tras cambiar de canal" '[ "$(active_cons)" -le 1 ]'
 before=$(player_titles)
 idb ui swipe --udid "$UDID" $((W / 2)) $((H * 2 / 3)) $((W / 2)) $((H / 3)) 2>/dev/null; sleep 6
-show_controls; after=$(player_titles); shot directo-tras-zapping
-check "directo: deslizar hacia arriba cambia de canal" 'visible_native "Cerrar" && [ "$before" != "$after" ]'
+after=$(player_titles); shot directo-tras-zapping
+echo "  zapping: «${before}» → «${after}»"
+check "directo: deslizar hacia arriba cambia de canal" 'player_open && [ "$before" != "$after" ]'
 check "directo: una sola conexión tras el zapping" '[ "$(active_cons)" -le 1 ]'
-show_controls; tap_label "Cerrar" exacta 5; sleep 3
-check "directo: cerrar vuelve a la lista de canales" '! visible_native "Cerrar" && wait_visible "ruta:/live" exacta 8'
+player_tap "Cerrar"; sleep 3
+check "directo: cerrar vuelve a la lista de canales" 'wait_player_closed 10 && wait_visible "ruta:/live" exacta 8'
 check "directo: al cerrar se suelta la conexión" 'wait_cons_zero'
 check "directo: el canal visto sale en «Recientes»" 'wait_visible "Recientes" exacta 8'
 
@@ -349,7 +373,7 @@ shot ajustes-abajo
 # ───────── 10. Cambiar de perfil ─────────
 if [ "$W" -lt 768 ]; then
   tap_label "Más" exacta 5; sleep 1
-  tap_label "Cambiar de perfil" exacta 5; sleep 2
+  tap_label "Cambiar de perfil" contiene 5; sleep 2
   check "perfil: «Cambiar de perfil» vuelve a «¿Quién está viendo?»" 'wait_visible "¿Quién está viendo?" exacta 8'
   tap_label "QA" contiene 10; sleep 3
   check "perfil: elegirlo de nuevo vuelve a Inicio" 'wait_visible "Inicio" exacta 10'

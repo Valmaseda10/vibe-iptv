@@ -12,7 +12,6 @@ import { GuideSearchResults } from "./GuideSearchResults";
 import { LargeTitle } from "../../components/LargeTitle";
 
 const WINDOW_HOURS = 4;
-const WINDOW_SECONDS = WINDOW_HOURS * 3600;
 const SHIFT_SECONDS = 3600;
 const ROW_HEIGHT = 60;
 const CHANNEL_PAGE = 100;
@@ -50,6 +49,9 @@ function playerTargetFor(channel: Channel, programme: EpgGridProgramme) {
  * que avise cuando empiece; uno emitido abre el catch-up si el canal lo ofrece. */
 export function GuideScreen() {
   const navigate = useNavigate();
+  // En el iPhone caben menos horas: con cuatro, los programas quedaban en "N…", "Di…".
+  const [windowHours] = useState(() => (window.matchMedia("(max-width: 639px)").matches ? 2 : WINDOW_HOURS));
+  const windowSeconds = windowHours * 3600;
   const { profileId } = useActiveProfile();
   const [categoryId, setCategoryId] = useState<number | null>(null);
   const [windowStart, setWindowStart] = useState(() => roundDownToHalfHour(Date.now() / 1000));
@@ -98,7 +100,7 @@ export function GuideScreen() {
 
   // Programación de los bloques de filas visibles, cada uno en su propia caché: al
   // desplazarse solo se piden los bloques nuevos.
-  const windowEnd = windowStart + WINDOW_SECONDS;
+  const windowEnd = windowStart + windowSeconds;
   const visibleChunks = useMemo(() => {
     const chunks = new Set<number>();
     for (const row of virtualRows) if (row.index < channels.length) chunks.add(Math.floor(row.index / EPG_CHUNK));
@@ -180,9 +182,9 @@ export function GuideScreen() {
     }
   }
 
-  const hourMarks = Array.from({ length: WINDOW_HOURS }, (_, i) => windowStart + i * 3600);
+  const hourMarks = Array.from({ length: windowHours }, (_, i) => windowStart + i * 3600);
   const nowSeconds = Date.now() / 1000;
-  const nowOffset = ((nowSeconds - windowStart) / WINDOW_SECONDS) * 100;
+  const nowOffset = ((nowSeconds - windowStart) / windowSeconds) * 100;
 
   return (
     <div className="flex h-full flex-col gap-4 py-5 sm:py-8">
@@ -272,7 +274,7 @@ export function GuideScreen() {
                         data-guide-row={row.index}
                         tabIndex={row.index === focusedIndex ? 0 : -1}
                         onFocus={() => setFocusedIndex(row.index)}
-                        className={`flex h-14 items-center rounded-lg outline-none ${row.index === focusedIndex ? "ring-2 ring-red-600" : ""}`}
+                        className={`flex h-14 items-center rounded-lg outline-none ${row.index === focusedIndex ? "ring-2 ring-red-600 pointer-coarse:ring-0" : ""}`}
                       >
                         <div className="flex w-[5.5rem] shrink-0 items-center gap-2 pr-3 sm:w-48">
                           {channel.number != null && <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500">{channel.number}</span>}
@@ -287,8 +289,8 @@ export function GuideScreen() {
                             <div className="pointer-events-none absolute inset-y-0 z-10 w-px bg-red-600/70" style={{ left: `${nowOffset}%` }} />
                           )}
                           {(programmesByChannel.get(channel.id) ?? []).map((p) => {
-                            const left = Math.max(0, ((p.start_ts - windowStart) / WINDOW_SECONDS) * 100);
-                            const right = Math.min(100, ((p.stop_ts - windowStart) / WINDOW_SECONDS) * 100);
+                            const left = Math.max(0, ((p.start_ts - windowStart) / windowSeconds) * 100);
+                            const right = Math.min(100, ((p.stop_ts - windowStart) / windowSeconds) * 100);
                             if (right <= 0 || left >= 100) return null;
                             const future = p.start_ts > nowSeconds;
                             const reminded = reminders.has(channel.id, p.start_ts);

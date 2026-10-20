@@ -51,8 +51,21 @@ bundle=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Info.plist"
 xcrun simctl install "$UDID" "$APP"
 SIMCTL_CHILD_VIBE_QA_PLAYER_URL="http://127.0.0.1:8765/prueba.mkv" SIMCTL_CHILD_RUST_BACKTRACE=1 \
   xcrun simctl launch "$UDID" "$bundle" >/dev/null
+# Estado exacto del reproductor (VibePlayer.swift lo escribe en modo prueba): idb a veces
+# devuelve la pantalla vacía justo en una transición.
+state_field() {
+  local data file
+  data=$(xcrun simctl get_app_container "$UDID" "$bundle" data 2>/dev/null)
+  file=$(find "$data" -name qa-player.json 2>/dev/null | head -1)
+  [ -n "$file" ] && python3 -c "import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2], ''))" "$file" "$1" 2>/dev/null
+}
 # 1. Arranca y enseña los controles (el modo de prueba abre el reproductor a los 4 s).
-wait_visible "Cerrar" 25 01-arranque; ok1=$?
+ok1=1
+for _ in $(seq 1 50); do
+  a11y 01-arranque
+  if visible "Cerrar" 01-arranque || [ "$(state_field controls)" = "True" ]; then ok1=0; break; fi
+  sleep 0.5
+done
 shot 01-arranque
 check "los controles salen al empezar" '[ $ok1 -eq 0 ]'
 
