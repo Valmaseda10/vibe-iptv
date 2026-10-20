@@ -1086,10 +1086,43 @@ async fn proxy_passthrough(url: Url, range: Option<HeaderValue>, permit: StreamP
         }
     }
 
-    let generation = permit.generation();
-    let inner: BoxedByteStream = Box::pin(upstream.bytes_stream().map(|item| item.map_err(|err| Box::new(err) as BoxError)));
-    let body = Body::from_stream(PermitBoundBody { inner, permit: Some(permit), guard, generation });
+    let body = Body::from_stream(pump_upstream(upstream.bytes_stream(), permit, guard));
     builder.body(body).map_err(|_| StreamError::Internal)
+}
+
+/// Pasa al cliente los bytes del proveedor desde una tarea propia que suelta la conexión
+/// con el proveedor en cuanto otra sesión pide la suya (R1), aunque el cliente no haya
+/// cerrado todavía la suya: VLC, al saltar en una película, abre la petición nueva antes de
+/// cerrar la vieja, y con una cuenta de una conexión el proveedor rechazaba la segunda.
+fn pump_upstream<S>(upstream: S, permit: StreamPermit, guard: Arc<StreamGuard>) -> BoxedByteStream
+where
+    S: futures_core::Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+{
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, BoxError>>(16);
+    let token = guard.upstream_opened();
+    tokio::spawn(async move {
+        // Orden de suelta al terminar: primero la conexión (`upstream`), luego el permiso y
+        // por último el token, que es lo que `acquire()` espera.
+        let _token = token;
+        let generation = permit.generation();
+        let _permit = permit;
+        let mut replaced = guard.watch_generation();
+        let mut upstream = Box::pin(upstream);
+        loop {
+            let item = tokio::select! {
+                item = upstream.next() => item,
+                _ = StreamGuard::replaced(&mut replaced, generation) => break,
+                _ = tx.closed() => break,
+            };
+            let Some(item) = item else { break };
+            tokio::select! {
+                sent = tx.send(item.map_err(|err| Box::new(err) as BoxError)) => if sent.is_err() { break },
+                _ = StreamGuard::replaced(&mut replaced, generation) => break,
+            }
+        }
+        drop(upstream);
+    });
+    Box::pin(futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|item| (item, rx)) }))
 }
 
 /// Códec de la pista de audio elegida en el selector, si se eligió una y la sonda la
@@ -1584,6 +1617,100 @@ mod tests {
         assert!(!guard.is_busy(), "cerrar el reproductor suelta la conexión con el proveedor");
 
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// R1 con el proxy directo (F15): al saltar en una película, VLC pide el stream otra vez
+    /// sin haber cerrado la petición anterior. La conexión vieja con el proveedor tiene que
+    /// cerrarse antes de abrir la nueva: el proveedor nunca ve dos a la vez.
+    #[tokio::test]
+    async fn a_new_request_closes_the_previous_provider_connection_before_opening_its_own() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Clone, Default)]
+        struct Counters {
+            open: Arc<AtomicUsize>,
+            max: Arc<AtomicUsize>,
+        }
+        struct OpenGuard(Counters);
+        impl Drop for OpenGuard {
+            fn drop(&mut self) {
+                self.0.open.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+
+        let counters = Counters::default();
+        let handler_counters = counters.clone();
+        let router = Router::new().route(
+            "/movie/user/pass/9.mkv",
+            get(move || {
+                let counters = handler_counters.clone();
+                async move {
+                    let now = counters.open.fetch_add(1, Ordering::SeqCst) + 1;
+                    counters.max.fetch_max(now, Ordering::SeqCst);
+                    let open = OpenGuard(counters);
+                    // Un "fichero" que no se acaba nunca: 1 KB cada 20 ms.
+                    let body = futures_util::stream::unfold(open, |open| async move {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                        Some((Ok::<_, std::io::Error>(Bytes::from(vec![7u8; 1024])), open))
+                    });
+                    Body::from_stream(body)
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let db_path = temp_db_path("r1-passthrough");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &format!("http://{addr}"), "r1").await;
+        let movie_id: i64 = {
+            let conn = open_connection_at(&db_path).unwrap();
+            let raw = RawMovie {
+                remote_id: "9".into(),
+                category_remote_id: None,
+                raw_title: "Peli".into(),
+                container_extension: Some("mkv".into()),
+                logo_url: None,
+                added_at: None,
+                rating: None,
+                tmdb_id: None,
+            };
+            let fields = TitleFields { clean_title: "Peli", year: Some(2019), match_key: "peli-2019", quality: None, language: None };
+            write_queries::upsert_movie(&conn, provider_id, &HashMap::new(), &raw, &fields).unwrap();
+            conn.query_row("SELECT id FROM movies WHERE match_key = 'peli-2019'", [], |r| r.get(0)).unwrap()
+        };
+
+        let router = stream_router(base_state(db_path.clone(), None, None));
+        let uri = format!("/stream/movie/{movie_id}?profile_id=1&passthrough=true");
+        let first = router.clone().oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let mut first_body = first.into_body();
+        // Lee algo de la primera y la deja abierta, sin soltarla (como VLC al saltar).
+        let _ = first_body.frame().await;
+        assert_eq!(counters.open.load(Ordering::SeqCst), 1);
+
+        let second = router.oneshot(Request::builder().uri(&uri).header(header::RANGE, "bytes=5000-").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let mut second_body = second.into_body();
+        let _ = second_body.frame().await;
+
+        assert_eq!(counters.max.load(Ordering::SeqCst), 1, "el proveedor llegó a ver dos conexiones a la vez");
+        // Y la primera respuesta termina: su conexión ya no existe.
+        let mut ended = false;
+        for _ in 0..50 {
+            match tokio::time::timeout(std::time::Duration::from_millis(100), first_body.frame()).await {
+                Ok(None) => {
+                    ended = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Err(_) => continue,
+            }
+        }
+        assert!(ended, "la respuesta vieja tenía que terminar");
         let _ = std::fs::remove_file(&db_path);
     }
 

@@ -552,10 +552,14 @@ final class VibePlayerController: UIViewController {
     }
 
     @objc private func toggleOverlay() {
-        if overlay.alpha > 0.5 { hideOverlay() } else { showOverlay() }
+        if overlayVisible { hideOverlay() } else { showOverlay() }
     }
 
+    private var overlayVisible: Bool { !overlay.isHidden && overlay.alpha > 0.5 }
+
     private func showOverlay(autoHide: Bool = true) {
+        overlay.isHidden = false
+        view.bringSubviewToFront(overlay)
         UIView.animate(withDuration: 0.2) { self.overlay.alpha = 1 }
         hideTimer?.invalidate()
         guard autoHide else { return }
@@ -566,7 +570,11 @@ final class VibePlayerController: UIViewController {
     }
 
     private func hideOverlay() {
-        UIView.animate(withDuration: 0.3) { self.overlay.alpha = 0 }
+        // Oculto de verdad al acabar (no solo transparente): fuera también para la
+        // accesibilidad y los toques.
+        UIView.animate(withDuration: 0.3, animations: { self.overlay.alpha = 0 }) { _ in
+            if self.overlay.alpha < 0.01 { self.overlay.isHidden = true }
+        }
     }
 
     private func formatTime(_ seconds: Double) -> String {

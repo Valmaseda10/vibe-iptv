@@ -5,13 +5,23 @@
 //! había, antes de devolver el permiso siguiente: "espera a que el proceso hijo muera
 //! de verdad (no solo a enviar la señal)". El nivel 1 (proxy directo) y el nivel 3
 //! (mpv, F9) no tienen proceso que registrar aquí.
+//!
+//! Las sesiones sin proceso que mantienen abierta una conexión con el proveedor (el proxy
+//! directo y la grabación del directo de iOS) llevan un [`UpstreamToken`]: `acquire()`
+//! avisa a la sesión anterior para que cierre la suya y espera a que lo haga antes de
+//! devolver el permiso. Sin esto, al saltar en una película VLC abría la conexión nueva
+//! antes de soltar la vieja, y una cuenta de una sola conexión rechazaba la segunda (F15).
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use tokio::process::Child;
-use tokio::sync::Mutex as TokioMutex;
+use tokio::sync::{watch, Mutex as TokioMutex, Notify};
+
+/// Lo que `acquire()` espera, como mucho, a que la sesión anterior cierre su conexión con
+/// el proveedor.
+const UPSTREAM_CLOSE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// Intervalo de sondeo de `run_until_exit_or_replaced`: no hay forma de "esperar" a que
 /// un proceso ajeno termine sin bloquear su `Child` (que vive dentro del `Mutex`
@@ -19,13 +29,30 @@ use tokio::sync::Mutex as TokioMutex;
 /// espera bloqueante.
 const EXIT_POLL_INTERVAL: Duration = Duration::from_millis(500);
 
-#[derive(Default)]
 pub struct StreamGuard {
     generation: AtomicU64,
     active: AtomicBool,
     /// Proceso ffmpeg (nivel 2) de la sesión activa, junto con su generación. Solo puede
     /// haber uno: abrir una sesión nueva mata y espera este antes de devolver el permiso.
     process: TokioMutex<Option<(u64, Child)>>,
+    /// Avisa de cada generación nueva a las sesiones con conexión abierta.
+    generation_tx: watch::Sender<u64>,
+    /// Conexiones con el proveedor abiertas ahora mismo (ver [`UpstreamToken`]).
+    upstreams: AtomicUsize,
+    upstream_closed: Notify,
+}
+
+impl Default for StreamGuard {
+    fn default() -> Self {
+        Self {
+            generation: AtomicU64::new(0),
+            active: AtomicBool::new(false),
+            process: TokioMutex::new(None),
+            generation_tx: watch::channel(0).0,
+            upstreams: AtomicUsize::new(0),
+            upstream_closed: Notify::new(),
+        }
+    }
 }
 
 impl StreamGuard {
@@ -35,12 +62,52 @@ impl StreamGuard {
 
     /// Marca una sesión de stream como activa. Invalida cualquier sesión anterior: solo
     /// puede haber una a la vez. Si la sesión anterior tenía un proceso ffmpeg asociado,
-    /// se mata y se espera su terminación real antes de devolver el permiso nuevo.
+    /// se mata y se espera su terminación real antes de devolver el permiso nuevo; si
+    /// tenía una conexión con el proveedor abierta, se le pide cerrarla y se espera.
     pub async fn acquire(self: &Arc<Self>) -> StreamPermit {
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.active.store(true, Ordering::SeqCst);
+        self.generation_tx.send_replace(generation);
         self.kill_current_process().await;
+        self.wait_upstreams_closed().await;
         StreamPermit { guard: Arc::clone(self), generation }
+    }
+
+    async fn wait_upstreams_closed(&self) {
+        let deadline = tokio::time::Instant::now() + UPSTREAM_CLOSE_TIMEOUT;
+        while self.upstreams.load(Ordering::SeqCst) > 0 {
+            let notified = self.upstream_closed.notified();
+            if self.upstreams.load(Ordering::SeqCst) == 0 {
+                break;
+            }
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
+                tracing::warn!("la sesión anterior no cerró su conexión con el proveedor a tiempo");
+                break;
+            }
+        }
+    }
+
+    /// Registra una conexión abierta con el proveedor; se da por cerrada al soltar el token.
+    pub fn upstream_opened(self: &Arc<Self>) -> UpstreamToken {
+        self.upstreams.fetch_add(1, Ordering::SeqCst);
+        UpstreamToken(Arc::clone(self))
+    }
+
+    /// Para esperar a que una sesión más nueva pida la conexión ([`Self::replaced`]).
+    pub fn watch_generation(&self) -> watch::Receiver<u64> {
+        self.generation_tx.subscribe()
+    }
+
+    /// Termina en cuanto haya una sesión más nueva que `generation`.
+    pub async fn replaced(rx: &mut watch::Receiver<u64>, generation: u64) {
+        loop {
+            if *rx.borrow_and_update() != generation {
+                return;
+            }
+            if rx.changed().await.is_err() {
+                std::future::pending::<()>().await;
+            }
+        }
     }
 
     async fn kill_current_process(&self) {
@@ -125,6 +192,16 @@ impl StreamGuard {
             tokio::time::sleep(EXIT_POLL_INTERVAL).await;
         }
         drop(permit); // libera `active` ahora, no antes.
+    }
+}
+
+/// Una conexión abierta con el proveedor (ver [`StreamGuard::upstream_opened`]).
+pub struct UpstreamToken(Arc<StreamGuard>);
+
+impl Drop for UpstreamToken {
+    fn drop(&mut self) {
+        self.0.upstreams.fetch_sub(1, Ordering::SeqCst);
+        self.0.upstream_closed.notify_waiters();
     }
 }
 

@@ -100,6 +100,19 @@ mod platform {
     /// Guarda el `AppHandle` con el que se reenvían los eventos a la interfaz.
     pub fn install(app: AppHandle) {
         let _ = APP.set(app);
+        // Prueba automática del reproductor en el simulador (`.github/workflows/ios.yml`):
+        // con `VIBE_QA_PLAYER_URL`, abre el reproductor con ese vídeo nada más arrancar.
+        // Solo en compilaciones de depuración: la app que se instala nunca lo mira.
+        #[cfg(debug_assertions)]
+        if let Ok(url) = std::env::var("VIBE_QA_PLAYER_URL") {
+            let live = std::env::var("VIBE_QA_PLAYER_LIVE").is_ok();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(4));
+                let request =
+                    NativePlayRequest { url, title: "Prueba del reproductor".into(), subtitle: Some("QA".into()), start_seconds: 0.0, live, live_buffer: false };
+                let _ = present(&request);
+            });
+        }
     }
 
     pub fn present(request: &NativePlayRequest) -> Result<(), NativePlayerError> {

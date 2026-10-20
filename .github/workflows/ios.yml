@@ -18,6 +18,10 @@ on:
         description: "Abrir también la app en un iPhone simulado y guardar una captura"
         type: boolean
         default: false
+      qa_player:
+        description: "Probar el reproductor en el simulador con toques reales (idb)"
+        type: boolean
+        default: false
 
 concurrency:
   group: ios
@@ -126,7 +130,7 @@ jobs:
 
       # Prueba de humo opcional: arranca la app en un iPhone simulado y guarda capturas.
       - name: Compilar para el simulador
-        if: inputs.simulator
+        if: inputs.simulator || inputs.qa_player
         run: npx tauri ios build --target aarch64-sim --debug --ci
 
       - name: Abrir en el simulador y capturar
@@ -160,4 +164,39 @@ jobs:
         with:
           name: simulador
           path: ${{ runner.temp }}/shots
+          retention-days: 7
+
+      - uses: actions/setup-python@v5
+        if: inputs.qa_player
+        with:
+          python-version: "3.11"
+
+      - name: Instalar idb (toques en el simulador)
+        if: inputs.qa_player
+        run: |
+          brew tap facebook/fb
+          brew install idb-companion
+          python -m pip install fb-idb
+
+      - name: Probar el reproductor con toques
+        if: inputs.qa_player
+        run: |
+          set -uo pipefail
+          app=$(find src-tauri/gen/apple/build -name "*.app" -path "*sim*" | head -n 1)
+          [ -z "$app" ] && app=$(find src-tauri/gen/apple/build -name "*.app" | head -n 1)
+          device=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) for x in d[k] if x['name'].startswith('iPhone')))")
+          xcrun simctl boot "$device" || true
+          xcrun simctl bootstatus "$device" -b
+          idb_companion --udid "$device" > "$RUNNER_TEMP/companion.log" 2>&1 &
+          sleep 8
+          idb connect localhost 10882 || true
+          bash src-tauri/ios/qa/player-qa.sh "$device" "$app" "$RUNNER_TEMP/qa-player"
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.qa_player && always()
+        with:
+          name: qa-reproductor
+          path: |
+            ${{ runner.temp }}/qa-player
+            ${{ runner.temp }}/companion.log
           retention-days: 7

@@ -25,7 +25,7 @@ use futures_util::{Stream, StreamExt};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Notify;
 
-use crate::util::stream_guard::{StreamGuard, StreamPermit};
+use crate::util::stream_guard::{StreamGuard, StreamPermit, UpstreamToken};
 
 /// Paquete MPEG-TS: los saltos caen en múltiplos para no partir uno por la mitad.
 const TS_PACKET: u64 = 188;
@@ -111,7 +111,8 @@ impl LiveBufferSlot {
                 previous.stop_requested.store(true, Ordering::SeqCst);
             }
         }
-        tokio::spawn(record(Arc::clone(&recording), file, upstream, permit, guard));
+        let token = guard.upstream_opened();
+        tokio::spawn(record(Arc::clone(&recording), file, upstream, permit, guard, token));
         Ok(recording)
     }
 
@@ -266,13 +267,17 @@ impl Drop for ReaderAttached {
     }
 }
 
-async fn record<S>(rec: Arc<Recording>, mut file: tokio::fs::File, mut upstream: S, permit: StreamPermit, guard: Arc<StreamGuard>)
+async fn record<S>(rec: Arc<Recording>, mut file: tokio::fs::File, upstream: S, permit: StreamPermit, guard: Arc<StreamGuard>, token: UpstreamToken)
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + Unpin + 'static,
 {
+    let _token = token; // se suelta el último: `acquire()` espera a que la conexión se cierre.
+    let mut upstream = upstream;
+    let mut replaced = guard.watch_generation();
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     loop {
         tokio::select! {
+            _ = StreamGuard::replaced(&mut replaced, permit.generation()) => break,
             chunk = upstream.next() => match chunk {
                 Some(Ok(bytes)) => {
                     if let Err(err) = write_ring(&mut file, &rec, &bytes).await {
@@ -300,6 +305,7 @@ where
             break;
         }
     }
+    drop(upstream); // cierra la conexión con el proveedor
     rec.finished.store(true, Ordering::SeqCst);
     rec.notify.notify_waiters();
     drop(permit); // libera `is_busy()`: la sincronización del catálogo puede seguir.
