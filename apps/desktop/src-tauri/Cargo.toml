@@ -6,10 +6,12 @@ edition = "2021"
 rust-version = "1.82"
 
 # Biblioteca además de ejecutable: iOS no arranca un `main`, enlaza el núcleo como
-# biblioteca estática (F15). `rlib` es la que usan el ejecutable y los tests.
+# biblioteca estática (F15). `rlib` es la que usan el ejecutable y los tests. Sin
+# `cdylib` (la plantilla de Tauri la trae para Android): en iOS no se podría enlazar
+# suelta, porque `vibe_player_present` está en el Swift de la propia app.
 [lib]
 name = "vibe_iptv_lib"
-crate-type = ["staticlib", "cdylib", "rlib"]
+crate-type = ["staticlib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
