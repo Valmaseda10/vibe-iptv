@@ -45,7 +45,7 @@ check() {
 
 # Servidor del vídeo de prueba (con Range, como un proveedor).
 npx --yes http-server "$HERE" -p 8765 -s >/dev/null 2>&1 &
-sleep 3
+for _ in $(seq 1 60); do curl -sf -o /dev/null -r 0-10 http://127.0.0.1:8765/prueba.mkv && break; sleep 1; done
 
 bundle=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Info.plist")
 xcrun simctl install "$UDID" "$APP"
@@ -56,10 +56,16 @@ wait_visible "Cerrar" 25 01-arranque; ok1=$?
 shot 01-arranque
 check "los controles salen al empezar" '[ $ok1 -eq 0 ]'
 
-# 2. A los 4 s sin tocar, se esconden.
-sleep 7
-shot 02-sin-controles; a11y 02-sin-controles
-check "sin tocar, los controles se esconden" '! visible "Cerrar" 02-sin-controles' 
+# 2. Los controles se esconden solos a los 4 s, y solo lo hacen con el vídeo en marcha:
+#    que desaparezcan prueba a la vez que se reproduce.
+hidden=1
+for _ in $(seq 1 30); do
+  a11y 02-sin-controles
+  if ! visible "Cerrar" 02-sin-controles; then hidden=0; break; fi
+  sleep 1
+done
+shot 02-sin-controles
+check "el vídeo se reproduce y los controles se esconden solos" '[ $hidden -eq 0 ]'
 
 # 3. Un toque en el centro los vuelve a enseñar.
 read -r W H < <(python3 -c "import json;d=json.load(open('$OUT/01-arranque.json'));f=d[0]['frame'];print(int(f['width']),int(f['height']))" 2>/dev/null || echo "400 800")

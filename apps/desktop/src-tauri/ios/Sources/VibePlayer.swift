@@ -674,9 +674,20 @@ final class VibePlayerController: UIViewController {
         UIView.animate(withDuration: 0.2) { self.overlay.alpha = 1 }
         hideTimer?.invalidate()
         guard autoHide else { return }
-        hideTimer = Timer.scheduledTimer(withTimeInterval: 4, repeats: false) { [weak self] _ in
-            guard let self = self, self.player.isPlaying, !self.scrubbing else { return }
-            self.hideOverlay()
+        scheduleHide(after: 4)
+    }
+
+    /// Esconde los controles cuando el vídeo esté en marcha; mientras carga o está en pausa
+    /// se quedan, y se vuelve a mirar al rato.
+    private func scheduleHide(after seconds: TimeInterval) {
+        hideTimer?.invalidate()
+        hideTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            guard let self = self, !self.closed else { return }
+            if self.player.isPlaying, !self.scrubbing, self.pausedAt == nil {
+                self.hideOverlay()
+            } else if self.player.state != .paused {
+                self.scheduleHide(after: 2)
+            }
         }
     }
 
