@@ -16,6 +16,11 @@ pub enum SourceError {
     #[error("respuesta inesperada del proveedor en {url}: {detail}")]
     InvalidResponse { url: String, detail: String },
 
+    /// El panel rechaza la petición y dice por qué (p. ej. `{"message": "Validation
+    /// failed, Country is not allowed"}`): mejor enseñar su motivo que un "HTTP 403".
+    #[error("{0}")]
+    Rejected(String),
+
     #[error("serie o categoría no encontrada: {remote_id}")]
     NotFound { remote_id: String },
 

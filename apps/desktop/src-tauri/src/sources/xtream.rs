@@ -83,6 +83,9 @@ impl XtreamSource {
             .map_err(|_| SourceError::unreachable(url.as_str()))?;
 
         if !status.is_success() {
+            if let Some(reason) = rejection_reason(&bytes) {
+                return Err(SourceError::Rejected(reason));
+            }
             return Err(SourceError::invalid_response(url.as_str(), format!("HTTP {status}")));
         }
 
@@ -276,6 +279,27 @@ fn parse_vod_info(value: &serde_json::Value) -> VodInfo {
 /// deserialización.
 fn json_as_i64(value: &serde_json::Value) -> Option<i64> {
     value.as_i64().or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// El motivo que da un panel al rechazar una petición (`{"message": "..."}` o
+/// `{"error": "..."}`), ya en palabras del usuario. Algunos paneles solo admiten
+/// conexiones desde ciertos países y lo dicen así; fuera de ellos no hay nada que
+/// arreglar en la app.
+fn rejection_reason(body: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(body).ok()?;
+    let message = value.get("message").or_else(|| value.get("error"))?.as_str()?.trim();
+    if message.is_empty() {
+        return None;
+    }
+    let message: String = message.chars().take(200).collect();
+    if message.to_ascii_lowercase().contains("country") {
+        Some(format!(
+            "El proveedor no admite conexiones desde el país en el que estás ahora (responde: «{message}»). \
+             Desde su país funcionará; desde fuera hace falta una VPN con salida allí."
+        ))
+    } else {
+        Some(format!("El proveedor rechaza la conexión: «{message}»"))
+    }
 }
 
 fn looks_like_auth_failure(bytes: &[u8]) -> bool {
@@ -749,6 +773,30 @@ mod tests {
         let message = err.to_string();
         assert!(!message.contains("secreto_usuario"));
         assert!(!message.contains("secreto_pass"));
+    }
+
+    /// Respuesta real de un panel con bloqueo por país (2026-10-20): el motivo tiene que
+    /// llegar al usuario, no un "HTTP 403".
+    #[tokio::test]
+    async fn a_panel_rejection_reason_reaches_the_user() {
+        let router = axum::Router::new().route(
+            "/player_api.php",
+            axum::routing::get(|| async {
+                (axum::http::StatusCode::FORBIDDEN, axum::Json(serde_json::json!({"message": "Validation failed, Country is not allowed"})))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let source = XtreamSource::new(format!("http://{addr}"), "secreto_usuario", "secreto_pass", None).unwrap();
+
+        let message = source.account_info().await.unwrap_err().to_string();
+        assert!(message.contains("país") && message.contains("Country is not allowed"), "{message}");
+        assert!(!message.contains("secreto_usuario") && !message.contains("secreto_pass"));
+        assert_eq!(rejection_reason(br#"{"message": "Too many requests"}"#).as_deref(), Some("El proveedor rechaza la conexión: «Too many requests»"));
+        assert_eq!(rejection_reason(b"<html>403</html>"), None);
     }
 
     #[test]
