@@ -207,7 +207,8 @@ jobs:
           retention-days: 7
 
       - name: Proveedor falso (necesita ffmpeg)
-        if: inputs.qa_e2e
+        # Corre aunque falle la prueba del reproductor: así una sola ejecución da todo.
+        if: inputs.qa_e2e && !cancelled()
         run: |
           brew install ffmpeg >/dev/null
           (cd .. && cd .. && nohup node tools/proveedor-falso/server.mjs > "$RUNNER_TEMP/proveedor-falso.log" 2>&1 &)
@@ -215,7 +216,8 @@ jobs:
           tail -5 "$RUNNER_TEMP/proveedor-falso.log"
 
       - name: Prueba de punta a punta (iPhone y iPad)
-        if: inputs.qa_e2e
+        # Corre aunque falle la prueba del reproductor: así una sola ejecución da todo.
+        if: inputs.qa_e2e && !cancelled()
         run: |
           set -uo pipefail
           app=$(find src-tauri/gen/apple/build -name "*.app" -path "*sim*" | head -n 1)

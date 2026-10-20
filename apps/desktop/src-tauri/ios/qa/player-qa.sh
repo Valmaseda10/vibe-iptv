@@ -78,8 +78,12 @@ check "tocar la pantalla enseña los controles" 'visible "Cerrar" 03-tras-tocar'
 xy=$(center_of "Adelante 30 segundos" 03-tras-tocar)
 if [ -n "$xy" ]; then idb ui tap --udid "$UDID" $xy; fi
 sleep 4
-idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1.5
-shot 04-tras-avanzar; a11y 04-tras-avanzar
+# idb a veces devuelve el árbol vacío justo en una transición: se reintenta.
+for _ in 1 2 3; do
+  idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1.5
+  shot 04-tras-avanzar; a11y 04-tras-avanzar
+  visible "Cerrar" 04-tras-avanzar && break
+done
 check "avanzar 30 s sigue en el reproductor" 'visible "Cerrar" 04-tras-avanzar'
 
 # 5. Pausa y reanuda.

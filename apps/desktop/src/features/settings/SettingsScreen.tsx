@@ -209,8 +209,8 @@ export function SettingsScreen() {
 
       <BinariesStatusBanner />
 
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
-        <h2 className="mb-4 text-xl font-medium">Añadir proveedor</h2>
+      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
+        <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Añadir proveedor</h2>
 
         <div className="mb-4 flex gap-4" role="radiogroup" aria-label="Tipo de proveedor">
           {(["xtream", "m3u"] as const).map((kind) => (
@@ -230,7 +230,7 @@ export function SettingsScreen() {
         <label className="mb-3 block">
           <span className="mb-1 block text-sm text-neutral-400">Nombre</span>
           <input
-            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
             value={form.name}
             onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
           />
@@ -241,7 +241,7 @@ export function SettingsScreen() {
             <label className="mb-3 block">
               <span className="mb-1 block text-sm text-neutral-400">URL del panel (http://host:puerto)</span>
               <input
-                className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+                className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
                 value={form.baseUrl}
                 onChange={(e) => setForm((prev) => ({ ...prev, baseUrl: e.target.value }))}
               />
@@ -250,7 +250,7 @@ export function SettingsScreen() {
               <label className="flex-1">
                 <span className="mb-1 block text-sm text-neutral-400">Usuario</span>
                 <input
-                  className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+                  className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
                   value={form.username}
                   onChange={(e) => setForm((prev) => ({ ...prev, username: e.target.value }))}
                 />
@@ -259,7 +259,7 @@ export function SettingsScreen() {
                 <span className="mb-1 block text-sm text-neutral-400">Contraseña</span>
                 <input
                   type="password"
-                  className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+                  className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
                   value={form.password}
                   onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))}
                 />
@@ -270,7 +270,7 @@ export function SettingsScreen() {
           <label className="mb-3 block">
             <span className="mb-1 block text-sm text-neutral-400">URL de la lista M3U</span>
             <input
-              className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+              className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
               value={form.m3uUrl}
               onChange={(e) => setForm((prev) => ({ ...prev, m3uUrl: e.target.value }))}
             />
@@ -280,7 +280,7 @@ export function SettingsScreen() {
         <div className="flex flex-wrap gap-3">
           <button
             type="button"
-            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600"
+            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 ios:rounded-full ios:bg-white/10 ios:px-5 ios:py-2.5"
             onClick={() => validateMutation.mutate()}
             disabled={validateMutation.isPending}
           >
@@ -288,7 +288,7 @@ export function SettingsScreen() {
           </button>
           <button
             type="button"
-            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50"
+            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50 ios:rounded-full ios:px-5 ios:py-2.5 ios:font-semibold"
             onClick={() => addMutation.mutate()}
             disabled={addMutation.isPending || !form.name}
           >
@@ -300,7 +300,7 @@ export function SettingsScreen() {
         {addMutation.isError && <p className="mt-3 text-red-400">{String(addMutation.error)}</p>}
 
         {xtreamStatus && (
-          <div className="mt-4 rounded border border-neutral-700 p-4">
+          <div className="mt-4 rounded border border-neutral-700 p-4 ios:rounded-2xl ios:border-0 ios:bg-ios-surface-2">
             <p>
               Estado: {xtreamStatus.auth_ok ? "válido" : "credenciales rechazadas"} ({xtreamStatus.status})
             </p>
@@ -310,7 +310,7 @@ export function SettingsScreen() {
         )}
 
         {m3uStatus && (
-          <div className="mt-4 rounded border border-neutral-700 p-4">
+          <div className="mt-4 rounded border border-neutral-700 p-4 ios:rounded-2xl ios:border-0 ios:bg-ios-surface-2">
             <p>
               {m3uStatus.channel_count} canales, {m3uStatus.movie_count} películas, {m3uStatus.series_count} series
             </p>
@@ -336,14 +336,14 @@ export function SettingsScreen() {
       </section>
 
       <section className="mb-10">
-        <h2 className="mb-4 text-xl font-medium">Proveedores</h2>
+        <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Proveedores</h2>
         {providersQuery.isPending && <p className="text-neutral-400">Cargando…</p>}
         {providersQuery.data?.length === 0 && <p className="text-neutral-400">Todavía no has añadido ninguno.</p>}
         <ul className="flex flex-col gap-3">
           {providersQuery.data?.map((provider) => {
             const progress = progressByProvider[provider.id];
             return (
-              <li key={provider.id} className="rounded border border-neutral-800 p-4">
+              <li key={provider.id} className="rounded border border-neutral-800 p-4 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div className="min-w-0 break-words">
                     <p className="font-medium">{provider.name}</p>
@@ -365,7 +365,7 @@ export function SettingsScreen() {
                         <span className="self-center text-sm text-neutral-300">Se borrará todo su catálogo.</span>
                         <button
                           type="button"
-                          className="rounded bg-red-700 px-3 py-2 font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                          className="rounded bg-red-700 px-3 py-2 font-medium text-white hover:bg-red-600 disabled:opacity-50 ios:rounded-full ios:px-4"
                           onClick={() => handleDeleteProvider(provider)}
                           disabled={deleteProviderMutation.isPending}
                         >
@@ -373,7 +373,7 @@ export function SettingsScreen() {
                         </button>
                         <button
                           type="button"
-                          className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600"
+                          className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600 ios:rounded-full ios:px-4"
                           onClick={() => setConfirmingDelete(null)}
                         >
                           Cancelar
@@ -383,7 +383,7 @@ export function SettingsScreen() {
                       <>
                         <button
                           type="button"
-                          className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600 disabled:opacity-50"
+                          className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600 disabled:opacity-50 ios:rounded-full ios:px-4"
                           onClick={() => syncMutation.mutate(provider.id)}
                           disabled={syncState[provider.id]?.running === true}
                         >
@@ -391,7 +391,7 @@ export function SettingsScreen() {
                         </button>
                         <button
                           type="button"
-                          className="rounded bg-neutral-800 px-3 py-2 text-red-400 hover:bg-red-950 disabled:opacity-50"
+                          className="rounded bg-neutral-800 px-3 py-2 text-red-400 hover:bg-red-950 disabled:opacity-50 ios:rounded-full ios:px-4"
                           onClick={() => setConfirmingDelete(provider.id)}
                           disabled={deleteProviderMutation.isPending}
                         >
@@ -414,7 +414,7 @@ export function SettingsScreen() {
                     <p className="mb-1 text-sm text-neutral-400">
                       {progress.stage}: {progress.current}/{progress.total}
                     </p>
-                    <div className="h-2 w-full overflow-hidden rounded bg-neutral-800">
+                    <div className="h-2 w-full overflow-hidden rounded bg-neutral-800 ios:h-1.5 ios:rounded-full ios:bg-white/10">
                       <div
                         className="h-full bg-red-600 transition-[width]"
                         style={{ width: `${Math.min(100, (progress.current / progress.total) * 100)}%` }}
@@ -435,8 +435,8 @@ export function SettingsScreen() {
         )}
       </section>
 
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
-        <h2 className="mb-4 text-xl font-medium">TMDB</h2>
+      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
+        <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">TMDB</h2>
         <p className="mb-3 text-sm text-neutral-400">
           {tmdbKeyQuery.data ? "Clave de API guardada." : "Sin clave de API guardada todavía. Sin ella, las películas y series se quedan sin portada ni sinopsis."}
         </p>
@@ -444,13 +444,13 @@ export function SettingsScreen() {
           <input
             type="password"
             placeholder="Clave de API de TMDB"
-            className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto"
+            className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
             value={tmdbApiKey}
             onChange={(e) => setTmdbApiKey(e.target.value)}
           />
           <button
             type="button"
-            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50"
+            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50 ios:rounded-full ios:bg-white/10 ios:px-5 ios:py-2.5"
             onClick={() => saveTmdbKeyMutation.mutate(tmdbApiKey)}
             disabled={!tmdbApiKey || saveTmdbKeyMutation.isPending}
           >
@@ -458,7 +458,7 @@ export function SettingsScreen() {
           </button>
           <button
             type="button"
-            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50"
+            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50 ios:rounded-full ios:px-5 ios:py-2.5 ios:font-semibold"
             onClick={() => matchTmdbMutation.mutate()}
             disabled={!tmdbKeyQuery.data || matchTmdbMutation.isPending}
           >
@@ -471,7 +471,7 @@ export function SettingsScreen() {
             <p className="mb-1 text-sm text-neutral-400">
               Emparejando con TMDB: {tmdbProgress.current}/{tmdbProgress.total}
             </p>
-            <div className="h-2 w-full overflow-hidden rounded bg-neutral-800">
+            <div className="h-2 w-full overflow-hidden rounded bg-neutral-800 ios:h-1.5 ios:rounded-full ios:bg-white/10">
               <div
                 className="h-full bg-red-600 transition-[width]"
                 style={{ width: `${Math.min(100, (tmdbProgress.current / tmdbProgress.total) * 100)}%` }}
@@ -529,8 +529,8 @@ function AdultCategoriesSection() {
   const markedCount = categoriesQuery.data.filter((c) => c.is_adult).length;
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
-      <h2 className="mb-2 text-xl font-medium">Categorías para adultos</h2>
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
+      <h2 className="mb-2 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Categorías para adultos</h2>
       <p className="mb-4 text-sm text-neutral-400">
         Los perfiles que no son de adulto no ven estas categorías. Se detectan solas por el nombre ({markedCount} ahora
         mismo); marca o desmarca las que se hayan escapado.
@@ -578,13 +578,13 @@ function ProfileSection() {
   const { setProfileId } = useActiveProfile();
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
-      <h2 className="mb-4 text-xl font-medium">Perfil</h2>
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
+      <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Perfil</h2>
       <p className="mb-3 text-sm text-neutral-400">
         Cambia de perfil, o crea/edita/borra perfiles y sus PIN desde el selector — cada perfil tiene su propia lista de
         favoritos, su "continuar viendo", y su propio PIN opcional.
       </p>
-      <button type="button" className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600" onClick={() => setProfileId(null)}>
+      <button type="button" className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 ios:rounded-full ios:bg-white/10 ios:px-5 ios:py-2.5" onClick={() => setProfileId(null)}>
         Cambiar de perfil
       </button>
     </section>
@@ -645,8 +645,8 @@ function AccountSection() {
 
   if (statusQuery.data?.logged_in) {
     return (
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
-        <h2 className="mb-4 text-xl font-medium">Cuenta</h2>
+      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
+        <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Cuenta</h2>
         <p className="mb-3 text-sm text-neutral-300">Sesión iniciada como {statusQuery.data.email}.</p>
         {statusQuery.data.sync && <CloudSyncLine sync={statusQuery.data.sync} />}
         <p className="mb-4 text-xs text-neutral-500">
@@ -667,8 +667,8 @@ function AccountSection() {
   }
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
-      <h2 className="mb-4 text-xl font-medium">Cuenta</h2>
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
+      <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Cuenta</h2>
       <p className="mb-4 text-sm text-neutral-400">
         Inicia sesión para que tus perfiles, favoritos y progreso te sigan a otros dispositivos donde uses VIBE IPTV. Sin
         cuenta, la app funciona igual, solo en este PC.
@@ -685,14 +685,14 @@ function AccountSection() {
         <input
           type="email"
           placeholder="Correo"
-          className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto"
+          className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
         <input
           type="password"
           placeholder="Contraseña"
-          className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto"
+          className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
@@ -766,14 +766,14 @@ function ChangePasswordForm() {
         <input
           type="password"
           placeholder="Contraseña actual"
-          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm"
+          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
           value={currentPassword}
           onChange={(e) => setCurrentPassword(e.target.value)}
         />
         <input
           type="password"
           placeholder="Contraseña nueva (mínimo 6 caracteres)"
-          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm"
+          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
           onKeyDown={(e) => {
@@ -845,8 +845,8 @@ function LanSection() {
   const enabled = statusQuery.data?.enabled ?? false;
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
-      <h2 className="mb-4 text-xl font-medium">Red local</h2>
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
+      <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Red local</h2>
       <p className="mb-4 text-sm text-neutral-400">
         Deja que otros dispositivos de tu red (por ejemplo, un futuro cliente de Fire TV) usen esta app como servidor.
         Desactivado, el servidor solo responde a este mismo PC — igual que hasta ahora.
@@ -988,15 +988,15 @@ function DiagnosticsSection() {
   }
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
-      <h2 className="mb-4 text-xl font-medium">Diagnóstico</h2>
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
+      <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Diagnóstico</h2>
       <p className="mb-3 text-sm text-neutral-400">
         Guarda en un fichero las últimas líneas de registro de esta sesión, por si necesitas compartirlas para resolver un
         problema. Nunca incluye usuario, contraseña ni URLs del proveedor.
       </p>
       <button
         type="button"
-        className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50"
+        className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50 ios:rounded-full ios:bg-white/10 ios:px-5 ios:py-2.5"
         onClick={handleExport}
         disabled={exporting}
       >

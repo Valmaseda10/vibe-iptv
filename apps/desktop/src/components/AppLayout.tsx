@@ -99,11 +99,11 @@ export function AppLayout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="flex h-full flex-col bg-neutral-950 text-neutral-100 desk:flex-row">
+    <div className="flex h-full flex-col bg-neutral-950 text-neutral-100 desk:flex-row ios:bg-black">
       <nav
         ref={navRef}
         onKeyDown={onNavKeyDown}
-        className={`hidden shrink-0 flex-col border-r desk:flex border-neutral-900 bg-neutral-950 py-4 transition-[width] duration-150 ${collapsed ? "w-16" : "w-56"}`}
+        className={`hidden shrink-0 flex-col border-r desk:flex border-neutral-900 bg-neutral-950 py-4 transition-[width] duration-150 ios:glass ios:my-3 ios:ml-3 ios:rounded-[22px] ${collapsed ? "w-16" : "w-56"}`}
         aria-label="Navegación principal"
       >
         <div className={`mb-3 flex items-center gap-2 px-4 ${collapsed ? "justify-center px-0" : ""}`}>
@@ -123,7 +123,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
                 <Link
                   to={to}
                   className={`flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors ${
-                    active ? "bg-neutral-800 text-white" : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-100"
+                    active ? "bg-neutral-800 text-white ios:rounded-xl ios:bg-white/15" : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-100 ios:text-white/70"
                   } ${collapsed ? "justify-center px-0" : ""}`}
                   aria-current={active ? "page" : undefined}
                   title={collapsed ? label : undefined}

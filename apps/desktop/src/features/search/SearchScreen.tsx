@@ -5,6 +5,9 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import { apiGet, imagePath, useApiBase } from "../../lib/api-client";
 import type { SearchResults } from "../../lib/api-types";
 import { LargeTitle } from "../../components/LargeTitle";
+import { IS_IOS } from "../../lib/platform";
+import { useIsDesk, useKeyboardInset } from "../../lib/viewport";
+import { SearchIcon } from "../../components/icons";
 
 /** Buscador instantáneo con rebote de 150 ms sobre `GET /api/search` (FTS5). Portadas en
  * vez de una lista de texto plano, y flechas para moverse entre resultados — mismo
@@ -14,6 +17,11 @@ export function SearchScreen() {
   const [debounced, setDebounced] = useState("");
   const navigate = useNavigate();
   const resultsRef = useRef<HTMLDivElement>(null);
+  // iPhone (F15): el campo va abajo, encima de la barra de pestañas (como en iOS 26), y
+  // sube con el teclado al escribir. En el iPad y el PC sigue arriba.
+  const desk = useIsDesk();
+  const bottomField = IS_IOS && !desk;
+  const keyboard = useKeyboardInset();
 
   useEffect(() => {
     const id = setTimeout(() => setDebounced(input), 150);
@@ -44,17 +52,46 @@ export function SearchScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-5 px-4 py-5 sm:gap-6 sm:px-10 sm:py-8">
+    <div className={`flex flex-col gap-5 px-4 py-5 sm:gap-6 sm:px-10 sm:py-8 ${bottomField ? "pb-20" : ""}`}>
       <LargeTitle>Buscar</LargeTitle>
-      <input
-        autoFocus
-        type="search"
-        value={input}
-        onChange={(e) => setInput(e.target.value)}
-        onKeyDown={onInputKeyDown}
-        placeholder="Título de canal, película o serie…"
-        className="w-full max-w-xl rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-lg outline-none focus-visible:border-red-500"
-      />
+      {bottomField ? (
+        <div
+          className="glass fixed inset-x-4 z-40 mx-auto flex h-12 max-w-md items-center gap-2 rounded-full pl-4 pr-1.5 transition-[bottom] duration-200"
+          style={{ bottom: keyboard > 0 ? `${keyboard + 8}px` : "calc(max(10px, env(safe-area-inset-bottom) - 12px) + 72px)" }}
+        >
+          <SearchIcon className="h-5 w-5 shrink-0 text-white/60" />
+          <input
+            type="search"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onInputKeyDown}
+            placeholder="Películas, series y canales"
+            aria-label="Buscar"
+            className="min-w-0 flex-1 bg-transparent text-[17px] text-white outline-none placeholder:text-white/50 [&::-webkit-search-cancel-button]:hidden"
+          />
+          {input && (
+            <button
+              type="button"
+              onClick={() => setInput("")}
+              aria-label="Borrar búsqueda"
+              className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/70 outline-none active:bg-white/10"
+            >
+              ✕
+            </button>
+          )}
+        </div>
+      ) : (
+        <input
+          autoFocus={!IS_IOS}
+          type="search"
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={onInputKeyDown}
+          placeholder="Título de canal, película o serie…"
+          className="w-full max-w-xl rounded-lg border border-neutral-700 bg-neutral-900 px-4 py-3 text-lg outline-none focus-visible:border-red-500 ios:glass ios:rounded-full ios:text-[17px]"
+        />
+      )}
+      {bottomField && !hasQuery && <p className="text-[15px] text-ios-label-2">Escribe abajo para buscar en todo el catálogo: películas, series y canales.</p>}
 
       {hasQuery && !isFetching && totalHits === 0 && <p className="text-neutral-500">Sin resultados para "{debounced}".</p>}
 
@@ -76,7 +113,7 @@ export function SearchScreen() {
 function ResultSection({ title, hits, onOpen }: { title: string; hits: SearchResults["movies"]; onOpen: (id: number) => void }) {
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500">{title}</h2>
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500 ios:text-[20px] ios:font-bold ios:normal-case ios:tracking-tight ios:text-white">{title}</h2>
       <div className="grid grid-cols-3 gap-3 sm:flex sm:flex-wrap sm:gap-4">
         {hits.map((hit) => (
           <SearchResultCard key={`${hit.item_kind}-${hit.item_id}`} title={hit.title} posterPath={hit.poster_path} onOpen={() => onOpen(hit.item_id)} />

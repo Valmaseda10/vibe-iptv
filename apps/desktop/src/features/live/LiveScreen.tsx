@@ -124,7 +124,7 @@ export function LiveScreen() {
         <LargeTitle>Directo</LargeTitle>
         <select
           aria-label="Categoría"
-          className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none sm:w-auto"
+          className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none sm:w-auto ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4 ios:py-2.5 ios:text-[15px]"
           value={categoryId ?? ""}
           onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : null)}
         >
@@ -139,7 +139,7 @@ export function LiveScreen() {
 
       {categoryId === null && (recentQuery.data?.length ?? 0) > 0 && (
         <section className="px-4 sm:px-10" aria-label="Canales recientes">
-          <h2 className="mb-2 text-sm font-medium text-neutral-400">Recientes</h2>
+          <h2 className="mb-2 text-sm font-medium text-neutral-400 ios:text-[20px] ios:font-bold ios:tracking-tight ios:text-white">Recientes</h2>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {recentQuery.data!.map((channel) => (
               <button
@@ -152,9 +152,9 @@ export function LiveScreen() {
                     search: channel.category_id ? { categoryId: String(channel.category_id) } : {},
                   })
                 }
-                className="flex shrink-0 items-center gap-2 rounded-lg bg-neutral-900 px-3 py-2 text-sm outline-none hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-red-600"
+                className="flex shrink-0 items-center gap-2 rounded-lg bg-neutral-900 px-3 py-2 text-sm outline-none hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-red-600 ios:rounded-full ios:bg-ios-surface-1 ios:py-1.5 ios:pl-1.5 ios:pr-4 ios:text-[15px]"
               >
-                <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500">
+                <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500 ios:rounded-full ios:bg-ios-surface-2">
                   {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
                 </span>
                 <span className="max-w-40 truncate">{channel.display_name}</span>
@@ -195,14 +195,14 @@ export function LiveScreen() {
                             search: channel.category_id ? { categoryId: String(channel.category_id) } : {},
                           })
                         }
-                        className="flex h-full flex-1 items-center gap-4 rounded-lg px-3 text-left outline-none hover:bg-neutral-900"
+                        className="flex h-full flex-1 items-center gap-4 rounded-lg px-3 text-left outline-none hover:bg-neutral-900 ios:gap-3 ios:rounded-2xl ios:px-2 ios:active:bg-white/10"
                       >
                         <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500">{channel.number ?? ""}</span>
-                        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500 ios:rounded-[10px] ios:bg-ios-surface-2">
                           {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
                         </div>
                         <div className="min-w-0 flex-1">
-                          <span className="block truncate text-sm">{group.displayName}</span>
+                          <span className="block truncate text-sm ios:text-[17px] ios:text-white">{group.displayName}</span>
                           <NowPlaying epg={epgByChannel.get(channel.id)} />
                         </div>
                         {channel.has_catchup && <span className="ml-auto shrink-0 rounded bg-neutral-800 px-2 py-0.5 text-[10px] text-neutral-400">catch-up</span>}
@@ -213,7 +213,7 @@ export function LiveScreen() {
                           value={channel.id}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) => setSelectedFeed((prev) => ({ ...prev, [group.displayName]: Number(e.target.value) }))}
-                          className="max-w-[6.5rem] shrink-0 truncate rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 outline-none pointer-coarse:py-2"
+                          className="max-w-[6.5rem] shrink-0 truncate rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 outline-none pointer-coarse:py-2 ios:rounded-full ios:bg-white/10 ios:px-3"
                           aria-label={`Elegir fuente para ${group.displayName}`}
                           title={`${group.channels.length} fuentes disponibles para este canal`}
                         >
@@ -251,8 +251,8 @@ function NowPlaying({ epg }: { epg: EpgNowNextResponse | undefined }) {
 
   return (
     <div className="mt-1 flex items-center gap-2">
-      <span className="truncate text-xs text-neutral-500">{current.title}</span>
-      <div className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-neutral-800">
+      <span className="truncate text-xs text-neutral-500 ios:text-[13px] ios:text-ios-label-2">{current.title}</span>
+      <div className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-neutral-800 ios:bg-white/15">
         <div className="h-full bg-red-600" style={{ width: `${progress * 100}%` }} />
       </div>
     </div>

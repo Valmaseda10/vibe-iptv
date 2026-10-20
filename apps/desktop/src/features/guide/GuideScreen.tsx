@@ -195,12 +195,12 @@ export function GuideScreen() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Buscar en la guía…"
             aria-label="Buscar en la guía"
-            className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-500 sm:w-56"
+            className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-500 sm:w-56 ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4 ios:py-2.5"
           />
           {!searching && (
             <>
               <select
-                className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none sm:flex-none"
+                className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none sm:flex-none ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4 ios:py-2.5"
                 value={categoryId ?? ""}
                 aria-label="Categoría"
                 onChange={(e) => {
@@ -219,7 +219,7 @@ export function GuideScreen() {
               <button
                 type="button"
                 onClick={() => setWindowStart((w) => w - SHIFT_SECONDS)}
-                className="rounded border border-neutral-700 px-3 py-2 text-sm outline-none hover:bg-neutral-900 focus-visible:ring-2 focus-visible:ring-red-600"
+                className="rounded border border-neutral-700 px-3 py-2 text-sm outline-none hover:bg-neutral-900 focus-visible:ring-2 focus-visible:ring-red-600 ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4"
                 aria-label="Retroceder una hora"
               >
                 ← 1h
@@ -227,14 +227,14 @@ export function GuideScreen() {
               <button
                 type="button"
                 onClick={() => setWindowStart(roundDownToHalfHour(Date.now() / 1000))}
-                className="rounded border border-neutral-700 px-3 py-2 text-sm outline-none hover:bg-neutral-900 focus-visible:ring-2 focus-visible:ring-red-600"
+                className="rounded border border-neutral-700 px-3 py-2 text-sm outline-none hover:bg-neutral-900 focus-visible:ring-2 focus-visible:ring-red-600 ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4"
               >
                 Ahora
               </button>
               <button
                 type="button"
                 onClick={() => setWindowStart((w) => w + SHIFT_SECONDS)}
-                className="rounded border border-neutral-700 px-3 py-2 text-sm outline-none hover:bg-neutral-900 focus-visible:ring-2 focus-visible:ring-red-600"
+                className="rounded border border-neutral-700 px-3 py-2 text-sm outline-none hover:bg-neutral-900 focus-visible:ring-2 focus-visible:ring-red-600 ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4"
                 aria-label="Avanzar una hora"
               >
                 1h →
@@ -250,7 +250,7 @@ export function GuideScreen() {
         <p className="px-4 text-neutral-500 sm:px-10">{channelsQuery.isPending ? "Cargando canales…" : "Sin canales en esta categoría."}</p>
       ) : (
         <div className="flex min-h-0 flex-1 flex-col px-4 sm:px-10">
-          <div className="mb-2 flex border-b border-neutral-800 pb-2 text-xs text-neutral-500">
+          <div className="mb-2 flex border-b border-neutral-800 pb-2 text-xs text-neutral-500 ios:border-ios-separator ios:text-ios-label-2">
             <div className="w-[5.5rem] shrink-0 sm:w-48" />
             <div className="flex flex-1">
               {hourMarks.map((ts) => (
@@ -276,13 +276,13 @@ export function GuideScreen() {
                       >
                         <div className="flex w-[5.5rem] shrink-0 items-center gap-2 pr-3 sm:w-48">
                           {channel.number != null && <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500">{channel.number}</span>}
-                          <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500">
+                          <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500 ios:rounded-lg ios:bg-ios-surface-2">
                             {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
                           </div>
                           <span className="hidden truncate text-sm sm:inline">{channel.display_name}</span>
                         </div>
 
-                        <div className="relative h-full flex-1 overflow-hidden rounded bg-neutral-900">
+                        <div className="relative h-full flex-1 overflow-hidden rounded bg-neutral-900 ios:rounded-xl ios:bg-ios-surface-1">
                           {nowOffset > 0 && nowOffset < 100 && (
                             <div className="pointer-events-none absolute inset-y-0 z-10 w-px bg-red-600/70" style={{ left: `${nowOffset}%` }} />
                           )}

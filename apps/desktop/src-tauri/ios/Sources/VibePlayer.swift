@@ -1026,6 +1026,47 @@ final class VibePlayerController: UIViewController {
 
     // MARK: - Interfaz
 
+    /// Fondo de cristal (F15): el «Liquid Glass» del sistema en iOS 26; antes, el
+    /// desenfoque oscuro de siempre. Solo en lo que flota sobre el vídeo.
+    private func makeGlass(cornerRadius: CGFloat) -> UIVisualEffectView {
+        let effect: UIVisualEffect
+        if #available(iOS 26.0, *), !UIAccessibility.isReduceTransparencyEnabled {
+            effect = UIGlassEffect(style: .clear)
+        } else {
+            effect = UIBlurEffect(style: .systemUltraThinMaterialDark)
+        }
+        let view = UIVisualEffectView(effect: effect)
+        view.layer.cornerRadius = cornerRadius
+        view.layer.cornerCurve = .continuous
+        view.clipsToBounds = true
+        view.translatesAutoresizingMaskIntoConstraints = false
+        return view
+    }
+
+    /// Mete `content` en una pieza de cristal con los márgenes dados.
+    private func glassWrap(_ content: UIView, cornerRadius: CGFloat, insets: UIEdgeInsets = .zero) -> UIVisualEffectView {
+        let glass = makeGlass(cornerRadius: cornerRadius)
+        content.translatesAutoresizingMaskIntoConstraints = false
+        glass.contentView.addSubview(content)
+        NSLayoutConstraint.activate([
+            content.leadingAnchor.constraint(equalTo: glass.contentView.leadingAnchor, constant: insets.left),
+            content.trailingAnchor.constraint(equalTo: glass.contentView.trailingAnchor, constant: -insets.right),
+            content.topAnchor.constraint(equalTo: glass.contentView.topAnchor, constant: insets.top),
+            content.bottomAnchor.constraint(equalTo: glass.contentView.bottomAnchor, constant: -insets.bottom),
+        ])
+        return glass
+    }
+
+    /// Botón redondo de cristal de `size` puntos.
+    private func glassCircle(_ button: UIButton, size: CGFloat) -> UIVisualEffectView {
+        let glass = glassWrap(button, cornerRadius: size / 2)
+        NSLayoutConstraint.activate([
+            glass.widthAnchor.constraint(equalToConstant: size),
+            glass.heightAnchor.constraint(equalToConstant: size),
+        ])
+        return glass
+    }
+
     private func buildOverlay() {
         controlsRoot.addSubview(volumeView)
         volumeView.alpha = 0.01
@@ -1062,9 +1103,10 @@ final class VibePlayerController: UIViewController {
         forwardButton.addTarget(self, action: #selector(forwardTapped), for: .touchUpInside)
         goLiveButton.translatesAutoresizingMaskIntoConstraints = false
         goLiveButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .bold)
-        goLiveButton.tintColor = .white
-        goLiveButton.backgroundColor = UIColor.white.withAlphaComponent(0.2)
-        goLiveButton.layer.cornerRadius = 6
+        goLiveButton.tintColor = .black
+        goLiveButton.backgroundColor = .white
+        goLiveButton.layer.cornerRadius = 15
+        goLiveButton.heightAnchor.constraint(equalToConstant: 30).isActive = true
         goLiveButton.isHidden = true
         goLiveButton.addTarget(self, action: #selector(goLiveTapped), for: .touchUpInside)
 
@@ -1102,17 +1144,27 @@ final class VibePlayerController: UIViewController {
         liveBadge.font = .systemFont(ofSize: 12, weight: .bold)
         liveBadge.textColor = .white
         liveBadge.backgroundColor = .systemRed
-        liveBadge.layer.cornerRadius = 4
+        liveBadge.layer.cornerRadius = 9
         liveBadge.clipsToBounds = true
 
-        let topBar = UIStackView(arrangedSubviews: [closeButton, titles, liveBadge, goLiveButton, listButton, aspectButton, audioButton, subtitlesButton, moreButton])
-        topBar.spacing = 18
+        let closeGlass = glassCircle(closeButton, size: 44)
+        let toolButtons = [listButton, aspectButton, audioButton, subtitlesButton, moreButton]
+        for button in toolButtons {
+            button.widthAnchor.constraint(equalToConstant: 42).isActive = true
+            button.heightAnchor.constraint(equalToConstant: 44).isActive = true
+        }
+        let tools = UIStackView(arrangedSubviews: toolButtons)
+        tools.spacing = 2
+        tools.alignment = .center
+        let toolsGlass = glassWrap(tools, cornerRadius: 22, insets: UIEdgeInsets(top: 0, left: 6, bottom: 0, right: 6))
+        let topBar = UIStackView(arrangedSubviews: [closeGlass, titles, liveBadge, goLiveButton, toolsGlass])
+        topBar.spacing = 14
         topBar.alignment = .center
         topBar.translatesAutoresizingMaskIntoConstraints = false
         overlay.addSubview(topBar)
 
-        let center = UIStackView(arrangedSubviews: [backButton, playButton, forwardButton])
-        center.spacing = 56
+        let center = UIStackView(arrangedSubviews: [glassCircle(backButton, size: 64), glassCircle(playButton, size: 78), glassCircle(forwardButton, size: 64)])
+        center.spacing = 36
         center.alignment = .center
         center.translatesAutoresizingMaskIntoConstraints = false
         overlay.addSubview(center)
@@ -1122,14 +1174,16 @@ final class VibePlayerController: UIViewController {
             label.textColor = .white
         }
         slider.minimumTrackTintColor = .systemRed
+        slider.maximumTrackTintColor = UIColor.white.withAlphaComponent(0.3)
         slider.addTarget(self, action: #selector(sliderBegan), for: .touchDown)
         slider.addTarget(self, action: #selector(sliderMoved), for: .valueChanged)
         slider.addTarget(self, action: #selector(sliderEnded), for: [.touchUpInside, .touchUpOutside, .touchCancel])
         let bottomBar = UIStackView(arrangedSubviews: [timeLabel, slider, durationLabel])
         bottomBar.spacing = 12
         bottomBar.alignment = .center
-        bottomBar.translatesAutoresizingMaskIntoConstraints = false
-        overlay.addSubview(bottomBar)
+        let bottomGlass = glassWrap(bottomBar, cornerRadius: 24, insets: UIEdgeInsets(top: 6, left: 18, bottom: 6, right: 18))
+        bottomGlass.heightAnchor.constraint(equalToConstant: 48).isActive = true
+        overlay.addSubview(bottomGlass)
 
         spinner.color = .white
         spinner.hidesWhenStopped = true
@@ -1145,8 +1199,9 @@ final class VibePlayerController: UIViewController {
 
         hudLabel.font = .systemFont(ofSize: 15, weight: .semibold)
         hudLabel.textColor = .white
-        hudLabel.backgroundColor = UIColor.black.withAlphaComponent(0.6)
-        hudLabel.layer.cornerRadius = 10
+        hudLabel.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        hudLabel.layer.cornerRadius = 18
+        hudLabel.layer.cornerCurve = .continuous
         hudLabel.clipsToBounds = true
         hudLabel.alpha = 0
         hudLabel.translatesAutoresizingMaskIntoConstraints = false
@@ -1156,14 +1211,24 @@ final class VibePlayerController: UIViewController {
         skipIntroButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
         skipIntroButton.tintColor = .black
         skipIntroButton.backgroundColor = .white
-        skipIntroButton.layer.cornerRadius = 8
+        skipIntroButton.layer.cornerRadius = 22
         skipIntroButton.isHidden = true
         skipIntroButton.translatesAutoresizingMaskIntoConstraints = false
         skipIntroButton.addTarget(self, action: #selector(skipIntroTapped), for: .touchUpInside)
         controlsRoot.addSubview(skipIntroButton)
 
-        nextCard.backgroundColor = UIColor(white: 0.1, alpha: 0.92)
-        nextCard.layer.cornerRadius = 12
+        nextCard.backgroundColor = .clear
+        nextCard.layer.cornerRadius = 22
+        nextCard.layer.cornerCurve = .continuous
+        nextCard.clipsToBounds = true
+        let nextGlass = makeGlass(cornerRadius: 22)
+        nextCard.addSubview(nextGlass)
+        NSLayoutConstraint.activate([
+            nextGlass.leadingAnchor.constraint(equalTo: nextCard.leadingAnchor),
+            nextGlass.trailingAnchor.constraint(equalTo: nextCard.trailingAnchor),
+            nextGlass.topAnchor.constraint(equalTo: nextCard.topAnchor),
+            nextGlass.bottomAnchor.constraint(equalTo: nextCard.bottomAnchor),
+        ])
         nextCard.isHidden = true
         nextCard.translatesAutoresizingMaskIntoConstraints = false
         nextTitleLabel.font = .systemFont(ofSize: 14, weight: .semibold)
@@ -1172,7 +1237,7 @@ final class VibePlayerController: UIViewController {
         nextPlayButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
         nextPlayButton.tintColor = .black
         nextPlayButton.backgroundColor = .white
-        nextPlayButton.layer.cornerRadius = 8
+        nextPlayButton.layer.cornerRadius = 20
         nextPlayButton.addTarget(self, action: #selector(nextNowTapped), for: .touchUpInside)
         nextCancelButton.setTitle("Cancelar", for: .normal)
         nextCancelButton.tintColor = .white
@@ -1186,7 +1251,19 @@ final class VibePlayerController: UIViewController {
         nextCard.addSubview(nextStack)
         controlsRoot.addSubview(nextCard)
 
-        listPanel.backgroundColor = UIColor(white: 0.06, alpha: 0.94)
+        listPanel.backgroundColor = UIColor.black.withAlphaComponent(0.25)
+        listPanel.layer.cornerRadius = 28
+        listPanel.layer.cornerCurve = .continuous
+        listPanel.layer.maskedCorners = [.layerMinXMinYCorner, .layerMinXMaxYCorner]
+        listPanel.clipsToBounds = true
+        let listGlass = makeGlass(cornerRadius: 0)
+        listPanel.addSubview(listGlass)
+        NSLayoutConstraint.activate([
+            listGlass.leadingAnchor.constraint(equalTo: listPanel.leadingAnchor),
+            listGlass.trailingAnchor.constraint(equalTo: listPanel.trailingAnchor),
+            listGlass.topAnchor.constraint(equalTo: listPanel.topAnchor),
+            listGlass.bottomAnchor.constraint(equalTo: listPanel.bottomAnchor),
+        ])
         listPanel.isHidden = true
         listPanel.translatesAutoresizingMaskIntoConstraints = false
         listTable.backgroundColor = .clear
@@ -1210,9 +1287,9 @@ final class VibePlayerController: UIViewController {
             topBar.topAnchor.constraint(equalTo: guide.topAnchor, constant: 12),
             center.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             center.centerYAnchor.constraint(equalTo: root.centerYAnchor),
-            bottomBar.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 16),
-            bottomBar.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -16),
-            bottomBar.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -12),
+            bottomGlass.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 16),
+            bottomGlass.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -16),
+            bottomGlass.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -10),
             spinner.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             spinner.centerYAnchor.constraint(equalTo: root.centerYAnchor),
             messageLabel.centerXAnchor.constraint(equalTo: root.centerXAnchor),
@@ -1249,7 +1326,7 @@ final class VibePlayerController: UIViewController {
         titles.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // Los botones de la barra de arriba, a su tamaño: el título se queda con el resto
         // (antes "Cerrar" se estiraba a media pantalla).
-        for button in [closeButton, liveBadge, goLiveButton, listButton, aspectButton, audioButton, subtitlesButton, moreButton] as [UIView] {
+        for button in [closeGlass, liveBadge, goLiveButton, toolsGlass] as [UIView] {
             button.setContentHuggingPriority(.required, for: .horizontal)
             button.setContentCompressionResistancePriority(.required, for: .horizontal)
         }
