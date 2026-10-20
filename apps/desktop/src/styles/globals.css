@@ -34,6 +34,14 @@ body {
   @apply outline-[3px] outline-offset-4 outline-red-500;
 }
 
+/* Móvil (F15): la interfaz se diseñó para un PC y en el iPhone todo quedaba grande. Todo
+   va en rem, así que bajar la letra base lo encoge entero de forma proporcional. */
+@media (max-width: 639px) {
+  html {
+    font-size: 14px;
+  }
+}
+
 /* Pantallas táctiles (iPhone y iPad, F15): sin el resaltado gris al tocar ni el menú de
    "abrir enlace" al mantener pulsado una portada, y sin el zoom que Safari hace al enfocar
    un campo con letra de menos de 16 px. */

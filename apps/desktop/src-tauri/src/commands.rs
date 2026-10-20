@@ -208,8 +208,28 @@ pub async fn sync_provider(app: AppHandle, stream_guard: State<'_, Arc<StreamGua
         .ok_or("proveedor no encontrado")?;
 
     let source = build_source_for_provider(row).await?;
-    spawn_sync(app, provider_id, source, stream_guard);
+    if !spawn_sync(app, provider_id, source, stream_guard) {
+        return Err("Ya se está sincronizando este proveedor.".to_string());
+    }
     Ok(())
+}
+
+/// Final de una sincronización, con o sin éxito, para Ajustes (`sync://finished`).
+/// Antes un fallo solo quedaba en el log: en el iPhone, "Sincronizar" parecía no hacer
+/// nada (F15).
+#[derive(Debug, Clone, Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct SyncFinished {
+    #[ts(type = "number")]
+    pub provider_id: i64,
+    /// `None` si fue bien; si no, el motivo para enseñárselo al usuario.
+    pub error: Option<String>,
+    #[ts(type = "number")]
+    pub channels: i64,
+    #[ts(type = "number")]
+    pub movies: i64,
+    #[ts(type = "number")]
+    pub series: i64,
 }
 
 /// Doce horas desde la última sincronización con éxito (RF2 del PRD): pasado ese
@@ -527,12 +547,13 @@ impl Drop for SyncingGuard {
     }
 }
 
-fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + Sync>, stream_guard: Arc<StreamGuard>) {
+/// Lanza la sincronización en segundo plano; `false` si ya había una de ese proveedor.
+fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + Sync>, stream_guard: Arc<StreamGuard>) -> bool {
     {
-        let Ok(mut syncing) = SYNCING.lock() else { return };
+        let Ok(mut syncing) = SYNCING.lock() else { return false };
         if syncing.contains(&provider_id) {
             tracing::info!(provider_id, "ya hay una sincronización en marcha de este proveedor; no se lanza otra");
-            return;
+            return false;
         }
         syncing.push(provider_id);
     }
@@ -545,6 +566,8 @@ fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + 
             Ok(conn) => conn,
             Err(err) => {
                 tracing::error!(provider_id, error = %err, "no se pudo abrir la base de datos para sincronizar");
+                let finished = SyncFinished { provider_id, error: Some(err.to_string()), channels: 0, movies: 0, series: 0 };
+                let _ = app.emit("sync://finished", &finished);
                 return;
             }
         };
@@ -557,15 +580,23 @@ fn spawn_sync(app: AppHandle, provider_id: i64, source: Arc<dyn Source + Send + 
         match result {
             Ok((_, summary)) => {
                 tracing::info!(provider_id, channels = summary.channels, movies = summary.movies, series = summary.series, "sincronización completada");
+                let finished =
+                    SyncFinished { provider_id, error: None, channels: summary.channels, movies: summary.movies, series: summary.series };
+                let _ = app.emit("sync://finished", &finished);
                 // Pasos 6 y 8 de docs/ARCHITECTURE.md: en segundo plano, sin bloquear el
                 // catálogo ya sincronizado. Si no hay clave de TMDB todavía, la primera
                 // no hace nada; si la fuente no ofrece XMLTV, tampoco la segunda.
                 spawn_tmdb_matching(app.clone());
                 spawn_epg_sync(app, provider_id, source_for_epg);
             }
-            Err(err) => tracing::error!(provider_id, error = %err, "sincronización fallida"),
+            Err(err) => {
+                tracing::error!(provider_id, error = %err, "sincronización fallida");
+                let finished = SyncFinished { provider_id, error: Some(err.to_string()), channels: 0, movies: 0, series: 0 };
+                let _ = app.emit("sync://finished", &finished);
+            }
         }
     });
+    true
 }
 
 /// Paso 8 de `docs/ARCHITECTURE.md`: descarga e importa la guía XMLTV tras cada

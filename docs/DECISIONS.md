@@ -1596,8 +1596,38 @@ pánico.
 Primera prueba en el simulador (iPhone, iOS 26): la app abre y enseña la pantalla de
 cuenta, así que núcleo, base de datos y servidor local funcionan en iOS.
 
-**Lo que no llega a iOS en esta fase.** Pausar y rebobinar el directo (F13 depende de
-ffmpeg), imagen en imagen y recordatorios con la app cerrada.
+**Primeras pruebas en el iPhone del usuario (2026-10-20) y auditoría.** La app se
+instaló y reprodujo una película, pero:
+- *Bloqueo por país.* El panel del proveedor responde `403 {"message": "Validation
+  failed, Country is not allowed"}` fuera de España (con una
+  VPN con salida en ese país sí entra). El motivo que da el panel ahora llega al usuario en vez
+  de un "HTTP 403", y las pasarelas que dan 502/503/504 sueltos se reintentan (2 veces,
+  espaciadas).
+- *El reproductor no respondía a los toques.* VLC mete su vista con reconocedores de
+  gestos dentro de la del vídeo y se quedaba con los toques. La vista del vídeo ya no
+  recibe interacción; deslizar hacia abajo también cierra.
+- *"Eliminar" no hacía nada.* `window.confirm` no existe en el WebView de iOS: ahora hay
+  una confirmación propia en la tarjeta.
+- *"Sincronizar" no decía nada.* El final de una sincronización (o su error) llega como
+  evento `sync://finished` y se enseña en la tarjeta; si ya había una en marcha, se dice.
+- *El servidor local muere al suspender la app* (ver `docs/IOS.md`): `ensure_server` lo
+  comprueba al volver a primer plano y lo vuelve a abrir.
+- *Tamaños.* Letra base de 14 px en pantallas estrechas, sin zoom del usuario, zonas
+  táctiles mínimas en los botones pequeños, y el botón de "Quitar de Continuar viendo"
+  ya no depende de pasar el ratón.
+- *Las listas M3U* se descargaban sin identificarse y un error del proveedor parecía una
+  lista vacía ("0 canales").
+
+**Pausar y rebobinar el directo en iOS, sin ffmpeg** (`server::live_buffer`). El núcleo
+graba los bytes del proveedor (MPEG-TS) en un fichero circular de 600 MB y VLC lee de la
+grabación. La pausa es simplemente dejar de leer; para retroceder, adelantar o volver al
+directo, VLC pide la misma URL con `behind_s`, que se traduce a bytes con la tasa media
+medida y se alinea a paquetes de 188 bytes. La grabación sostiene el permiso del
+`StreamGuard` (R1) y termina al pedirse otro stream, al cerrar el reproductor
+(`DELETE /api/live-buffer`) o tras 30 s sin lectores.
+
+**Lo que no llega a iOS en esta fase.** Imagen en imagen y recordatorios con la app
+cerrada.
 
 **Hallazgo aparte: el modo LAN de F10 no puede funcionar.** El servidor solo escucha en
 `127.0.0.1` (`lib.rs`), así que ningún dispositivo de la red llega a él aunque el modo

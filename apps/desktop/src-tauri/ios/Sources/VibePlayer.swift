@@ -24,6 +24,9 @@ private struct PlayRequest: Decodable {
     let subtitle: String?
     let start_seconds: Double
     let live: Bool
+    /// El directo sale de la grabación del núcleo: se puede pausar y moverse por ella
+    /// pidiendo la misma URL con `&behind_s=N` (ver `server::live_buffer`).
+    let live_buffer: Bool?
 }
 
 @_cdecl("vibe_player_present")
@@ -82,6 +85,8 @@ final class VibePlayerController: UIViewController {
     private let timeLabel = UILabel()
     private let durationLabel = UILabel()
     private let liveBadge = UILabel()
+    private let goLiveButton = UIButton(type: .system)
+    private let aspectButton = UIButton(type: .system)
     private let spinner = UIActivityIndicatorView(style: .large)
     private let messageLabel = UILabel()
 
@@ -89,6 +94,17 @@ final class VibePlayerController: UIViewController {
     private var hideTimer: Timer?
     private var lastProgressSent = Date.distantPast
     private var scrubbing = false
+    /// Directo grabado: segundos por detrás del directo de lo que se ve, y desde cuándo
+    /// está en pausa (la pausa también suma retraso).
+    private var behindLive: Double = 0
+    private var pausedAt: Date?
+    private var liveReconnects = 0
+    /// Rellenar la pantalla recortando los bordes, en vez de ver la imagen entera.
+    private var fillScreen = false
+    private let symbolConfig = UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
+    private let bigSymbolConfig = UIImage.SymbolConfiguration(pointSize: 40, weight: .semibold)
+
+    private var isLiveBuffer: Bool { request?.live == true && request?.live_buffer == true }
 
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }
@@ -105,6 +121,11 @@ final class VibePlayerController: UIViewController {
 
         videoView.backgroundColor = .black
         videoView.translatesAutoresizingMaskIntoConstraints = false
+        // VLC mete su propia vista con reconocedores de toques dentro de `videoView`, y se
+        // quedaba con los toques: el gesto de "tocar para ver los controles" de abajo no
+        // llegaba nunca y no había forma de pausar ni de salir. Sin interacción en
+        // `videoView`, los toques caen en `view`, que es donde están los gestos.
+        videoView.isUserInteractionEnabled = false
         view.addSubview(videoView)
         player.drawable = videoView
 
@@ -116,7 +137,13 @@ final class VibePlayerController: UIViewController {
             videoView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
+        // Doble toque: llenar la pantalla o ver la imagen entera. El toque simple espera a
+        // que no sea doble.
+        let doubleTap = UITapGestureRecognizer(target: self, action: #selector(toggleFill))
+        doubleTap.numberOfTapsRequired = 2
+        view.addGestureRecognizer(doubleTap)
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleOverlay))
+        tap.require(toFail: doubleTap)
         view.addGestureRecognizer(tap)
         for direction in [UISwipeGestureRecognizer.Direction.up, .down] {
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
@@ -147,23 +174,71 @@ final class VibePlayerController: UIViewController {
             return
         }
         self.request = request
-        if player.media != nil { player.stop() }
+        behindLive = 0
+        pausedAt = nil
+        liveReconnects = 0
         titleLabel.text = request.title
         subtitleLabel.text = request.subtitle
         subtitleLabel.isHidden = (request.subtitle ?? "").isEmpty
-        liveBadge.isHidden = !request.live
-        [backButton, forwardButton, slider, timeLabel, durationLabel].forEach { $0.isHidden = request.live }
+        let liveBuffer = request.live && request.live_buffer == true
+        // Directo sin grabación: no hay nada a lo que ir hacia atrás ni adelante.
+        [backButton, forwardButton].forEach { $0.isHidden = request.live && !liveBuffer }
+        [slider, timeLabel, durationLabel].forEach { $0.isHidden = request.live }
+        backButton.setImage(UIImage(systemName: liveBuffer ? "gobackward.30" : "gobackward.10", withConfiguration: bigSymbolConfig), for: .normal)
+        backButton.accessibilityLabel = liveBuffer ? "Atrás 30 segundos" : "Atrás 10 segundos"
+        updateLiveBadge()
+        startPlayback(url, startSeconds: request.start_seconds)
+        showOverlay()
+    }
+
+    private func startPlayback(_ url: URL, startSeconds: Double) {
+        if player.media != nil { player.stop() }
         messageLabel.isHidden = true
         spinner.startAnimating()
 
         let media = VLCMedia(url: url)
         media.addOption(":network-caching=1500")
-        if request.start_seconds > 1 {
-            media.addOption(":start-time=\(Int(request.start_seconds))")
+        if startSeconds > 1 {
+            media.addOption(":start-time=\(Int(startSeconds))")
         }
         player.media = media
         player.play()
-        showOverlay()
+        applyFill()
+    }
+
+    /// Directo grabado: vuelve a pedir la grabación a `behindLive` segundos del directo.
+    private func reopenLive() {
+        guard let request = request, var components = URLComponents(string: request.url) else { return }
+        var items = components.queryItems ?? []
+        items.removeAll { $0.name == "behind_s" }
+        if behindLive > 0 { items.append(URLQueryItem(name: "behind_s", value: String(Int(behindLive)))) }
+        components.queryItems = items
+        guard let url = components.url else { return }
+        pausedAt = nil
+        startPlayback(url, startSeconds: 0)
+        updateLiveBadge()
+    }
+
+    /// Retraso actual respecto al directo, contando la pausa en curso.
+    private var currentBehind: Double {
+        behindLive + (pausedAt.map { Date().timeIntervalSince($0) } ?? 0)
+    }
+
+    private func updateLiveBadge() {
+        guard let request = request, request.live else {
+            liveBadge.isHidden = true
+            goLiveButton.isHidden = true
+            return
+        }
+        let behind = isLiveBuffer ? currentBehind : 0
+        if behind >= 5 {
+            liveBadge.isHidden = true
+            goLiveButton.isHidden = false
+            goLiveButton.setTitle("  -\(formatTime(behind))  ·  Ir al directo  ", for: .normal)
+        } else {
+            liveBadge.isHidden = false
+            goLiveButton.isHidden = true
+        }
     }
 
     private var positionSeconds: Double { Double(player.time.intValue) / 1000 }
@@ -191,11 +266,20 @@ final class VibePlayerController: UIViewController {
                 close(ended: true)
                 return
             }
+            // El directo se cortó (el proveedor cerró, o la grabación terminó): se vuelve a
+            // pedir unas pocas veces antes de rendirse.
+            if liveReconnects < 3 {
+                liveReconnects += 1
+                if isLiveBuffer { behindLive = 0; reopenLive() } else if let url = URL(string: request.url) { startPlayback(url, startSeconds: 0) }
+                return
+            }
         default:
             spinner.stopAnimating()
         }
 
-        playButton.setImage(UIImage(systemName: player.isPlaying ? "pause.fill" : "play.fill"), for: .normal)
+        playButton.setImage(UIImage(systemName: player.isPlaying ? "pause.fill" : "play.fill", withConfiguration: bigSymbolConfig), for: .normal)
+        if player.isPlaying { liveReconnects = 0 }
+        if request.live { updateLiveBadge() }
 
         if !request.live {
             let position = positionSeconds
@@ -229,14 +313,37 @@ final class VibePlayerController: UIViewController {
     @objc private func closeTapped() { close(ended: false) }
 
     @objc private func playTapped() {
-        if player.isPlaying { player.pause() } else { player.play() }
+        if player.isPlaying {
+            player.pause()
+            if isLiveBuffer { pausedAt = Date() }
+        } else {
+            // VLC sigue leyendo la grabación justo donde se quedó: la pausa queda como retraso.
+            if let pausedAt = pausedAt {
+                behindLive += Date().timeIntervalSince(pausedAt)
+                self.pausedAt = nil
+            }
+            player.play()
+        }
+        updateLiveBadge()
         showOverlay()
     }
 
-    @objc private func backTapped() { seek(by: -10) }
+    @objc private func backTapped() { seek(by: isLiveBuffer ? -30 : -10) }
     @objc private func forwardTapped() { seek(by: 30) }
 
+    @objc private func goLiveTapped() {
+        behindLive = 0
+        reopenLive()
+        showOverlay()
+    }
+
     private func seek(by seconds: Double) {
+        if isLiveBuffer {
+            behindLive = max(0, currentBehind - seconds)
+            reopenLive()
+            showOverlay()
+            return
+        }
         var target = max(0, positionSeconds + seconds)
         if let duration = durationSeconds { target = min(target, duration - 1) }
         player.time = VLCTime(int: Int32(target * 1000))
@@ -253,13 +360,48 @@ final class VibePlayerController: UIViewController {
     }
 
     @objc private func swiped(_ gesture: UISwipeGestureRecognizer) {
-        guard request?.live == true else { return }
+        guard request?.live == true else {
+            // En películas y series, deslizar hacia abajo cierra, como en cualquier
+            // reproductor de iPhone: otra salida aunque no se vean los controles.
+            if gesture.direction == .down { close(ended: false) }
+            return
+        }
         // Deslizar hacia arriba pasa al canal siguiente, como en un mando.
         sendEvent(["type": "zap", "direction": gesture.direction == .up ? 1 : -1])
     }
 
     @objc private func willResignActive() {
-        if player.isPlaying { player.pause() }
+        if player.isPlaying {
+            player.pause()
+            if isLiveBuffer { pausedAt = Date() }
+        }
+    }
+
+    @objc private func toggleFill() {
+        fillScreen.toggle()
+        applyFill()
+        showOverlay()
+    }
+
+    private func applyFill() {
+        // Recorta el vídeo a la proporción de la pantalla (sin bandas negras) o lo enseña
+        // entero. VLC copia la cadena al recibirla.
+        if fillScreen, videoView.bounds.width > 0, videoView.bounds.height > 0 {
+            let geometry = strdup("\(Int(videoView.bounds.width)):\(Int(videoView.bounds.height))")
+            player.videoCropGeometry = geometry
+            free(geometry)
+        } else {
+            player.videoCropGeometry = nil
+        }
+        aspectButton.setImage(
+            UIImage(systemName: fillScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", withConfiguration: symbolConfig),
+            for: .normal)
+        aspectButton.accessibilityLabel = fillScreen ? "Ver la imagen entera" : "Llenar la pantalla"
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        if fillScreen { applyFill() }
     }
 
     // MARK: - Pistas
@@ -285,8 +427,8 @@ final class VibePlayerController: UIViewController {
         overlay.backgroundColor = UIColor.black.withAlphaComponent(0.35)
         view.addSubview(overlay)
 
-        let config = UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
-        let bigConfig = UIImage.SymbolConfiguration(pointSize: 40, weight: .semibold)
+        let config = symbolConfig
+        let bigConfig = bigSymbolConfig
         func style(_ button: UIButton, _ symbol: String, _ label: String, big: Bool = false) {
             button.setImage(UIImage(systemName: symbol, withConfiguration: big ? bigConfig : config), for: .normal)
             button.tintColor = .white
@@ -299,6 +441,15 @@ final class VibePlayerController: UIViewController {
         style(playButton, "pause.fill", "Reproducir o pausar", big: true)
         style(backButton, "gobackward.10", "Atrás 10 segundos", big: true)
         style(forwardButton, "goforward.30", "Adelante 30 segundos", big: true)
+        style(aspectButton, "arrow.up.left.and.arrow.down.right", "Llenar la pantalla")
+        aspectButton.addTarget(self, action: #selector(toggleFill), for: .touchUpInside)
+        goLiveButton.translatesAutoresizingMaskIntoConstraints = false
+        goLiveButton.titleLabel?.font = .systemFont(ofSize: 13, weight: .bold)
+        goLiveButton.tintColor = .white
+        goLiveButton.backgroundColor = UIColor.white.withAlphaComponent(0.2)
+        goLiveButton.layer.cornerRadius = 4
+        goLiveButton.isHidden = true
+        goLiveButton.addTarget(self, action: #selector(goLiveTapped), for: .touchUpInside)
         closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
         playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
         backButton.addTarget(self, action: #selector(backTapped), for: .touchUpInside)
@@ -332,7 +483,7 @@ final class VibePlayerController: UIViewController {
         liveBadge.layer.cornerRadius = 4
         liveBadge.clipsToBounds = true
 
-        let topBar = UIStackView(arrangedSubviews: [closeButton, titles, liveBadge, audioButton, subtitlesButton])
+        let topBar = UIStackView(arrangedSubviews: [closeButton, titles, liveBadge, goLiveButton, aspectButton, audioButton, subtitlesButton])
         topBar.spacing = 16
         topBar.alignment = .center
         topBar.translatesAutoresizingMaskIntoConstraints = false

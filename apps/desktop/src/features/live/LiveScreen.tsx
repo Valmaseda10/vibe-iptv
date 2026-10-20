@@ -211,7 +211,7 @@ export function LiveScreen() {
                           value={channel.id}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) => setSelectedFeed((prev) => ({ ...prev, [group.displayName]: Number(e.target.value) }))}
-                          className="shrink-0 rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 outline-none"
+                          className="shrink-0 rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 outline-none pointer-coarse:py-2"
                           aria-label={`Elegir fuente para ${group.displayName}`}
                           title={`${group.channels.length} fuentes disponibles para este canal`}
                         >
@@ -273,7 +273,7 @@ function ChannelFavoriteToggle({ group, activeChannelId }: { group: ChannelGroup
       }}
       aria-label={active ? `Quitar ${group.displayName} de favoritos` : `Añadir ${group.displayName} a favoritos`}
       aria-pressed={active}
-      className="shrink-0 rounded-full p-2 text-neutral-400 outline-none hover:bg-neutral-800 hover:text-white"
+      className="shrink-0 rounded-full p-2 text-neutral-400 outline-none hover:bg-neutral-800 hover:text-white pointer-coarse:p-3"
     >
       <HeartIcon filled={active} className={`h-4 w-4 ${active ? "text-red-500" : ""}`} />
     </button>

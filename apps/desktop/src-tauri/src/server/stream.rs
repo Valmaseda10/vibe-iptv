@@ -31,6 +31,7 @@ use crate::sources::Source;
 use crate::util::redact;
 use crate::util::stream_guard::{StreamGuard, StreamPermit};
 
+use super::live_buffer::LiveBufferSlot;
 use super::timeshift::{self, TimeshiftSession, TimeshiftSlot};
 
 #[derive(Clone)]
@@ -53,6 +54,8 @@ pub struct StreamState {
     pub subtitles: SubtitleSession,
     /// Grabación del directo en curso, para pausar y rebobinar (F13).
     pub timeshift: TimeshiftSlot,
+    /// Lo mismo para iPhone y iPad, sin ffmpeg (F15, ver `server::live_buffer`).
+    pub live_buffer: LiveBufferSlot,
 }
 
 pub type StreamErrorLog = Arc<std::sync::Mutex<std::collections::HashMap<String, StreamFailure>>>;
@@ -123,6 +126,8 @@ pub fn stream_router(state: StreamState) -> Router {
         .route("/api/playback/last-error/:kind/:id", get(get_last_error))
         .route("/api/playback/subtitles/:kind/:id", get(get_subtitle_cues))
         .route("/stream/timeshift/channel/:id/:file", get(timeshift::get_file))
+        .route("/stream/live-buffer/channel/:id", get(get_live_buffer))
+        .route("/api/live-buffer", axum::routing::delete(delete_live_buffer))
         .route("/api/timeshift/:channel_id/keepalive", axum::routing::post(timeshift::post_keepalive))
         .route("/api/timeshift/:channel_id", axum::routing::delete(timeshift::delete_session))
         .with_state(state)
@@ -516,6 +521,82 @@ async fn get_catchup(
             err.into_response()
         }
     }
+}
+
+#[derive(Deserialize)]
+struct LiveBufferQuery {
+    profile_id: i64,
+    /// Segundos por detrás del directo desde los que empezar (0: el directo).
+    #[serde(default)]
+    behind_s: f64,
+}
+
+/// Directo grabado para pausar y rebobinar sin ffmpeg (iPhone y iPad, F15). Si ya se
+/// graba ese canal, se lee de la grabación; si no, se abre la conexión con el proveedor
+/// (cerrando la anterior, R1) y se empieza a grabar.
+async fn get_live_buffer(State(state): State<StreamState>, AxumPath(channel_id): AxumPath<i64>, Query(query): Query<LiveBufferQuery>) -> Response {
+    let log = Arc::clone(&state.last_errors);
+    let result = handle_live_buffer(state, channel_id, query.profile_id, query.behind_s).await;
+    remember_outcome(&log, format!("channel:{channel_id}"), result.as_ref());
+    match result {
+        Ok(response) => response,
+        Err(err) => {
+            tracing::warn!(channel_id, error = %err, "fallo al servir la grabación del directo");
+            err.into_response()
+        }
+    }
+}
+
+async fn handle_live_buffer(state: StreamState, channel_id: i64, profile_id: i64, behind_s: f64) -> Result<Response, StreamError> {
+    ensure_allowed(&state.db_path, profile_id, "channel", channel_id).await?;
+    let recording = match state.live_buffer.existing(channel_id, &state.stream_guard) {
+        Some(recording) => recording,
+        None => {
+            let (provider_id, remote_id, _) = resolve_stream_target(&state.db_path, MediaKind::Live, channel_id, None).await?;
+            let provider_row = with_db(state.db_path.clone(), move |conn| queries::get_provider(conn, provider_id))
+                .await?
+                .ok_or(StreamError::ProviderNotFound)?;
+            if provider_row.expires_at.is_some_and(|expires_at| expires_at < crate::db::now_epoch()) {
+                return Err(StreamError::AccountExpired);
+            }
+            let source = build_source_for_provider(provider_row).await.map_err(StreamError::Source)?;
+            let item = StreamRef { kind: MediaKind::Live, remote_id, container_extension: None };
+            let url = source.stream_url(&item).map_err(|err| StreamError::Source(err.to_string()))?;
+
+            let permit = state.stream_guard.acquire().await;
+            replace_subtitle_session(&state.subtitles, None);
+            let client = reqwest::Client::builder().user_agent(DEFAULT_USER_AGENT).build().map_err(|_| StreamError::Internal)?;
+            let upstream = client.get(url).send().await.map_err(|err| {
+                tracing::warn!(error = %redact(&err.to_string()), "no se pudo conectar con el proveedor para grabar el directo");
+                StreamError::Unreachable
+            })?;
+            if !upstream.status().is_success() {
+                return Err(StreamError::Unreachable);
+            }
+            record_tier(&state.db_path, profile_id, "channel", channel_id, 1).await;
+            state
+                .live_buffer
+                .start(channel_id, Box::pin(upstream.bytes_stream()), permit, Arc::clone(&state.stream_guard))
+                .await
+                .map_err(|err| {
+                    tracing::warn!(error = %err, "no se pudo preparar el fichero de la grabación del directo");
+                    StreamError::Internal
+                })?
+        }
+    };
+    let body = Body::from_stream(recording.reader(behind_s));
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "video/mp2t")
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(body)
+        .map_err(|_| StreamError::Internal)
+}
+
+/// El reproductor se cerró: la grabación termina ya y suelta la conexión con el proveedor.
+async fn delete_live_buffer(State(state): State<StreamState>) -> StatusCode {
+    state.live_buffer.stop();
+    StatusCode::NO_CONTENT
 }
 
 /// Lo que el perfil no puede ver tampoco se reproduce (F14), aunque se pida la URL a mano:
@@ -1284,6 +1365,7 @@ mod tests {
             last_errors: Default::default(),
             subtitles: Default::default(),
             timeshift: Default::default(),
+            live_buffer: Default::default(),
         }
     }
 
@@ -1441,6 +1523,65 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(response.into_body().collect().await.unwrap().to_bytes().as_ref(), &bytes[1000..2000]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// iPhone y iPad (F15): el directo se graba sin ffmpeg y se sirve desde la grabación;
+    /// cerrar el reproductor (`DELETE /api/live-buffer`) suelta la conexión.
+    #[tokio::test]
+    async fn the_live_buffer_serves_the_channel_from_its_recording_without_ffmpeg() {
+        let dir = std::env::temp_dir().join(format!("vibe-iptv-livebuffer-route-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes: Vec<u8> = (0..(188 * 400)).map(|i| (i / 188) as u8).collect();
+        let file = dir.join("canal.ts");
+        std::fs::write(&file, &bytes).unwrap();
+        let base_url = spawn_file_server("/live/user/pass/3.ts", file).await;
+
+        let db_path = temp_db_path("livebuffer");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "livebuffer").await;
+        let channel_id: i64 = {
+            let conn = open_connection_at(&db_path).unwrap();
+            let channel = RawChannel {
+                remote_id: "3".into(),
+                category_remote_id: None,
+                raw_name: "Canal".into(),
+                logo_url: None,
+                epg_channel_id: None,
+                has_catchup: false,
+                catchup_days: 0,
+                sort_order: None,
+            };
+            let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
+            write_queries::upsert_channel(&conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+            conn.query_row("SELECT id FROM channels WHERE remote_id = '3'", [], |r| r.get(0)).unwrap()
+        };
+
+        let state = base_state(db_path.clone(), None, None);
+        let guard = Arc::clone(&state.stream_guard);
+        let router = stream_router(state);
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(format!("/stream/live-buffer/channel/{channel_id}?profile_id=1&behind_s=3600")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get(header::CONTENT_TYPE).unwrap(), "video/mp2t");
+        // El "proveedor" de la prueba manda el fichero y cierra. Pedido con una hora de
+        // retraso, la lectura empieza en lo más antiguo grabado: el fichero entero, intacto.
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body.as_ref(), bytes.as_slice());
+
+        let response = router.oneshot(Request::builder().method("DELETE").uri("/api/live-buffer").body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+        for _ in 0..50 {
+            if !guard.is_busy() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!guard.is_busy(), "cerrar el reproductor suelta la conexión con el proveedor");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);

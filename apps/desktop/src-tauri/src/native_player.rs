@@ -33,6 +33,9 @@ pub struct NativePlayRequest {
     pub start_seconds: f64,
     /// Directo: sin barra de tiempo, y deslizar arriba y abajo cambia de canal.
     pub live: bool,
+    /// El directo viene de la grabación del núcleo (`/stream/live-buffer/...`): se puede
+    /// pausar, y retroceder o adelantar pidiendo la misma URL con `&behind_s=N`.
+    pub live_buffer: bool,
 }
 
 /// Lo que cuenta el reproductor nativo.
@@ -167,7 +170,7 @@ mod tests {
 
     #[test]
     fn outside_ios_the_command_says_it_is_not_available() {
-        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false };
+        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false };
         assert!(matches!(native_player_play(request), Err(NativePlayerError::Unsupported)));
     }
 }

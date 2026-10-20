@@ -13,12 +13,13 @@ mod sync;
 mod util;
 
 use std::net::TcpListener as StdTcpListener;
+use std::sync::Arc;
 
 use commands::{
     add_provider, auto_sync_stale_providers, delete_provider, export_diagnostics_log, has_tmdb_api_key, list_providers, match_tmdb,
     set_tmdb_api_key, sync_provider, validate_m3u, validate_xtream,
 };
-use server::{get_server_port, serve, ServerPort};
+use server::{ensure_server, get_server_port, ServerControl};
 use tauri::Manager;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -57,8 +58,10 @@ pub fn run() {
 
     let stream_guard = StreamGuard::new();
 
+    let server_control = Arc::new(ServerControl::new(port));
+
     tauri::Builder::default()
-        .manage(ServerPort(port))
+        .manage(Arc::clone(&server_control))
         .manage(stream_guard.clone())
         .manage(diagnostics_log)
         .setup(move |app| {
@@ -72,8 +75,12 @@ pub fn run() {
             let stream_guard = stream_guard.clone();
             let stream_guard_for_server = stream_guard.clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = serve(listener, image_cache_dir, db_path, stream_guard_for_server).await {
-                    tracing::error!(error = %err, "el servidor local se detuvo inesperadamente");
+                let started = match server::build(image_cache_dir, db_path, stream_guard_for_server).await {
+                    Ok(router) => server_control.start(listener, router).await,
+                    Err(err) => Err(err),
+                };
+                if let Err(err) = started {
+                    tracing::error!(error = %err, "no se pudo arrancar el servidor local");
                 }
             });
 
@@ -96,6 +103,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_server_port,
+            ensure_server,
             native_player::native_player_play,
             list_providers,
             validate_xtream,

@@ -95,7 +95,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
           }}
           aria-label={favorite.isFavorite ? "Quitar de favoritos" : "Añadir a favoritos"}
           aria-pressed={favorite.isFavorite}
-          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white outline-none hover:bg-black/80 focus-visible:ring-2 focus-visible:ring-red-500"
+          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white outline-none hover:bg-black/80 focus-visible:ring-2 focus-visible:ring-red-500 before:absolute before:-inset-2 before:content-['']"
         >
           <HeartIcon filled={favorite.isFavorite} className={`h-4 w-4 ${favorite.isFavorite ? "text-red-500" : ""}`} />
         </button>
@@ -109,7 +109,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
             onRemove();
           }}
           aria-label="Quitar de Continuar viendo"
-          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white opacity-0 outline-none transition-opacity hover:bg-black/80 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-red-500 group-hover:opacity-100"
+          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white opacity-0 outline-none transition-opacity hover:bg-black/80 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-red-500 group-hover:opacity-100 pointer-coarse:opacity-100 before:absolute before:-inset-2 before:content-['']"
         >
           ✕
         </button>

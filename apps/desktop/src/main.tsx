@@ -5,6 +5,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { router } from "./router";
 import { ActiveProfileProvider } from "./lib/activeProfile";
 import { SyncStatusProvider } from "./lib/syncStatus";
+import { onApiBaseChange, recoverApiBase } from "./lib/api-client";
 import "./styles/globals.css";
 
 // Sin esto (`staleTime` a 0 por defecto de TanStack Query) cada vez que se vuelve a
@@ -22,6 +23,17 @@ const queryClient = new QueryClient({
       gcTime: 10 * 60_000,
     },
   },
+});
+
+// Al volver a primer plano (sobre todo en iOS, que suspende la app y puede dejar
+// inservible el servidor local), se comprueba el servidor antes de que falle nada. Si
+// vuelve en otro puerto, todo lo que dependía de la URL base se vuelve a pedir.
+onApiBaseChange((base) => {
+  queryClient.setQueryData(["server-base-url"], base);
+  queryClient.invalidateQueries();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") recoverApiBase().catch(() => {});
 });
 
 ReactDOM.createRoot(document.getElementById("root") as HTMLElement).render(

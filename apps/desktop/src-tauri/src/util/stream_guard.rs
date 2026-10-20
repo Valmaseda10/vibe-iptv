@@ -74,6 +74,13 @@ impl StreamGuard {
         }
     }
 
+    /// `true` mientras ninguna sesión más nueva haya pedido la conexión: las sesiones sin
+    /// proceso (la grabación del directo de iOS, F15) lo miran para saber si deben
+    /// terminar.
+    pub fn is_current_generation(&self, generation: u64) -> bool {
+        self.generation.load(Ordering::SeqCst) == generation
+    }
+
     /// El sincronizador de catálogo la consulta antes de cada lote (R1): se pausa
     /// mientras haya reproducción activa, nunca cancela por eso.
     pub fn is_busy(&self) -> bool {

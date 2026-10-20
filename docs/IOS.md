@@ -17,9 +17,11 @@ normal. La firma gratuita caduca a los **7 días**.
 |---|---|---|
 | Reproductor | `<video>` + remux ffmpeg + mpv | VLC (MobileVLCKit 3.7.4) en una pantalla nativa |
 | Lo que entra al reproductor | según la cascada de 3 niveles | los bytes del proveedor tal cual (`?passthrough=true`) |
-| Pausar y rebobinar el directo | sí (F13) | no: depende de ffmpeg |
+| Pausar y rebobinar el directo | sí, con ffmpeg (F13) | sí, sin ffmpeg: el núcleo graba el directo tal cual y VLC lee de la grabación (`server::live_buffer`, unos 15 min) |
 | Subtítulos y pistas de audio | selector propio | los menús de VLC (incluye subtítulos incrustados) |
 | Zapping | flechas, números | deslizar arriba/abajo en el reproductor |
+| Salir del reproductor | Escape | botón ✕, o deslizar hacia abajo en películas y series |
+| Llenar la pantalla | — | doble toque o el botón de las flechas |
 | Navegación | barra lateral | pestañas abajo en iPhone; barra lateral en iPad |
 
 Lo demás (catálogo, búsqueda, guía, perfiles, control parental, sincronización con TMDB y
@@ -50,6 +52,17 @@ Límites de un Apple ID gratuito: 3 apps instaladas así a la vez y 10 identific
 app nuevos por semana.
 
 ---
+
+## Lo que hay que saber de iOS
+
+- **Segundo plano.** iOS puede dejar inservible el socket del servidor local de una app
+  suspendida. Al volver a primer plano, la interfaz llama a `ensure_server`, que
+  comprueba `/api/health` y, si no responde, vuelve a abrir el servidor (en el mismo
+  puerto si puede). Una petición que falle por red también lo intenta y se repite una vez.
+- **Diálogos del navegador.** `window.confirm`/`alert`/`prompt` no existen en el WebView de
+  Tauri en iOS (devuelven "no" sin enseñar nada). La interfaz usa confirmaciones propias.
+- **Sin ratón.** Nada puede depender de `hover` para aparecer, y los botones pequeños
+  amplían su zona táctil.
 
 ## Cómo está montado
 

@@ -2,11 +2,41 @@ import { invoke } from "@tauri-apps/api/core";
 import { useQuery } from "@tanstack/react-query";
 
 let cachedBase: Promise<string> | null = null;
+const baseListeners = new Set<(base: string) => void>();
 
 /** Resuelve la URL base del servidor local una sola vez por sesión de la app. */
 export function getApiBase(): Promise<string> {
   cachedBase ??= invoke<number>("get_server_port").then((port) => `http://127.0.0.1:${port}`);
   return cachedBase;
+}
+
+/** Pide al núcleo que compruebe el servidor local y lo vuelva a abrir si no responde
+ * (iOS puede dejarlo inservible al suspender la app, F15). Si cambia de puerto, avisa a
+ * quien escuche con `onApiBaseChange` (las imágenes y la caché de consultas). */
+export async function recoverApiBase(): Promise<string> {
+  const previous = await getApiBase().catch(() => null);
+  const port = await invoke<number>("ensure_server");
+  const base = `http://127.0.0.1:${port}`;
+  cachedBase = Promise.resolve(base);
+  if (base !== previous) baseListeners.forEach((listener) => listener(base));
+  return base;
+}
+
+export function onApiBaseChange(listener: (base: string) => void): () => void {
+  baseListeners.add(listener);
+  return () => baseListeners.delete(listener);
+}
+
+/** `fetch` contra el servidor local: si falla la red (no un código de error HTTP), se
+ * recupera el servidor y se reintenta una vez. */
+async function localFetch(path: string, init?: RequestInit): Promise<Response> {
+  const base = await getApiBase();
+  try {
+    return await fetch(`${base}${path}`, init);
+  } catch {
+    const recovered = await recoverApiBase();
+    return fetch(`${recovered}${path}`, init);
+  }
 }
 
 /** Para componentes: la base ya resuelta, cacheada por TanStack Query. */
@@ -41,8 +71,7 @@ async function throwWithBody(path: string, response: Response): Promise<never> {
 }
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const base = await getApiBase();
-  const response = await fetch(`${base}${path}`);
+  const response = await localFetch(path);
   if (!response.ok) return throwWithBody(path, response);
   return response.json() as Promise<T>;
 }
@@ -51,8 +80,7 @@ export async function apiGet<T>(path: string): Promise<T> {
  * `response.json()` sobre un cuerpo vacío. Lo usan las consultas "¿hay algo guardado
  * para esto?" (progreso de reproducción, nivel de la cascada). */
 export async function apiGetOrNull<T>(path: string): Promise<T | null> {
-  const base = await getApiBase();
-  const response = await fetch(`${base}${path}`);
+  const response = await localFetch(path);
   if (response.status === 204) return null;
   if (!response.ok) return throwWithBody(path, response);
   return response.json() as Promise<T>;
@@ -63,8 +91,7 @@ export async function apiGetOrNull<T>(path: string): Promise<T | null> {
  * (p. ej. el código de emparejamiento de `/api/lan/pairing/start`). Un 204 da
  * `undefined` en vez de reventar `response.json()` sobre un cuerpo vacío. */
 export async function apiPost<T = void>(path: string, body: unknown): Promise<T> {
-  const base = await getApiBase();
-  const response = await fetch(`${base}${path}`, {
+  const response = await localFetch(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -75,8 +102,7 @@ export async function apiPost<T = void>(path: string, body: unknown): Promise<T>
 }
 
 export async function apiPatch(path: string, body: unknown): Promise<void> {
-  const base = await getApiBase();
-  const response = await fetch(`${base}${path}`, {
+  const response = await localFetch(path, {
     method: "PATCH",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -85,8 +111,7 @@ export async function apiPatch(path: string, body: unknown): Promise<void> {
 }
 
 export async function apiPut(path: string, body: unknown): Promise<void> {
-  const base = await getApiBase();
-  const response = await fetch(`${base}${path}`, {
+  const response = await localFetch(path, {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -95,8 +120,7 @@ export async function apiPut(path: string, body: unknown): Promise<void> {
 }
 
 export async function apiDelete(path: string): Promise<void> {
-  const base = await getApiBase();
-  const response = await fetch(`${base}${path}`, { method: "DELETE" });
+  const response = await localFetch(path, { method: "DELETE" });
   if (!response.ok) return throwWithBody(path, response);
 }
 

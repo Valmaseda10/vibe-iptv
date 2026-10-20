@@ -1,6 +1,7 @@
 pub mod account;
 pub mod api;
 pub mod lan;
+pub mod live_buffer;
 pub mod profiles;
 pub mod routes;
 pub mod stream;
@@ -9,8 +10,9 @@ pub mod tv;
 
 use std::net::{SocketAddr, TcpListener as StdTcpListener};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::Router;
 use tower_http::cors::{Any, CorsLayer};
@@ -22,31 +24,104 @@ use crate::sync::firebase::{FirebaseBackend, FirebaseConfig};
 use crate::util::pairing::PairingState;
 use crate::util::stream_guard::StreamGuard;
 
-/// Puerto del servidor local, gestionado como estado de Tauri para que el frontend lo
-/// consulte con el comando `get_server_port`.
-pub struct ServerPort(pub u16);
+/// El servidor local: su puerto y lo necesario para volver a levantarlo.
+///
+/// iOS puede dejar inservible el socket de escucha de una app suspendida (al pasar a
+/// segundo plano). La interfaz seguía ahí al volver, pero ninguna petición llegaba:
+/// "los botones no van" (F15). [`ensure_server`] comprueba que responde y, si no, lo
+/// vuelve a abrir con el mismo router.
+pub struct ServerControl {
+    port: AtomicU16,
+    router: tokio::sync::OnceCell<Router>,
+    task: tokio::sync::Mutex<Option<tauri::async_runtime::JoinHandle<()>>>,
+}
+
+impl ServerControl {
+    pub fn new(port: u16) -> Self {
+        Self { port: AtomicU16::new(port), router: tokio::sync::OnceCell::new(), task: tokio::sync::Mutex::new(None) }
+    }
+
+    /// Primer arranque: guarda el router y sirve en el socket ya reservado.
+    pub async fn start(&self, listener: StdTcpListener, router: Router) -> std::io::Result<()> {
+        let _ = self.router.set(router.clone());
+        let handle = spawn_serving(listener, router)?;
+        *self.task.lock().await = Some(handle);
+        Ok(())
+    }
+}
 
 /// Comando Tauri que expone al frontend el puerto efímero en el que escucha el
 /// servidor local (regla R2 de CLAUDE.md: nunca un puerto fijo).
 #[tauri::command]
-pub fn get_server_port(port: tauri::State<ServerPort>) -> u16 {
-    port.0
+pub fn get_server_port(control: tauri::State<'_, Arc<ServerControl>>) -> u16 {
+    control.port.load(Ordering::SeqCst)
 }
 
-/// Sirve la API local sobre un socket ya reservado en `127.0.0.1`. El puerto se decide
-/// de forma síncrona en el arranque, antes de que el frontend pueda pedirlo.
-pub async fn serve(
-    listener: StdTcpListener,
-    image_cache_dir: PathBuf,
-    db_path: PathBuf,
-    stream_guard: Arc<StreamGuard>,
-) -> std::io::Result<()> {
+/// Comprueba que el servidor local responde y, si no, lo vuelve a abrir (en el mismo
+/// puerto si está libre). Devuelve el puerto en el que escucha.
+#[tauri::command]
+pub async fn ensure_server(control: tauri::State<'_, Arc<ServerControl>>) -> Result<u16, String> {
+    control.ensure().await
+}
+
+impl ServerControl {
+    /// Ver [`ensure_server`].
+    pub async fn ensure(&self) -> Result<u16, String> {
+        let mut task = self.task.lock().await;
+        let port = self.port.load(Ordering::SeqCst);
+        let Some(router) = self.router.get().cloned() else {
+            return Ok(port); // todavía arrancando: las peticiones esperan en la cola del socket
+        };
+        if responds(port).await {
+            return Ok(port);
+        }
+        tracing::warn!(port, "el servidor local no responde; se vuelve a abrir");
+        if let Some(old) = task.take() {
+            old.abort();
+            // El socket viejo se suelta al terminar la tarea abortada.
+            let _ = old.await;
+        }
+        let listener = StdTcpListener::bind(("127.0.0.1", port))
+            .or_else(|_| StdTcpListener::bind("127.0.0.1:0"))
+            .map_err(|err| err.to_string())?;
+        let new_port = listener.local_addr().map_err(|err| err.to_string())?.port();
+        *task = Some(spawn_serving(listener, router).map_err(|err| err.to_string())?);
+        self.port.store(new_port, Ordering::SeqCst);
+        Ok(new_port)
+    }
+}
+
+async fn responds(port: u16) -> bool {
+    let Ok(client) = reqwest::Client::builder().timeout(Duration::from_millis(1500)).build() else {
+        return false;
+    };
+    matches!(client.get(format!("http://127.0.0.1:{port}/api/health")).send().await, Ok(r) if r.status().is_success())
+}
+
+fn spawn_serving(listener: StdTcpListener, router: Router) -> std::io::Result<tauri::async_runtime::JoinHandle<()>> {
     // En Windows, un socket duplicado con `try_clone()` no hereda el modo no bloqueante
     // del original (es un atributo de Winsock por handle, no por socket subyacente).
     // Sin esto, `accept()` bloquea el hilo del runtime y el servidor deja de responder
     // sin ningún error visible.
     listener.set_nonblocking(true)?;
-    let listener = tokio::net::TcpListener::from_std(listener)?;
+    Ok(tauri::async_runtime::spawn(async move {
+        let listener = match tokio::net::TcpListener::from_std(listener) {
+            Ok(listener) => listener,
+            Err(err) => {
+                tracing::error!(error = %err, "no se pudo preparar el socket del servidor local");
+                return;
+            }
+        };
+        // `with_connect_info` es lo que le da a `lan::require_local_or_paired` la IP real
+        // del que llama — sin esto no habría forma de distinguir loopback de LAN.
+        if let Err(err) = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await {
+            tracing::error!(error = %err, "el servidor local se detuvo inesperadamente");
+        }
+    }))
+}
+
+/// Prepara la API local (migraciones, estado, motor de la nube) y devuelve su router.
+pub async fn build(image_cache_dir: PathBuf, db_path: PathBuf, stream_guard: Arc<StreamGuard>) -> std::io::Result<Router> {
 
     // Aplica las migraciones aquí, antes de servir nada. Sin esto había una carrera de
     // verdad, no solo teórica: en una instalación nueva (fichero de base de datos
@@ -68,6 +143,7 @@ pub async fn serve(
 
     crate::media::subtitles::clear_temp_dir();
     timeshift::clear_temp_root();
+    live_buffer::clear_temp_root();
     let stream_state = stream::StreamState {
         db_path: db_path.clone(),
         stream_guard,
@@ -79,6 +155,7 @@ pub async fn serve(
         last_errors: Default::default(),
         subtitles: Default::default(),
         timeshift: Default::default(),
+        live_buffer: Default::default(),
     };
     if stream_state.ffmpeg_path.is_none() || stream_state.ffprobe_path.is_none() {
         tracing::warn!("ffmpeg y/o ffprobe no están en el PATH: el nivel 2 de reproducción no funcionará hasta F10");
@@ -93,10 +170,7 @@ pub async fn serve(
     let cloud: Arc<dyn CloudBackend> = Arc::new(FirebaseBackend::new(FirebaseConfig::production()));
     engine::start(db_path.clone(), cloud.clone());
 
-    let router = full_router(image_cache_dir, db_path, stream_state, lan_state, cloud);
-    // `with_connect_info` es lo que le da a `lan::require_local_or_paired` la IP real
-    // del que llama — sin esto no habría forma de distinguir loopback de LAN.
-    axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await
+    Ok(full_router(image_cache_dir, db_path, stream_state, lan_state, cloud))
 }
 
 /// El router completo: catálogo + salud/imágenes + streaming, con CORS aplicado una
@@ -142,6 +216,27 @@ mod tests {
     use axum::http::{header, Request};
     use tower::ServiceExt;
 
+    /// iOS (F15): si el servidor deja de responder (socket inservible tras suspender la
+    /// app), `ensure` lo vuelve a abrir con el mismo router; si responde, no toca nada.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ensure_reopens_a_server_that_stopped_answering() {
+        let router = Router::new().route("/api/health", axum::routing::get(|| async { "ok" }));
+        let listener = StdTcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let control = ServerControl::new(port);
+        control.start(listener, router).await.unwrap();
+        assert!(responds(port).await);
+        assert_eq!(control.ensure().await.unwrap(), port);
+
+        // Simula el socket muerto: la tarea que sirve deja de existir.
+        control.task.lock().await.take().unwrap().abort();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!responds(port).await);
+
+        let new_port = control.ensure().await.unwrap();
+        assert!(responds(new_port).await, "tras `ensure` el servidor tiene que responder");
+    }
+
     #[tokio::test]
     async fn cors_covers_routes_merged_after_the_catalog_router() {
         let stream_state = stream::StreamState {
@@ -153,6 +248,7 @@ mod tests {
             last_errors: Default::default(),
             subtitles: Default::default(),
             timeshift: Default::default(),
+            live_buffer: Default::default(),
         };
         let lan_state = lan::LanState {
             db_path: std::env::temp_dir(),
@@ -203,7 +299,7 @@ mod tests {
 
         let cloud: Arc<dyn CloudBackend> = Arc::new(FirebaseBackend::new(FirebaseConfig::production()));
         engine::start(db_path.clone(), cloud.clone());
-        let stream_state = stream::StreamState { db_path: db_path.clone(), stream_guard: StreamGuard::new(), ffmpeg_path: None, ffprobe_path: None, mpv_path: None, last_errors: Default::default(), subtitles: Default::default(), timeshift: Default::default() };
+        let stream_state = stream::StreamState { db_path: db_path.clone(), stream_guard: StreamGuard::new(), ffmpeg_path: None, ffprobe_path: None, mpv_path: None, last_errors: Default::default(), subtitles: Default::default(), timeshift: Default::default(), live_buffer: Default::default() };
         let lan_state = lan::LanState { db_path: db_path.clone(), enabled: Arc::new(AtomicBool::new(false)), pairing: PairingState::new() };
         let router = full_router(std::env::temp_dir(), db_path.clone(), stream_state, lan_state, cloud.clone());
 

@@ -18,6 +18,7 @@ import type {
   PairingStartResponse,
   ProviderKind,
   ProviderSummary,
+  SyncFinished,
   SyncProgress,
 } from "../../lib/api-types";
 
@@ -43,6 +44,10 @@ export function SettingsScreen() {
   const [tmdbProgress, setTmdbProgress] = useState<SyncProgress | null>(null);
   const [tmdbApiKey, setTmdbApiKey] = useState("");
   const [epgSummary, setEpgSummary] = useState<EpgSyncSummary | null>(null);
+  // Estado de la última sincronización de cada proveedor, para que "Sincronizar" diga
+  // algo: antes no había ninguna respuesta visible, ni al acabar ni al fallar (F15).
+  const [syncState, setSyncState] = useState<Record<number, { running: boolean; message: string | null; failed: boolean }>>({});
+  const [confirmingDelete, setConfirmingDelete] = useState<number | null>(null);
 
   const providersQuery = useQuery({
     queryKey: ["providers"],
@@ -66,6 +71,25 @@ export function SettingsScreen() {
       if (event.payload.total > 0 && event.payload.current >= event.payload.total) {
         queryClient.invalidateQueries({ queryKey: ["providers"] });
       }
+    });
+    return () => {
+      unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, [queryClient]);
+
+  useEffect(() => {
+    const unlistenPromise = listen<SyncFinished>("sync://finished", ({ payload }) => {
+      setSyncState((prev) => ({
+        ...prev,
+        [payload.provider_id]: payload.error
+          ? { running: false, failed: true, message: `La sincronización falló: ${payload.error}` }
+          : {
+              running: false,
+              failed: false,
+              message: `Sincronizado: ${payload.channels} canales, ${payload.movies} películas, ${payload.series} series.`,
+            },
+      }));
+      queryClient.invalidateQueries({ queryKey: ["providers"] });
     });
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
@@ -117,16 +141,25 @@ export function SettingsScreen() {
       };
       return invoke<ProviderSummary>("add_provider", { input });
     },
-    onSuccess: () => {
+    onSuccess: (provider) => {
       setForm(emptyForm);
       setXtreamStatus(null);
       setM3uStatus(null);
+      setSyncState((prev) => ({ ...prev, [provider.id]: { running: true, failed: false, message: "Sincronizando el catálogo…" } }));
       queryClient.invalidateQueries({ queryKey: ["providers"] });
     },
   });
 
   const syncMutation = useMutation({
     mutationFn: (providerId: number) => invoke<void>("sync_provider", { providerId }),
+    onMutate: (providerId) =>
+      setSyncState((prev) => ({ ...prev, [providerId]: { running: true, failed: false, message: "Sincronizando el catálogo…" } })),
+    onError: (err, providerId) => {
+      const message = errorMessage(err);
+      // Ya había una en marcha (p. ej. la que se lanza al añadir): sigue siendo "en curso".
+      const busy = message.includes("Ya se está sincronizando");
+      setSyncState((prev) => ({ ...prev, [providerId]: { running: busy, failed: !busy, message } }));
+    },
   });
 
   const deleteProviderMutation = useMutation({
@@ -134,13 +167,13 @@ export function SettingsScreen() {
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
   });
 
+  // Borrar exige un segundo toque ("Sí, eliminar"): borra canales, películas y series de
+  // ese proveedor y no debe pasar por un clic accidental. Antes era `window.confirm`, que
+  // en el WebView de iPhone devuelve "no" al instante sin enseñar nada: el botón parecía
+  // roto (F15).
   function handleDeleteProvider(provider: ProviderSummary) {
-    // Sin librería de diálogos todavía (F5 no la trajo): `confirm` nativo es tosco pero
-    // esto es justo el tipo de acción — borra canales, películas y series enteros de
-    // este proveedor — que no debería poder pasar por un clic accidental.
-    if (window.confirm(`¿Eliminar "${provider.name}"? Se borrará todo su catálogo. No se puede deshacer.`)) {
-      deleteProviderMutation.mutate(provider.id);
-    }
+    setConfirmingDelete(null);
+    deleteProviderMutation.mutate(provider.id);
   }
 
   const saveTmdbKeyMutation = useMutation({
@@ -169,13 +202,13 @@ export function SettingsScreen() {
   }
 
   return (
-    <div className="mx-auto max-w-3xl p-8">
+    <div className="mx-auto max-w-3xl p-4 sm:p-8">
       <h1 className="text-3xl font-semibold">Ajustes — Proveedores</h1>
       <p className="mb-6 mt-1 text-xs text-neutral-500">Compilación {__BUILD_ID__}</p>
 
       <BinariesStatusBanner />
 
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
         <h2 className="mb-4 text-xl font-medium">Añadir proveedor</h2>
 
         <div className="mb-4 flex gap-4" role="radiogroup" aria-label="Tipo de proveedor">
@@ -243,7 +276,7 @@ export function SettingsScreen() {
           </label>
         )}
 
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <button
             type="button"
             className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600"
@@ -325,27 +358,55 @@ export function SettingsScreen() {
                     </p>
                     <ExpiryWarning expiresAt={provider.expires_at} />
                   </div>
-                  <div className="flex shrink-0 gap-2">
-                    <button
-                      type="button"
-                      className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600"
-                      onClick={() => syncMutation.mutate(provider.id)}
-                      disabled={syncMutation.isPending}
-                    >
-                      Sincronizar
-                    </button>
-                    <button
-                      type="button"
-                      className="rounded bg-neutral-800 px-3 py-2 text-red-400 hover:bg-red-950 disabled:opacity-50"
-                      onClick={() => handleDeleteProvider(provider)}
-                      disabled={deleteProviderMutation.isPending}
-                    >
-                      Eliminar
-                    </button>
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    {confirmingDelete === provider.id ? (
+                      <>
+                        <span className="self-center text-sm text-neutral-300">Se borrará todo su catálogo.</span>
+                        <button
+                          type="button"
+                          className="rounded bg-red-700 px-3 py-2 font-medium text-white hover:bg-red-600 disabled:opacity-50"
+                          onClick={() => handleDeleteProvider(provider)}
+                          disabled={deleteProviderMutation.isPending}
+                        >
+                          Sí, eliminar
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600"
+                          onClick={() => setConfirmingDelete(null)}
+                        >
+                          Cancelar
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600 disabled:opacity-50"
+                          onClick={() => syncMutation.mutate(provider.id)}
+                          disabled={syncState[provider.id]?.running === true}
+                        >
+                          {syncState[provider.id]?.running ? "Sincronizando…" : "Sincronizar"}
+                        </button>
+                        <button
+                          type="button"
+                          className="rounded bg-neutral-800 px-3 py-2 text-red-400 hover:bg-red-950 disabled:opacity-50"
+                          onClick={() => setConfirmingDelete(provider.id)}
+                          disabled={deleteProviderMutation.isPending}
+                        >
+                          Eliminar
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
+                {syncState[provider.id]?.message && (
+                  <p role="status" className={`mt-2 text-sm ${syncState[provider.id]?.failed ? "text-red-400" : "text-neutral-400"}`}>
+                    {syncState[provider.id]?.message}
+                  </p>
+                )}
                 {deleteProviderMutation.isError && deleteProviderMutation.variables === provider.id && (
-                  <p className="mt-2 text-sm text-red-400">{String(deleteProviderMutation.error)}</p>
+                  <p className="mt-2 text-sm text-red-400">{errorMessage(deleteProviderMutation.error)}</p>
                 )}
                 {progress && progress.total > 0 && (
                   <div className="mt-3">
@@ -373,16 +434,16 @@ export function SettingsScreen() {
         )}
       </section>
 
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
         <h2 className="mb-4 text-xl font-medium">TMDB</h2>
         <p className="mb-3 text-sm text-neutral-400">
           {tmdbKeyQuery.data ? "Clave de API guardada." : "Sin clave de API guardada todavía. Sin ella, las películas y series se quedan sin portada ni sinopsis."}
         </p>
-        <div className="flex gap-3">
+        <div className="flex flex-wrap gap-3">
           <input
             type="password"
             placeholder="Clave de API de TMDB"
-            className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+            className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto"
             value={tmdbApiKey}
             onChange={(e) => setTmdbApiKey(e.target.value)}
           />
@@ -422,8 +483,10 @@ export function SettingsScreen() {
       <AccountSection />
       <ProfileSection />
       <AdultCategoriesSection />
-      <LanSection />
-      <DiagnosticsSection />
+      {/* En iPhone y iPad no aplican: la app no sirve a otros dispositivos y el fichero de
+          diagnóstico quedaría donde el usuario no puede abrirlo (F15). */}
+      {!IS_IOS && <LanSection />}
+      {!IS_IOS && <DiagnosticsSection />}
     </div>
   );
 }
@@ -465,7 +528,7 @@ function AdultCategoriesSection() {
   const markedCount = categoriesQuery.data.filter((c) => c.is_adult).length;
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
       <h2 className="mb-2 text-xl font-medium">Categorías para adultos</h2>
       <p className="mb-4 text-sm text-neutral-400">
         Los perfiles que no son de adulto no ven estas categorías. Se detectan solas por el nombre ({markedCount} ahora
@@ -514,7 +577,7 @@ function ProfileSection() {
   const { setProfileId } = useActiveProfile();
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
       <h2 className="mb-4 text-xl font-medium">Perfil</h2>
       <p className="mb-3 text-sm text-neutral-400">
         Cambia de perfil, o crea/edita/borra perfiles y sus PIN desde el selector — cada perfil tiene su propia lista de
@@ -581,7 +644,7 @@ function AccountSection() {
 
   if (statusQuery.data?.logged_in) {
     return (
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
         <h2 className="mb-4 text-xl font-medium">Cuenta</h2>
         <p className="mb-3 text-sm text-neutral-300">Sesión iniciada como {statusQuery.data.email}.</p>
         {statusQuery.data.sync && <CloudSyncLine sync={statusQuery.data.sync} />}
@@ -603,7 +666,7 @@ function AccountSection() {
   }
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
       <h2 className="mb-4 text-xl font-medium">Cuenta</h2>
       <p className="mb-4 text-sm text-neutral-400">
         Inicia sesión para que tus perfiles, favoritos y progreso te sigan a otros dispositivos donde uses VIBE IPTV. Sin
@@ -621,14 +684,14 @@ function AccountSection() {
         <input
           type="email"
           placeholder="Correo"
-          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
         <input
           type="password"
           placeholder="Contraseña"
-          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
@@ -781,7 +844,7 @@ function LanSection() {
   const enabled = statusQuery.data?.enabled ?? false;
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
       <h2 className="mb-4 text-xl font-medium">Red local</h2>
       <p className="mb-4 text-sm text-neutral-400">
         Deja que otros dispositivos de tu red (por ejemplo, un futuro cliente de Fire TV) usen esta app como servidor.
@@ -924,7 +987,7 @@ function DiagnosticsSection() {
   }
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-6">
+    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6">
       <h2 className="mb-4 text-xl font-medium">Diagnóstico</h2>
       <p className="mb-3 text-sm text-neutral-400">
         Guarda en un fichero las últimas líneas de registro de esta sesión, por si necesitas compartirlas para resolver un

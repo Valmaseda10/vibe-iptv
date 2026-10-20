@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { apiGetOrNull, apiPost, errorMessage, useApiBase } from "../../lib/api-client";
+import { apiDelete, apiGetOrNull, apiPost, errorMessage, useApiBase } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type {
   ChannelsPage,
@@ -107,9 +107,14 @@ export function NativePlayerScreen() {
     return () => window.clearTimeout(timer);
   }, [kind, itemId]);
 
+  // El directo sale de la grabación del núcleo (se puede pausar y rebobinar, F15); el
+  // catch-up y el VOD, tal cual del proveedor.
+  const liveBuffer = kind === "channel" && !isCatchup;
   const streamPath = isCatchup
     ? `/stream/catchup/${itemId}?profile_id=${profileId}&start=${search.catchupStart}${search.catchupDuration ? `&duration_min=${search.catchupDuration}` : ""}&passthrough=true`
-    : `/stream/${kind}/${itemId}?profile_id=${profileId}${search.source ? `&source=${search.source}` : ""}&passthrough=true`;
+    : liveBuffer
+      ? `/stream/live-buffer/channel/${itemId}?profile_id=${profileId}`
+      : `/stream/${kind}/${itemId}?profile_id=${profileId}${search.source ? `&source=${search.source}` : ""}&passthrough=true`;
 
   const ready = base != null && profileId !== null && startSeconds !== null && (title != null || titleWaitOver);
   const playedPathRef = useRef<string | null>(null);
@@ -122,10 +127,11 @@ export function NativePlayerScreen() {
       subtitle,
       start_seconds: startSeconds,
       live: kind === "channel" && !isCatchup,
+      live_buffer: liveBuffer,
     };
     setError(null);
     invoke("native_player_play", { request }).catch((err: unknown) => setError(errorMessage(err)));
-  }, [base, streamPath, title, subtitle, startSeconds, kind, isCatchup]);
+  }, [base, streamPath, title, subtitle, startSeconds, kind, isCatchup, liveBuffer]);
 
   useEffect(() => {
     if (!ready || playedPathRef.current === streamPath) return;
@@ -168,6 +174,9 @@ export function NativePlayerScreen() {
           const position = payload.ended && payload.duration_s ? payload.duration_s : payload.position_s;
           saveProgress(position, payload.duration_s);
           playedPathRef.current = null;
+          // Suelta ya la conexión con el proveedor: la grabación del directo no tiene que
+          // esperar a quedarse sin lectores.
+          if (latest.kind === "channel") apiDelete("/api/live-buffer").catch(() => {});
           if (payload.ended && latest.kind === "episode" && latest.nextEpisode) {
             navigate({
               to: "/player/$kind/$id",

@@ -212,7 +212,12 @@ start_seconds: number,
 /**
  * Directo: sin barra de tiempo, y deslizar arriba y abajo cambia de canal.
  */
-live: boolean, };
+live: boolean, 
+/**
+ * El directo viene de la grabación del núcleo (`/stream/live-buffer/...`): se puede
+ * pausar, y retroceder o adelantar pidiendo la misma URL con `&behind_s=N`.
+ */
+live_buffer: boolean, };
 
 /**
  * Lo que cuenta el reproductor nativo.
@@ -350,6 +355,17 @@ export type SubtitleCuesResponse = {
 active: boolean, cues: Array<SubtitleCue>, };
 
 export type SubtitleTrackSummary = { index: number, language: string | null, codec_name: string | null, };
+
+/**
+ * Final de una sincronización, con o sin éxito, para Ajustes (`sync://finished`).
+ * Antes un fallo solo quedaba en el log: en el iPhone, "Sincronizar" parecía no hacer
+ * nada (F15).
+ */
+export type SyncFinished = { provider_id: number, 
+/**
+ * `None` si fue bien; si no, el motivo para enseñárselo al usuario.
+ */
+error: string | null, channels: number, movies: number, series: number, };
 
 /**
  * Progreso emitido al frontend por eventos de Tauri (`sync://progress`).
