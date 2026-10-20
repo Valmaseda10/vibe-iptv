@@ -170,7 +170,8 @@ export function SettingsScreen() {
 
   return (
     <div className="mx-auto max-w-3xl p-8">
-      <h1 className="mb-6 text-3xl font-semibold">Ajustes — Proveedores</h1>
+      <h1 className="text-3xl font-semibold">Ajustes — Proveedores</h1>
+      <p className="mb-6 mt-1 text-xs text-neutral-500">Compilación {__BUILD_ID__}</p>
 
       <BinariesStatusBanner />
 

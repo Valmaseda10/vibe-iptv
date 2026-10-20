@@ -24,6 +24,8 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  # Se ve en Ajustes ("Compilación N"): así se sabe qué versión tiene el iPhone.
+  VIBE_BUILD_ID: ios-${{ github.run_number }}
   VLCKIT_URL: https://download.videolan.org/pub/cocoapods/prod/MobileVLCKit-3.0-20260922-1512.tar.xz
   # sha256 publicado en el podspec de MobileVLCKit 3.7.4 (CocoaPods trunk).
   VLCKIT_SHA256: c649c4c47bd065b3a5511746361b5a9066a34033f2df9cbc9454409c0f363b52
