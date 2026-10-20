@@ -70,17 +70,29 @@ impl XtreamSource {
 
     async fn get_json<T: DeserializeOwned>(&self, action: Option<&str>, extra: &[(&str, &str)]) -> Result<T> {
         let url = self.player_api_url(action, extra)?;
-        let response = self
-            .client
-            .get(url.clone())
-            .send()
-            .await
-            .map_err(|_| SourceError::unreachable(url.as_str()))?;
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|_| SourceError::unreachable(url.as_str()))?;
+        let mut attempt = 0;
+        let (status, bytes) = loop {
+            let response = self
+                .client
+                .get(url.clone())
+                .send()
+                .await
+                .map_err(|_| SourceError::unreachable(url.as_str()))?;
+            let status = response.status();
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|_| SourceError::unreachable(url.as_str()))?;
+            // Hay paneles cuya pasarela da 502/503/504 de vez en cuando: la misma consulta
+            // funciona un segundo antes y un segundo después (visto con el panel real del
+            // usuario, 2026-10-20). Se reintenta poco y espaciado, para no castigarlo.
+            if is_transient(status) && attempt < GATEWAY_RETRIES {
+                attempt += 1;
+                tokio::time::sleep(gateway_retry_delay(attempt)).await;
+                continue;
+            }
+            break (status, bytes);
+        };
 
         if !status.is_success() {
             if let Some(reason) = rejection_reason(&bytes) {
@@ -279,6 +291,21 @@ fn parse_vod_info(value: &serde_json::Value) -> VodInfo {
 /// deserialización.
 fn json_as_i64(value: &serde_json::Value) -> Option<i64> {
     value.as_i64().or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// Reintentos ante un error pasajero de la pasarela del panel (ver `get_json`).
+const GATEWAY_RETRIES: u32 = 2;
+
+fn is_transient(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 502..=504)
+}
+
+fn gateway_retry_delay(attempt: u32) -> Duration {
+    if cfg!(test) {
+        Duration::from_millis(10)
+    } else {
+        Duration::from_secs(2 * u64::from(attempt))
+    }
 }
 
 /// El motivo que da un panel al rechazar una petición (`{"message": "..."}` o
@@ -773,6 +800,45 @@ mod tests {
         let message = err.to_string();
         assert!(!message.contains("secreto_usuario"));
         assert!(!message.contains("secreto_pass"));
+    }
+
+    /// Un 502 suelto de la pasarela del panel se reintenta; tres seguidos sí son error.
+    #[tokio::test]
+    async fn a_passing_gateway_error_is_retried() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let failures = Arc::new(AtomicUsize::new(1));
+        let (calls_h, failures_h) = (calls.clone(), failures.clone());
+        let router = axum::Router::new().route(
+            "/player_api.php",
+            axum::routing::get(move || {
+                let (calls, failures) = (calls_h.clone(), failures_h.clone());
+                async move {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    if failures.load(Ordering::SeqCst) > 0 {
+                        failures.fetch_sub(1, Ordering::SeqCst);
+                        return (axum::http::StatusCode::BAD_GATEWAY, "Bad Gateway".to_string());
+                    }
+                    (axum::http::StatusCode::OK, r#"{"user_info":{"auth":1,"status":"Active","max_connections":"1"}}"#.to_string())
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        let source = XtreamSource::new(format!("http://{addr}"), "u", "p", None).unwrap();
+
+        let info = source.account_info().await.unwrap();
+        assert!(info.auth_ok);
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+
+        failures.store(10, Ordering::SeqCst);
+        calls.store(0, Ordering::SeqCst);
+        let err = source.account_info().await.unwrap_err().to_string();
+        assert!(err.contains("502"), "{err}");
+        assert_eq!(calls.load(Ordering::SeqCst), 1 + GATEWAY_RETRIES as usize);
     }
 
     /// Respuesta real de un panel con bloqueo por país (2026-10-20): el motivo tiene que
