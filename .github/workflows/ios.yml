@@ -10,6 +10,10 @@ name: iOS
 on:
   workflow_dispatch:
     inputs:
+      ipa:
+        description: "Generar el .ipa para instalar en el iPhone"
+        type: boolean
+        default: true
       simulator:
         description: "Abrir también la app en un iPhone simulado y guardar una captura"
         type: boolean
@@ -84,12 +88,19 @@ jobs:
           lipo -info "$device"
 
       - name: Generar el proyecto de Xcode
-        run: npx tauri ios init --ci
+        run: |
+          npx tauri ios init --ci
+          # `ios init` deja el icono de Tauri: se cambia por el de la app (icons/ios,
+          # generados con `tauri icon`, mismos nombres que su Contents.json).
+          cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
+          ls src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
 
       - name: Compilar para iPhone y iPad (sin firmar)
+        if: inputs.ipa
         run: npx tauri ios build --no-sign --ci
 
       - name: Recoger el .ipa
+        if: inputs.ipa
         run: |
           set -euo pipefail
           ipa=$(find src-tauri/gen/apple/build -name "*.ipa" | head -n 1)
@@ -99,6 +110,7 @@ jobs:
           ls -la "$RUNNER_TEMP/out"
 
       - uses: actions/upload-artifact@v4
+        if: inputs.ipa
         with:
           name: VIBE-IPTV-ipa
           path: ${{ runner.temp }}/out/VIBE-IPTV.ipa
@@ -121,7 +133,7 @@ jobs:
           xcrun simctl bootstatus "$device" -b
           xcrun simctl install "$device" "$app"
           bundle=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$app/Info.plist")
-          xcrun simctl launch "$device" "$bundle"
+          SIMCTL_CHILD_RUST_BACKTRACE=full SIMCTL_CHILD_RUST_LOG=info xcrun simctl launch "$device" "$bundle"
           mkdir -p "$RUNNER_TEMP/shots"
           for i in 1 2 3; do
             sleep 10
