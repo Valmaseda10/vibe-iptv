@@ -263,7 +263,7 @@ update_only: boolean, };
 /**
  * Lo que cuenta el reproductor nativo.
  */
-export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, };
+export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 

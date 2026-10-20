@@ -26,6 +26,12 @@ const MORE = [
  * En iOS es una cápsula de cristal que flota sobre el contenido, como en iOS 26, con una
  * "gota" que se desliza a la pestaña activa; mientras se escribe se esconde, para que el
  * teclado no la arrastre (lo fijo se quedaba desplazado al cerrarlo). */
+function isTextField(target: EventTarget | null): boolean {
+  if (target instanceof HTMLTextAreaElement) return true;
+  // Solo los campos que sacan el teclado (no casillas, botones ni deslizadores).
+  return target instanceof HTMLInputElement && ["text", "search", "email", "password", "url", "tel", "number"].includes(target.type);
+}
+
 export function MobileTabBar({ onSurprise, surprising }: { onSurprise: () => void; surprising: boolean }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { setProfileId } = useActiveProfile();
@@ -35,9 +41,12 @@ export function MobileTabBar({ onSurprise, surprising }: { onSurprise: () => voi
   useEffect(() => setMoreOpen(false), [pathname]);
 
   const [typing, setTyping] = useState(false);
+  // Un campo que desaparece con el teclado abierto (cambio de pantalla) no siempre avisa
+  // con `focusout`: al cambiar de pantalla se vuelve a mirar quién tiene el foco.
+  useEffect(() => setTyping(IS_IOS && isTextField(document.activeElement)), [pathname]);
   useEffect(() => {
     if (!IS_IOS) return;
-    const isField = (t: EventTarget | null) => t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement;
+    const isField = isTextField;
     const onIn = (e: FocusEvent) => isField(e.target) && setTyping(true);
     const onOut = (e: FocusEvent) => isField(e.target) && setTyping(false);
     document.addEventListener("focusin", onIn);

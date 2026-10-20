@@ -1662,6 +1662,21 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
 
 ---
 
+## 2026-10-21 — F15 Rediseño «Liquid Glass» solo en iOS
+
+- **Qué:** la app de iPhone/iPad adopta el lenguaje de iOS 26: barra de pestañas flotante
+  de cristal, hojas, títulos grandes, fichas con botones flotantes, Ajustes agrupados,
+  Buscar abajo y reproductor con el cristal del sistema. El PC no cambia.
+- **Por qué solo iOS:** lo pidió el usuario; el PC se maneja con teclado y mando y su
+  diseño ya está probado. Todo va tras la variante `ios:` / `IS_IOS`, sin tocar el PC.
+- **Cómo:** con las skills `liquid-glass` (heyparsadev) y `frontend-design` (Anthropic)
+  como referencia, traducidas a CSS (WebView) y UIKit (reproductor). Sin dependencias
+  nuevas. El cristal solo en lo que flota (rendimiento del WebView con listas largas).
+- **Instalar sin renovar a mano:** investigado; no existe vía gratuita permanente en
+  iOS 26. Se documenta SideStore con renovación diaria por Atajos (ver `docs/IOS.md`).
+- **Pruebas:** la de punta a punta ahora ve dentro del WebView (`qaSnapshot.ts`), porque
+  idb solo veía lo nativo.
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

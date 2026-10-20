@@ -265,8 +265,17 @@ function sendFile(req, res, path, contentType) {
   const size = statSync(path).size;
   const range = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? "");
   if (range) {
-    const start = range[1] ? Number(range[1]) : 0;
-    const end = range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    // "bytes=-N" son los N últimos; "bytes=N-" desde N hasta el final.
+    const suffix = !range[1] && range[2];
+    const start = suffix ? Math.max(0, size - Number(range[2])) : range[1] ? Number(range[1]) : 0;
+    const end = suffix ? size - 1 : range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+    // Pasado el final: 416, como un panel real (VLC lo pide al buscar el índice). Antes
+    // esto tiraba el servidor y con él el resto de la prueba.
+    if (start >= size || start > end) {
+      res.writeHead(416, { "content-range": `bytes */${size}` });
+      res.end();
+      return;
+    }
     res.writeHead(206, { "content-type": contentType, "accept-ranges": "bytes", "content-range": `bytes ${start}-${end}/${size}`, "content-length": end - start + 1 });
     createReadStream(path, { start, end }).pipe(res);
     return;

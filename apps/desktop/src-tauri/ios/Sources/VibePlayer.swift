@@ -378,6 +378,7 @@ final class VibePlayerController: UIViewController {
     /// Cambia a otro canal o episodio de la lista sin pasar por la interfaz web.
     private func switchTo(index: Int) {
         guard index >= 0, index < items.count, let current = current else { return }
+        if !current.live { sendProgress(final: false) }
         let item = items[index]
         currentIndex = index
         play(Current(id: item.id, url: item.url, title: item.title, subtitle: item.subtitle, live: current.live, liveBuffer: current.liveBuffer), startSeconds: 0)
@@ -399,6 +400,8 @@ final class VibePlayerController: UIViewController {
             close(ended: true)
             return
         }
+        // El episodio que acaba cuenta como visto entero.
+        sendProgress(final: true)
         nextItem = nil
         currentIndex = items.firstIndex { $0.id == next.id }
         play(Current(id: next.id, url: next.url, title: next.title, subtitle: next.subtitle, live: false, liveBuffer: false), startSeconds: 0)
@@ -519,7 +522,7 @@ final class VibePlayerController: UIViewController {
     private func sendProgress(final: Bool) {
         lastProgressSent = Date()
         let position = final ? (durationSeconds ?? positionSeconds) : positionSeconds
-        sendEvent(["type": "progress", "position_s": position, "duration_s": durationSeconds ?? NSNull()])
+        sendEvent(["type": "progress", "position_s": position, "duration_s": durationSeconds ?? NSNull(), "id": current?.id ?? NSNull()])
     }
 
     private func close(ended: Bool) {
@@ -534,7 +537,7 @@ final class VibePlayerController: UIViewController {
         player.stop()
         removeControlsWindow()
         clearRemoteCommands()
-        sendEvent(["type": "closed", "position_s": position, "duration_s": duration, "ended": ended])
+        sendEvent(["type": "closed", "position_s": position, "duration_s": duration, "ended": ended, "id": current?.id ?? NSNull()])
         dismiss(animated: true)
     }
 

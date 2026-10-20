@@ -28,7 +28,7 @@ export function ActiveProfileGate({ children }: { children: ReactNode }) {
   }, [profilesQuery.data, profileId, activeStillExists, setProfileId]);
 
   if (profilesQuery.isPending) {
-    return <div className="flex h-full min-h-screen items-center justify-center bg-neutral-950 text-neutral-500">Cargando…</div>;
+    return <div className="flex h-full min-h-screen items-center justify-center bg-neutral-950 text-neutral-500 ios:bg-black">Cargando…</div>;
   }
 
   if (!activeStillExists) {

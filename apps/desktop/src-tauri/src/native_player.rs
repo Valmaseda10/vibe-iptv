@@ -85,10 +85,24 @@ pub struct NativePlayItem {
 #[serde(tag = "type", rename_all = "snake_case")]
 #[ts(export, export_to = "api-types.ts")]
 pub enum NativePlayerEvent {
-    /// Cada pocos segundos mientras reproduce.
-    Progress { position_s: f64, duration_s: Option<f64> },
+    /// Cada pocos segundos mientras reproduce. `id`: el canal o episodio al que se refiere
+    /// (puede haber cambiado dentro del reproductor sin que la interfaz se entere aún).
+    Progress {
+        position_s: f64,
+        duration_s: Option<f64>,
+        #[serde(default)]
+        #[ts(type = "number | null")]
+        id: Option<i64>,
+    },
     /// El usuario cerró el reproductor o el título terminó (`ended`).
-    Closed { position_s: f64, duration_s: Option<f64>, ended: bool },
+    Closed {
+        position_s: f64,
+        duration_s: Option<f64>,
+        ended: bool,
+        #[serde(default)]
+        #[ts(type = "number | null")]
+        id: Option<i64>,
+    },
     /// Gesto de zapping en directo: `1` siguiente canal, `-1` anterior.
     Zap { direction: i32 },
     /// VLC no pudo abrir o seguir reproduciendo el stream.
@@ -267,11 +281,15 @@ mod tests {
     fn parses_every_event_swift_sends() {
         assert_eq!(
             parse_event(r#"{"type":"progress","position_s":12.5,"duration_s":5400}"#),
-            Some(NativePlayerEvent::Progress { position_s: 12.5, duration_s: Some(5400.0) })
+            Some(NativePlayerEvent::Progress { position_s: 12.5, duration_s: Some(5400.0), id: None })
         );
         assert_eq!(
-            parse_event(r#"{"type":"closed","position_s":30,"duration_s":null,"ended":false}"#),
-            Some(NativePlayerEvent::Closed { position_s: 30.0, duration_s: None, ended: false })
+            parse_event(r#"{"type":"closed","position_s":30,"duration_s":null,"ended":false,"id":7}"#),
+            Some(NativePlayerEvent::Closed { position_s: 30.0, duration_s: None, ended: false, id: Some(7) })
+        );
+        assert_eq!(
+            parse_event(r#"{"type":"progress","position_s":1,"duration_s":null,"id":null}"#),
+            Some(NativePlayerEvent::Progress { position_s: 1.0, duration_s: None, id: None })
         );
         assert_eq!(parse_event(r#"{"type":"zap","direction":-1}"#), Some(NativePlayerEvent::Zap { direction: -1 }));
         assert_eq!(

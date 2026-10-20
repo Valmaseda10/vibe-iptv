@@ -86,7 +86,7 @@ export function SeriesDetailScreen() {
         {backdrop && <img src={backdrop} alt="" className="h-full w-full object-cover" />}
         {backdrop && data.trailer_key && <BackdropTrailer youtubeKey={data.trailer_key} />}
         {poster && <img src={poster} alt="" className="h-full w-full scale-110 object-cover opacity-40 blur-2xl" />}
-        <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/70 to-transparent" />
+        <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/70 to-transparent ios:from-black ios:via-black/60" />
       </div>
 
       <div className={`relative flex flex-col gap-5 px-4 pb-16 sm:px-10 ${backdrop ? "pt-[26vh]" : "pt-10"}`}>

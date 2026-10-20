@@ -77,7 +77,20 @@ xcrun simctl install "$UDID" "$APP"
 SIMCTL_CHILD_VIBE_QA_E2E=1 SIMCTL_CHILD_VIBE_QA_PROVIDER_URL="http://127.0.0.1:8899" SIMCTL_CHILD_RUST_BACKTRACE=1 \
   xcrun simctl launch "$UDID" "$bundle" >/dev/null
 sleep 15
-a11y; read -r W H < <(python3 -c "import json;d=json.load(open('$OUT/a11y-nativo.json'));f=d[0]['frame'];print(int(f['width']),int(f['height']))" 2>/dev/null || echo "390 844")
+# Tamaño de la pantalla según idb. Si idb no responde, se dice y se para: sin esto la
+# prueba seguía a ciegas con un tamaño inventado (pasó con el iPad).
+W=""; H=""
+for _ in $(seq 1 20); do
+  a11y
+  read -r W H < <(python3 -c "import json;d=json.load(open('$OUT/a11y-nativo.json'));f=d[0]['frame'];print(int(f['width']),int(f['height']))" 2>/dev/null || true)
+  [ -n "$W" ] && break
+  sleep 3
+done
+if [ -z "$W" ]; then
+  echo "MAL  idb no responde: no se puede probar este aparato"
+  shot sin-idb
+  exit 1
+fi
 echo "pantalla: ${W}x${H}"
 
 # Perfil.
@@ -153,6 +166,33 @@ shot directo-tras-zapping
 check "directo: el zapping sigue en el reproductor" 'visible "Cerrar"'
 check "directo: una sola conexión con el proveedor" '[ "$(active_cons)" -le 1 ] 2>/dev/null'
 tap_label "Cerrar" exacta 5; sleep 3
+
+# Serie: la ficha ofrece «▶ Ver T1 · E1» y ese botón abre el episodio.
+tap_label "Series"; sleep 3
+tap_label "Breaking Bad" contiene 10; sleep 3; shot ficha-serie
+check "serie: la ficha ofrece ver el primer episodio" 'wait_visible "T1 · E1" contiene 10'
+tap_label "T1 · E1" contiene 5
+check "serie: se abre el reproductor del episodio" 'wait_visible "Cerrar" exacta 25'
+shot reproductor-episodio
+sleep 6; idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1
+tap_label "Cerrar" exacta 5; sleep 3
+shot tras-cerrar-episodio
+check "serie: cerrar vuelve a la ficha" '! visible "Cerrar" && visible "Breaking Bad" contiene'
+
+# Buscar escribiendo (en el iPhone el campo está abajo y sube con el teclado).
+tap_label "Buscar"; sleep 3
+tap_label "Campo de búsqueda" exacta 5; sleep 1
+tap_label "Not Now" exacta 2 >/dev/null; sleep 1
+idb ui text --udid "$UDID" "toy" 2>/dev/null; sleep 3
+shot buscar-escribiendo
+check "buscar: al escribir salen resultados" 'wait_visible "Toy Story" contiene 8'
+
+# Ajustes, desplazado hasta abajo.
+if [ "$W" -lt 768 ]; then tap_label "Más"; sleep 1; fi
+tap_label "Ajustes"; sleep 3
+check "ajustes: enseña la compilación" 'wait_visible "Compilación" contiene 5'
+idb ui swipe --udid "$UDID" $((W / 2)) $((H * 3 / 4)) $((W / 2)) $((H / 4)) 2>/dev/null; sleep 1
+shot ajustes-abajo
 shot fin
 
 xcrun simctl spawn "$UDID" log show --last 6m --predicate "process CONTAINS 'VIBE'" > "$OUT/log.txt" 2>/dev/null || true

@@ -51,7 +51,49 @@ iPhone y el PC están en la misma Wi-Fi ("Automatic refresh" en sus opciones).
 Límites de un Apple ID gratuito: 3 apps instaladas así a la vez y 10 identificadores de
 app nuevos por semana.
 
+### Sin renovar a mano: SideStore (recomendado)
+
+No hay forma gratuita de firmar una app para siempre en iOS 26: Apple mantiene los 7 días
+para cuentas gratuitas, TrollStore no funciona desde iOS 17.0.1 y no hay jailbreak
+práctico. Las tiendas alternativas de la UE (AltStore PAL) y la descarga web exigen la
+cuenta de desarrollador de pago (investigado el 2026-10-20). Lo más cercano es que la
+renovación se haga sola:
+
+- **SideStore** renueva la app en el propio iPhone, sin PC (el PC solo hace falta la
+  primera vez). Hay guías probadas en iOS 26.2–26.5 con Windows 11.
+  1. En el PC: iTunes (de apple.com) e **iloader**.
+  2. En el iPhone: código de desbloqueo, **LocalDevVPN** (App Store) conectado.
+  3. Por cable, iloader instala SideStore con el Apple ID y genera el fichero de
+     emparejamiento. Activar el Modo de desarrollador y confiar en el perfil.
+  4. Desde SideStore, instalar `VIBE-IPTV.ipa` (ocupa 2 de los 3 huecos gratuitos).
+  5. App **Atajos** → Automatización diaria de madrugada → «Refresh Apps» de SideStore,
+     ejecutar sin preguntar.
+  - Tras reiniciar el iPhone hay que volver a conectar LocalDevVPN. Si el atajo falla,
+    abrir SideStore y pulsar «Refresh All» antes de que pasen 7 días.
+- **Plan B:** la renovación automática de Sideloadly, con el PC encendido en la misma Wi-Fi
+  al menos una vez por semana.
+
 ---
+
+## Aspecto (rediseño «Liquid Glass»)
+
+Solo en iPhone/iPad; el PC se queda como estaba. `main.tsx` pone la clase `ios` en `<html>`
+y `globals.css` define la variante `ios:` y el material: `glass` (cristal con desenfoque),
+`glass-clear` (sobre imagen o vídeo) y `glass-lite` (mismo aspecto sin desenfoque, para lo
+que se repite). Reglas:
+
+- **El cristal solo flota:** barra de pestañas, cabecera compacta, botones sobre el fondo de
+  las fichas, hojas y controles del reproductor. Nunca en portadas, filas ni celdas: cada
+  `backdrop-filter` se recompone en cada fotograma de desplazamiento.
+- **Nunca cristal sobre cristal:** lo de dentro de una hoja va sin cristal propio.
+- **Fondo negro puro** y letra del sistema (SF).
+- **«Reducir transparencia»** de iOS (comando `reduce_transparency`, leído en Swift): el
+  cristal pasa a casi opaco. En el reproductor, el cristal de iOS 26 (`UIGlassEffect`) y,
+  antes, el desenfoque oscuro.
+- **Piezas:** `MobileTabBar` (cápsula flotante con la «gota» de la pestaña activa),
+  `GlassSheet` (hoja que se cierra arrastrando), `LargeTitle` (título grande que se
+  compacta), `FloatingBackButton`, Buscar abajo en el iPhone (`lib/viewport.ts` sigue al
+  teclado), barra lateral de cristal en el iPad.
 
 ## Lo que hay que saber de iOS
 

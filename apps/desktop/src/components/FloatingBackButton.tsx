@@ -1,3 +1,4 @@
+import { createPortal } from "react-dom";
 import { IS_IOS } from "../lib/platform";
 
 /** "Atrás" de las fichas en el iPhone (F15): botón redondo de cristal que flota arriba a
@@ -5,7 +6,9 @@ import { IS_IOS } from "../lib/platform";
  * resto se usa el "← Volver" de texto de siempre. */
 export function FloatingBackButton({ onClick }: { onClick: () => void }) {
   if (!IS_IOS) return null;
-  return (
+  // En el <body>: un `transform` de un antecesor (la animación de entrada de la pantalla)
+  // convertiría `fixed` en relativo a él.
+  return createPortal(
     <button
       type="button"
       onClick={onClick}
@@ -15,6 +18,7 @@ export function FloatingBackButton({ onClick }: { onClick: () => void }) {
       <svg viewBox="0 0 24 24" className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M15 18l-6-6 6-6" />
       </svg>
-    </button>
+    </button>,
+    document.body,
   );
 }

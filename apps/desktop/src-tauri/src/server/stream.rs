@@ -1079,6 +1079,15 @@ async fn proxy_passthrough(url: Url, range: Option<HeaderValue>, permit: StreamP
     })?;
 
     let status = upstream.status();
+    // Un rango pasado el final (VLC lo pide al buscar el índice de un MP4/MKV) no es un
+    // fallo del proveedor: se le contesta lo mismo al reproductor, sin anotarlo como error.
+    if status == StatusCode::RANGE_NOT_SATISFIABLE {
+        let mut builder = Response::builder().status(status);
+        if let Some(value) = upstream.headers().get(header::CONTENT_RANGE) {
+            builder = builder.header(header::CONTENT_RANGE, value.clone());
+        }
+        return builder.body(Body::empty()).map_err(|_| StreamError::Internal);
+    }
     if !status.is_success() && status != StatusCode::PARTIAL_CONTENT {
         return Err(upstream_refusal(upstream).await);
     }
@@ -1568,11 +1577,26 @@ mod tests {
         assert_eq!(response.into_body().collect().await.unwrap().to_bytes().as_ref(), bytes.as_slice());
 
         let response = router
+            .clone()
             .oneshot(Request::builder().uri(&uri).header(header::RANGE, "bytes=1000-1999").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
         assert_eq!(response.into_body().collect().await.unwrap().to_bytes().as_ref(), &bytes[1000..2000]);
+
+        // Un rango justo pasado el final (VLC lo pide) llega como 416 al reproductor, no
+        // como "no se pudo conectar" (visto con el proveedor falso en el simulador).
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(&uri).header(header::RANGE, "bytes=64000-").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        let last_error = router
+            .oneshot(Request::builder().uri(format!("/api/playback/last-error/movie/{movie_id}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(last_error.status(), StatusCode::OK, "un 416 no es un error de reproducción");
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);

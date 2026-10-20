@@ -74,7 +74,7 @@ export function HomeScreen() {
 
       {/* Sin banner (sin clave de TMDB no hay fondos), el título necesita su propio margen. */}
       <h1
-        className={`px-4 text-2xl font-semibold sm:px-10 sm:text-3xl ${!isPending && !data?.featured ? "pt-6 sm:pt-8" : "hidden sm:block"}`}
+        className={`px-4 text-2xl font-semibold sm:px-10 sm:text-3xl ios:text-[34px] ios:font-bold ios:tracking-tight ${!isPending && !data?.featured ? "pt-6 sm:pt-8" : "hidden sm:block"}`}
       >
         Inicio
       </h1>
@@ -269,8 +269,8 @@ function HeroBanner({ featured }: { featured: FeaturedItem }) {
   return (
     <div className="relative h-[56vh] min-h-[340px] w-full overflow-hidden sm:h-[60vh] sm:min-h-[360px]">
       {backdrop && <img src={backdrop} alt="" className="absolute inset-0 h-full w-full object-cover" />}
-      <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent" />
-      <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/80 via-transparent to-transparent" />
+      <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent ios:from-black ios:via-black/40" />
+      <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/80 via-transparent to-transparent ios:from-black/60" />
 
       <div className="absolute bottom-0 left-0 flex max-w-xl flex-col gap-4 px-4 pb-8 sm:px-10 sm:pb-10">
         <h2 className="text-3xl font-bold drop-shadow-lg sm:text-5xl">{featured.clean_title}</h2>

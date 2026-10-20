@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { IS_IOS } from "../lib/platform";
 
 /** Título de pantalla. En el PC, como siempre. En iOS (F15), el título grande de iOS
@@ -31,7 +32,8 @@ export function LargeTitle({ children, className = "" }: { children: string; cla
       >
         {children}
       </h1>
-      {IS_IOS && (
+      {IS_IOS &&
+        createPortal(
         <div
           aria-hidden="true"
           className={`glass fixed inset-x-0 top-0 z-40 flex h-[calc(44px+env(safe-area-inset-top))] items-end justify-center rounded-none border-x-0 border-t-0 pb-2.5 shadow-none transition-opacity duration-200 desk:hidden ${
@@ -39,8 +41,9 @@ export function LargeTitle({ children, className = "" }: { children: string; cla
           }`}
         >
           <span className="text-[17px] font-semibold text-white">{children}</span>
-        </div>
-      )}
+        </div>,
+          document.body,
+        )}
     </>
   );
 }

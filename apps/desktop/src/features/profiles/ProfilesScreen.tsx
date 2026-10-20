@@ -63,7 +63,7 @@ export function ProfilesScreen() {
   // así se cumple lo que se le dice al usuario nada más entrar: "crea un perfil".
   if (!profilesQuery.isPending && profiles.length === 0 && editing !== "new") {
     return (
-      <div className="flex h-full min-h-screen flex-col items-center justify-center gap-6 bg-neutral-950 px-6 py-10 text-white">
+      <div className="flex h-full min-h-screen flex-col items-center justify-center gap-6 bg-neutral-950 px-6 py-10 text-white ios:bg-black">
         <h1 className="text-3xl font-semibold sm:text-4xl">Crea tu primer perfil</h1>
         <p className="max-w-sm text-center text-neutral-400">
           Cada perfil tiene sus propios favoritos, su "Continuar viendo" y su control de contenido para adultos.
@@ -81,7 +81,7 @@ export function ProfilesScreen() {
   }
 
   return (
-    <div className="flex h-full min-h-screen flex-col items-center justify-center gap-10 bg-neutral-950 px-6 py-10 text-white">
+    <div className="flex h-full min-h-screen flex-col items-center justify-center gap-10 bg-neutral-950 px-6 py-10 text-white ios:bg-black">
       <h1 className="text-3xl font-semibold sm:text-4xl">{managing ? "Administrar perfiles" : "¿Quién está viendo?"}</h1>
 
       <div className="flex flex-wrap items-start justify-center gap-6">
@@ -240,7 +240,7 @@ function ProfileEditForm({
         <label className="mb-3 block">
           <span className="mb-1 block text-sm text-neutral-400">Nombre</span>
           <input
-            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
             value={name}
             onChange={(e) => setName(e.target.value)}
             autoFocus
@@ -292,7 +292,7 @@ function ProfileEditForm({
         <label className="mb-3 block">
           <span className="mb-1 block text-sm text-neutral-400">Edad máxima de lo que puede ver</span>
           <select
-            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
             value={maxAge ?? ""}
             onChange={(e) => setMaxAge(e.target.value === "" ? null : Number(e.target.value))}
           >
@@ -317,7 +317,7 @@ function ProfileEditForm({
           <input
             type="password"
             inputMode="numeric"
-            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
             value={pin}
             onChange={(e) => setPin(e.target.value)}
           />
@@ -335,7 +335,7 @@ function ProfileEditForm({
             <input
               type="password"
               inputMode="numeric"
-              className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+              className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
               value={currentPin}
               onChange={(e) => setCurrentPin(e.target.value)}
             />

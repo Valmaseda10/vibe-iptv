@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { IS_IOS } from "../lib/platform";
 
 const YOUTUBE_ORIGIN = "https://www.youtube-nocookie.com";
 
 /** Tráiler de fondo de una ficha, en silencio y sin controles, como Netflix (F15). Solo
- * con Wi‑Fi (`network_is_metered`) y solo se ve cuando YouTube confirma que está
+ * en iOS y con Wi‑Fi (`network_is_metered`) y solo se ve cuando YouTube confirma que está
  * reproduciendo: si el embed falla o el sistema no deja reproducir solo, el fondo se
  * queda como estaba, sin cajas de error. Al acabar, vuelve el fondo. No es un stream
  * del proveedor, así que no pasa por `StreamGuard` (R1). */
@@ -17,6 +18,8 @@ export function BackdropTrailer({ youtubeKey }: { youtubeKey: string }) {
     let cancelled = false;
     setAllowed(false);
     setVisible(false);
+    // Solo en iPhone/iPad (lo pidió el usuario para la app móvil; el PC no cambia).
+    if (!IS_IOS) return;
     // Un instante de espera: si solo se está pasando por la ficha, no se carga nada.
     const timer = window.setTimeout(() => {
       invoke<boolean>("network_is_metered")

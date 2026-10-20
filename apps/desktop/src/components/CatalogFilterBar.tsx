@@ -72,10 +72,10 @@ export function CatalogFilterBar({
   }
 
   return (
-    <div data-filter-bar onKeyDown={onKeyDown} className="flex flex-wrap items-center gap-3 px-4 sm:px-10">
+    <div data-filter-bar onKeyDown={onKeyDown} className="flex flex-wrap items-center gap-3 px-4 sm:px-10 ios:flex-nowrap ios:gap-2 ios:overflow-x-auto ios:[scrollbar-width:none]">
       <select
         aria-label="Género"
-        className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none"
+        className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none ios:shrink-0 ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4 ios:text-[15px]"
         value={filters.genre ?? ""}
         onChange={(e) => onChange({ ...filters, genre: e.target.value ? Number(e.target.value) : null })}
       >
@@ -92,7 +92,7 @@ export function CatalogFilterBar({
         inputMode="numeric"
         placeholder="Año"
         aria-label="Año"
-        className="w-24 rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none"
+        className="w-24 rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none ios:shrink-0 ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4 ios:text-[15px]"
         value={filters.year ?? ""}
         onChange={(e) => onChange({ ...filters, year: e.target.value ? Number(e.target.value) : null })}
       />
@@ -100,7 +100,7 @@ export function CatalogFilterBar({
       {showQuality && (
         <select
           aria-label="Calidad"
-          className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none"
+          className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none ios:shrink-0 ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4 ios:text-[15px]"
           value={filters.quality ?? ""}
           onChange={(e) => onChange({ ...filters, quality: e.target.value || null })}
         >
@@ -115,7 +115,7 @@ export function CatalogFilterBar({
 
       <select
         aria-label="Ordenar por"
-        className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none"
+        className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none ios:shrink-0 ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4 ios:text-[15px]"
         value={filters.sort}
         onChange={(e) => onChange({ ...filters, sort: e.target.value as SortValue })}
       >

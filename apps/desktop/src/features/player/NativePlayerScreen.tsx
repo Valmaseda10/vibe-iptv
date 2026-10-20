@@ -239,8 +239,11 @@ export function NativePlayerScreen() {
   });
 
   useEffect(() => {
-    const saveProgress = (position: number, duration: number | null) => {
-      const { kind, itemId, profileId } = latestRef.current;
+    const saveProgress = (position: number, duration: number | null, eventId: number | null) => {
+      const { kind, profileId } = latestRef.current;
+      // El reproductor dice a qué episodio se refiere: tras un cambio dentro de él, la
+      // interfaz puede ir un instante por detrás.
+      const itemId = eventId ?? latestRef.current.itemId;
       if (kind === "channel" || profileId === null || position <= 0) return;
       apiPost("/api/playback/progress", {
         profile_id: profileId,
@@ -255,11 +258,11 @@ export function NativePlayerScreen() {
       const latest = latestRef.current;
       switch (payload.type) {
         case "progress":
-          saveProgress(payload.position_s, payload.duration_s);
+          saveProgress(payload.position_s, payload.duration_s, payload.id);
           break;
         case "closed": {
           const position = payload.ended && payload.duration_s ? payload.duration_s : payload.position_s;
-          saveProgress(position, payload.duration_s);
+          saveProgress(position, payload.duration_s, payload.id);
           playedPathRef.current = null;
           lastRequestRef.current = null;
           // Suelta ya la conexión con el proveedor: la grabación del directo no tiene que

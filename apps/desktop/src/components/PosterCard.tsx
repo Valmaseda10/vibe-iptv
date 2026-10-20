@@ -58,7 +58,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
   }
 
   return (
-    <div className={`group relative ${fluid ? "w-full min-w-0" : "w-40 shrink-0 sm:w-44"}`}>
+    <div className={`group relative ${fluid ? "w-full min-w-0" : "w-40 shrink-0 sm:w-44 ios:max-sm:w-[7.5rem]"}`}>
       <button
         type="button"
         data-card

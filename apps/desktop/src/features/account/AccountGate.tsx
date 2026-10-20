@@ -46,7 +46,7 @@ export function AccountGate({ children }: { children: ReactNode }) {
   }
 
   if (statusQuery.isPending) {
-    return <div className="flex h-full min-h-screen items-center justify-center bg-neutral-950 text-neutral-500">Cargando…</div>;
+    return <div className="flex h-full min-h-screen items-center justify-center bg-neutral-950 text-neutral-500 ios:bg-black">Cargando…</div>;
   }
 
   return <AccountForm onLoggedIn={handleLoggedIn} onEnterOffline={() => setOffline(true)} />;
@@ -104,7 +104,7 @@ function AccountForm({ onLoggedIn, onEnterOffline }: { onLoggedIn: () => void; o
         <input
           type="email"
           autoFocus
-          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
@@ -113,7 +113,7 @@ function AccountForm({ onLoggedIn, onEnterOffline }: { onLoggedIn: () => void; o
         <span className="mb-1 block text-sm text-neutral-400">Contraseña</span>
         <input
           type="password"
-          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => {
@@ -157,7 +157,7 @@ function AccountForm({ onLoggedIn, onEnterOffline }: { onLoggedIn: () => void; o
  * fondo y logo, solo cambia lo de dentro de la tarjeta. */
 function AuthShell({ children }: { children: ReactNode }) {
   return (
-    <div className="flex h-full min-h-screen flex-col items-center justify-center gap-8 bg-neutral-950 px-6 py-10 text-white">
+    <div className="flex h-full min-h-screen flex-col items-center justify-center gap-8 bg-neutral-950 px-6 py-10 text-white ios:bg-black">
       <div className="flex flex-col items-center gap-2">
         <h1 className="text-3xl font-semibold sm:text-4xl">VIBE IPTV</h1>
         <p className="text-neutral-400">Crea tu cuenta o inicia sesión para ver tus perfiles y que te sigan a otros dispositivos.</p>
@@ -192,7 +192,7 @@ function ForgotPasswordForm({ email: initialEmail, onSent, onBack }: { email: st
         <input
           type="email"
           autoFocus
-          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           onKeyDown={(e) => {
@@ -243,7 +243,7 @@ function ResetPasswordForm({ email: initialEmail, onDone, onBack }: { email: str
         <span className="mb-1 block text-sm text-neutral-400">Correo</span>
         <input
           type="email"
-          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
         />
@@ -253,7 +253,7 @@ function ResetPasswordForm({ email: initialEmail, onDone, onBack }: { email: str
         <input
           type="text"
           autoFocus
-          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
           value={tokenOrLink}
           onChange={(e) => setTokenOrLink(e.target.value)}
         />
@@ -262,7 +262,7 @@ function ResetPasswordForm({ email: initialEmail, onDone, onBack }: { email: str
         <span className="mb-1 block text-sm text-neutral-400">Contraseña nueva (mínimo 6 caracteres)</span>
         <input
           type="password"
-          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2"
+          className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-1 ios:px-4 ios:py-3"
           value={newPassword}
           onChange={(e) => setNewPassword(e.target.value)}
           onKeyDown={(e) => {
