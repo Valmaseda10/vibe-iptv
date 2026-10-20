@@ -4,7 +4,7 @@
   "bundle": {
     "iOS": {
       "minimumSystemVersion": "17.0",
-      "template": "ios/project.yml"
+      "template": "src-tauri/ios/project.yml"
     }
   }
 }

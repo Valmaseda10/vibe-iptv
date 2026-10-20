@@ -1540,6 +1540,61 @@ que probar con títulos que solo existan en el proveedor falso.
 
 ---
 
+## 2026-10-20 — F15 App de iPhone y iPad (en curso)
+
+**Replanteamiento.** El plan original era un cliente nativo en SwiftUI que leía el
+catálogo del PC por la API LAN. Ese plan necesitaba dos cosas que el usuario no quiere:
+un Mac con Xcode y la cuenta de desarrollador de Apple (99 €/año). Además pidió que
+funcione **con el PC apagado** y fuera de casa. Se valoraron:
+
+| Opción | Resultado |
+|---|---|
+| Web (PWA) servida por el PC | Gratis y sin Mac, pero depende al 100 % del PC: descartada por el usuario |
+| Web que habla sola con el proveedor | Imposible: la API Xtream no manda CORS, los streams son `http` (contenido mixto en una página `https`) y Safari no abre TS ni MKV |
+| App nativa con cuenta de Apple | Funciona sin PC; 99 €/año |
+| **App nativa firmada gratis con Sideloadly** | Funciona sin PC; la firma caduca cada 7 días. **Elegida** |
+
+**Cómo.** La misma app de Tauri compilada para iOS: misma interfaz, mismo núcleo, misma
+base de datos. El iPhone sincroniza su propio catálogo desde el proveedor y guarda las
+credenciales en su llavero (R5 se cumple igual que en Windows). Perfiles, favoritos y
+progreso ya viajaban por Firebase (F11), sin cambios.
+
+- **Sin Mac.** Se compila en un Mac de GitHub Actions (`.github/workflows/ios.yml`) con
+  `tauri ios build --no-sign` (existe desde tauri-cli 2.11.0). Sale un `.ipa` sin firmar
+  que Sideloadly firma al instalarlo desde Windows. Solo se lanza a mano: el plan gratuito
+  da pocos minutos de Mac.
+- **Reproducción con VLC.** iOS no permite ejecutar ffmpeg ni mpv, y el WebView no abre
+  TS ni MKV. Una pantalla nativa en Swift con MobileVLCKit 3.7.4 reproduce lo que llegue.
+  El núcleo le sirve el stream sin tocar con `?passthrough=true` (nuevo en `/stream` y
+  `/stream/catchup`), por el mismo proxy y el mismo `StreamGuard`: VLC solo ve
+  `127.0.0.1` (R1, R5).
+- **Sin plugin de Tauri.** MobileVLCKit es un framework dinámico. Un plugin de Tauri
+  compila su paquete Swift con `swift-rs`, fuera de Xcode, y no lo enlazaría ni lo
+  incrustaría. El Swift vive en el destino de la app (plantilla de XcodeGen propia en
+  `src-tauri/ios/project.yml`, copia de la de tauri-cli 2.11.4 con tres añadidos). El
+  núcleo y Swift se hablan por dos funciones C con JSON: `vibe_player_present` y
+  `vibe_player_event`.
+- **El núcleo pasa a ser biblioteca** (`src/lib.rs`, `run()`): iOS lo enlaza como
+  biblioteca estática. `main.rs` solo llama a `run()`.
+- **Interfaz táctil.** Por debajo de 768 px la barra lateral se cambia por pestañas abajo
+  (`MobileTabBar`), con un menú "Más". Zonas seguras con `env(safe-area-inset-*)`; sin
+  zoom al enfocar campos; rejilla fluida de 3 columnas por debajo de 600 px. El iPad
+  conserva la barra lateral.
+- **Fallo de paso.** La rejilla de portadas no medía su ancho si el primer render era el
+  esqueleto de carga, y se quedaba en 4 columnas fijas. En el PC no se notaba; en el
+  iPhone cortaba tarjetas.
+
+**Lo que no llega a iOS en esta fase.** Pausar y rebobinar el directo (F13 depende de
+ffmpeg), imagen en imagen y recordatorios con la app cerrada.
+
+**Hallazgo aparte: el modo LAN de F10 no puede funcionar.** El servidor solo escucha en
+`127.0.0.1` (`lib.rs`), así que ningún dispositivo de la red llega a él aunque el modo
+esté activado. El comentario de `server/lan.rs` que dice lo contrario es falso. Ya no lo
+necesita ningún cliente (el iPhone es autónomo); queda como deuda: o un segundo socket
+en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
+
+---
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la
