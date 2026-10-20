@@ -63,6 +63,16 @@ body {
    "abrir enlace" al mantener pulsado una portada, y sin el zoom que Safari hace al enfocar
    un campo con letra de menos de 16 px. */
 @media (pointer: coarse) {
+  /* Mantener pulsado no selecciona texto de la interfaz como en una web (sí en campos). */
+  body {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  input,
+  textarea {
+    -webkit-user-select: text;
+    user-select: text;
+  }
   a,
   button,
   img {

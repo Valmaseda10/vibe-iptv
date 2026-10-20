@@ -88,6 +88,17 @@ sleep 2
 shot 06-cerrado; a11y 06-cerrado
 check "cerrar sale del reproductor" '! visible "Cerrar" 06-cerrado'
 
+# 7. Directo: los mismos controles con la etiqueta de directo, y tocar los enseña.
+xcrun simctl terminate "$UDID" "$bundle" >/dev/null 2>&1 || true
+SIMCTL_CHILD_VIBE_QA_PLAYER_URL="http://127.0.0.1:8765/prueba.mkv" SIMCTL_CHILD_VIBE_QA_PLAYER_LIVE=1   xcrun simctl launch "$UDID" "$bundle" >/dev/null
+wait_visible "Cerrar" 25 07-directo; ok7=$?
+shot 07-directo
+check "directo: los controles salen al empezar" '[ $ok7 -eq 0 ]'
+sleep 7
+idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1.5
+shot 08-directo-toque; a11y 08-directo-toque
+check "directo: tocar enseña los controles" 'visible "Cerrar" 08-directo-toque'
+
 xcrun simctl spawn "$UDID" log show --last 3m --predicate "process CONTAINS 'VIBE'" > "$OUT/log.txt" 2>/dev/null || true
 if grep -q "panicked at" "$OUT/log.txt"; then echo "MAL  el núcleo entró en pánico"; grep -A3 "panicked at" "$OUT/log.txt" | head; fail=1; fi
 exit $fail

@@ -103,7 +103,7 @@ jobs:
 
       - name: Compilar para iPhone y iPad (sin firmar)
         if: inputs.ipa
-        run: npx tauri ios build --no-sign --ci
+        run: npx tauri ios build --no-sign --ci --build-number ${{ github.run_number }}
 
       - name: Recoger el .ipa
         if: inputs.ipa
@@ -131,7 +131,7 @@ jobs:
       # Prueba de humo opcional: arranca la app en un iPhone simulado y guarda capturas.
       - name: Compilar para el simulador
         if: inputs.simulator || inputs.qa_player
-        run: npx tauri ios build --target aarch64-sim --debug --ci
+        run: npx tauri ios build --target aarch64-sim --debug --ci --build-number ${{ github.run_number }}
 
       - name: Abrir en el simulador y capturar
         if: inputs.simulator

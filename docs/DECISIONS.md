@@ -1626,6 +1626,31 @@ medida y se alinea a paquetes de 188 bytes. La grabación sostiene el permiso de
 `StreamGuard` (R1) y termina al pedirse otro stream, al cerrar el reproductor
 (`DELETE /api/live-buffer`) o tras 30 s sin lectores.
 
+**El proveedor se añade a mano en cada dispositivo** (decidido con el usuario,
+2026-10-20). Se valoró subirlo a la cuenta cifrado de extremo a extremo con una clave
+derivada de la contraseña; el usuario prefirió no tocar la regla de que las credenciales
+del proveedor nunca salen del dispositivo.
+
+**Los controles del reproductor no se veían en el iPhone** (segunda ronda de pruebas del
+usuario). Montada una prueba en el simulador de GitHub con toques reales (idb,
+`ios/qa/player-qa.sh`) y un volcado de la jerarquía de vistas: los toques llegaban y los
+controles existían, visibles, pero VLC pinta su vista de vídeo desde su propio hilo y
+acaba encima de cualquier vista hermana. Los controles van ahora en una `UIWindow` propia
+de nivel superior. También: el reproductor reabre en el mismo punto un VOD que "termina"
+lejos del final y reintenta los errores sueltos (volver de segundo plano).
+
+**R1 de verdad con el proxy directo.** Al saltar en una película, VLC pide la URL otra
+vez antes de cerrar la conexión anterior, y la vieja seguía abierta con el proveedor:
+con una cuenta de una conexión, el proveedor rechazaba la nueva y el reproductor salía.
+El proxy pasa ahora los bytes desde una tarea propia que suelta la conexión en cuanto
+otra sesión pide la suya, y `StreamGuard::acquire` espera a que se cierre
+(`UpstreamToken`). Test: el proveedor simulado nunca ve dos conexiones a la vez.
+
+**WebKit en las pruebas de la interfaz.** La interfaz se revisaba con Chromium; WebKit
+(el motor del iPhone) se comportaba distinto: los títulos largos ensanchaban las
+tarjetas y la rejilla se podía arrastrar de lado. Ahora se prueba también con WebKit de
+Playwright a tamaño iPhone, iPad y iPhone en horizontal.
+
 **Lo que no llega a iOS en esta fase.** Imagen en imagen y recordatorios con la app
 cerrada.
 

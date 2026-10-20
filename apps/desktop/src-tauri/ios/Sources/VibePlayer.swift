@@ -122,6 +122,13 @@ final class VibePlayerController: UIViewController {
     private var behindLive: Double = 0
     private var pausedAt: Date?
     private var liveReconnects = 0
+    /// Última posición conocida en VOD y reaperturas tras un corte a mitad.
+    private var lastPosition: Double = 0
+    private var vodReconnects = 0
+    private var errorRetries = 0
+    private var lastRetryAt = Date.distantPast
+    /// Los controles se enseñan al empezar a verse cada vídeo (también tras un zapping).
+    private var shownForThisMedia = false
     /// Rellenar la pantalla recortando los bordes, en vez de ver la imagen entera.
     private var fillScreen = false
     private let symbolConfig = UIImage.SymbolConfiguration(pointSize: 22, weight: .semibold)
@@ -185,6 +192,7 @@ final class VibePlayerController: UIViewController {
             window.rootViewController = controlsHost
             window.isHidden = false
             controlsWindow = window
+            showOverlay()
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.qaDumpHierarchy("6 s tras abrir") }
     }
@@ -212,6 +220,10 @@ final class VibePlayerController: UIViewController {
         behindLive = 0
         pausedAt = nil
         liveReconnects = 0
+        vodReconnects = 0
+        errorRetries = 0
+        shownForThisMedia = false
+        lastPosition = request.start_seconds
         titleLabel.text = request.title
         subtitleLabel.text = request.subtitle
         subtitleLabel.isHidden = (request.subtitle ?? "").isEmpty
@@ -290,7 +302,24 @@ final class VibePlayerController: UIViewController {
             if !player.isPlaying { spinner.startAnimating() } else { spinner.stopAnimating() }
         case .playing:
             spinner.stopAnimating()
+            if !shownForThisMedia {
+                shownForThisMedia = true
+                showOverlay()
+            }
         case .error:
+            // Un fallo suelto (la app volvió de segundo plano y el servidor local se reabrió,
+            // un corte de red) se reintenta en el mismo punto antes de rendirse.
+            if Date().timeIntervalSince(lastRetryAt) < 2 { return } // el reintento anterior aún arranca
+            if errorRetries < 2 {
+                errorRetries += 1
+                lastRetryAt = Date()
+                if request.live {
+                    if isLiveBuffer { reopenLive() } else if let url = URL(string: request.url) { startPlayback(url, startSeconds: 0) }
+                } else if let url = URL(string: request.url) {
+                    startPlayback(url, startSeconds: lastPosition)
+                }
+                return
+            }
             spinner.stopAnimating()
             showMessage("No se pudo reproducir. Puede que la cuenta esté en uso en otro dispositivo.")
             sendEvent(["type": "error", "message": "VLC no pudo abrir el stream"])
@@ -298,6 +327,13 @@ final class VibePlayerController: UIViewController {
             return
         case .ended:
             if !request.live {
+                // Solo es el final de verdad cerca del final: un corte a mitad (red, o el
+                // proveedor) se reabre en el mismo punto en vez de salir y darla por vista.
+                if let duration = durationSeconds, lastPosition < duration - 30, vodReconnects < 3, let url = URL(string: request.url) {
+                    vodReconnects += 1
+                    startPlayback(url, startSeconds: lastPosition)
+                    return
+                }
                 close(ended: true)
                 return
             }
@@ -313,11 +349,12 @@ final class VibePlayerController: UIViewController {
         }
 
         playButton.setImage(UIImage(systemName: player.isPlaying ? "pause.fill" : "play.fill", withConfiguration: bigSymbolConfig), for: .normal)
-        if player.isPlaying { liveReconnects = 0 }
+        if player.isPlaying { liveReconnects = 0; errorRetries = 0 }
         if request.live { updateLiveBadge() }
 
         if !request.live {
             let position = positionSeconds
+            if player.isPlaying, position > 0 { lastPosition = position; vodReconnects = 0 }
             timeLabel.text = formatTime(position)
             if let duration = durationSeconds {
                 durationLabel.text = formatTime(duration)
