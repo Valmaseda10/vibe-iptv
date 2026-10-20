@@ -1584,6 +1584,18 @@ progreso ya viajaban por Firebase (F11), sin cambios.
   esqueleto de carga, y se quedaba en 4 columnas fijas. En el PC no se notaba; en el
   iPhone cortaba tarjetas.
 
+**Trampa encontrada: el `clock_gettime` de VLC.** La primera versión que compiló moría
+al arrancar en el simulador con un pánico en `Instant::now()` (al crear el runtime de
+tokio). MobileVLCKit exporta su propio `clock_gettime` (compatibilidad con iOS antiguos),
+que no entiende `CLOCK_UPTIME_RAW`, y el enlazador ataba a él las llamadas del núcleo Rust
+por ir el framework antes que libSystem. Se arregla enlazando `-lSystem` primero
+(`OTHER_LDFLAGS` en `ios/project.yml`). El flujo de iOS comprueba con `nm -m` a quién está
+atado el símbolo y falla si es a MobileVLCKit, y falla también si el simulador registra un
+pánico.
+
+Primera prueba en el simulador (iPhone, iOS 26): la app abre y enseña la pantalla de
+cuenta, así que núcleo, base de datos y servidor local funcionan en iOS.
+
 **Lo que no llega a iOS en esta fase.** Pausar y rebobinar el directo (F13 depende de
 ffmpeg), imagen en imagen y recordatorios con la app cerrada.
 
