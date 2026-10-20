@@ -23,7 +23,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F12 Cerrar la deuda de v1 (logos en disco, hls.js y LGPL quedan como pendientes documentados)
 - [x] F13 Directo de nivel TiviMate
 - [x] F14 Detalles premium en VOD y perfiles
-- [ ] F15 Cliente iOS
+- [ ] F15 App de iPhone y iPad (Tauri iOS + VLC, sin Mac ni cuenta de Apple)
 - [ ] F16 Cliente Fire TV (pospuesto: no hay dispositivo a mano para probarlo)
 
 Las fases F11 en adelante se añadieron el 2026-10-15, con las diez primeras ya cerradas.
@@ -362,19 +362,25 @@ por búsqueda, ni por recomendaciones, ni por "Sorpréndeme".
 
 ---
 
-## F15 — Cliente iOS
+## F15 — App de iPhone y iPad
+
+Replanteada el 2026-10-20 (ver `docs/DECISIONS.md`): sin Mac y sin cuenta de
+desarrollador de Apple, y funcionando con el PC apagado. El plan original (SwiftUI nativo
+en `clients/ios`, catálogo desde la API LAN del PC) se descarta.
 
 ```
-Primer cliente fuera del PC, en clients/ios. Lee docs/API.md y docs/CLOUD-SYNC.md.
+La misma app de Tauri compilada para iOS. Lee docs/IOS.md y docs/CLOUD-SYNC.md.
 
-- SwiftUI, reproducción con VLCKit (TS y MKV sin remux)
-- Misma cuenta Firebase: perfiles, favoritos y progreso con el SDK oficial y caché offline
-- Catálogo desde la API LAN del PC cuando está encendido, con emparejamiento por código
-- Decidir en el plan de la fase si el iPhone habla con el proveedor directamente cuando
-  el PC está apagado (implica credenciales del proveedor en el dispositivo: R5)
+- El núcleo Rust como biblioteca (`run()` común a PC y móvil); compila para iOS tal cual
+- Reproducción con VLC (MobileVLCKit) en una pantalla nativa en Swift; el núcleo le pasa
+  el stream sin tocar (`?passthrough=true`) por el mismo proxy y StreamGuard (R1, R5)
+- El iPhone habla con el proveedor directamente: credenciales en el llavero del iPhone
+- Interfaz táctil: pestañas abajo en iPhone, zonas seguras, sin zoom al escribir
+- Compilación sin firmar en GitHub Actions (macOS); se instala con Sideloadly desde
+  Windows con un Apple ID gratuito (firma de 7 días)
 
 Criterio de aceptación: empiezo una película en el PC y la continúo en el iPhone desde
-el mismo minuto.
+el mismo minuto, con el PC apagado.
 ```
 
 ---

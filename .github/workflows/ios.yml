@@ -1,0 +1,137 @@
+# App de iPhone y iPad (F15), compilada en un Mac de GitHub: no hace falta un Mac propio.
+#
+# Sale un .ipa SIN FIRMAR. Lo firma Sideloadly en Windows con el Apple ID del usuario
+# al instalarlo (la firma gratuita caduca a los 7 días). Ver docs/IOS.md.
+#
+# Solo se lanza a mano (Actions → iOS → Run workflow): los minutos de Mac del plan
+# gratuito de GitHub son pocos y cada compilación completa gasta unos cuantos.
+name: iOS
+
+on:
+  workflow_dispatch:
+    inputs:
+      simulator:
+        description: "Abrir también la app en un iPhone simulado y guardar una captura"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ios
+  cancel-in-progress: true
+
+env:
+  VLCKIT_URL: https://download.videolan.org/pub/cocoapods/prod/MobileVLCKit-3.0-20260922-1512.tar.xz
+  # sha256 publicado en el podspec de MobileVLCKit 3.7.4 (CocoaPods trunk).
+  VLCKIT_SHA256: c649c4c47bd065b3a5511746361b5a9066a34033f2df9cbc9454409c0f363b52
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+
+      - name: Versiones
+        run: |
+          sw_vers
+          xcodebuild -version
+          rustc --version
+
+      - run: npm ci
+
+      - name: MobileVLCKit en caché
+        id: vlckit-cache
+        uses: actions/cache@v4
+        with:
+          path: apps/desktop/src-tauri/ios/Frameworks
+          key: mobilevlckit-3.7.4-arm64only
+
+      - name: Descargar MobileVLCKit 3.7.4
+        if: steps.vlckit-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          tmp="$RUNNER_TEMP/vlckit"
+          mkdir -p "$tmp"
+          curl -fsSL "$VLCKIT_URL" -o "$tmp/vlckit.tar.xz"
+          echo "$VLCKIT_SHA256  $tmp/vlckit.tar.xz" | shasum -a 256 -c -
+          tar -xJf "$tmp/vlckit.tar.xz" -C "$tmp" MobileVLCKit-binary/MobileVLCKit.xcframework
+          mkdir -p src-tauri/ios/Frameworks
+          rm -rf src-tauri/ios/Frameworks/MobileVLCKit.xcframework
+          mv "$tmp/MobileVLCKit-binary/MobileVLCKit.xcframework" src-tauri/ios/Frameworks/
+          # Los símbolos de depuración (más de 800 MB) no hacen falta, y los iPhone de
+          # 32 bits (armv7) no existen desde iOS 11: fuera, para que la app pese menos.
+          find src-tauri/ios/Frameworks -name "*.dSYM" -prune -exec rm -rf {} +
+          device="src-tauri/ios/Frameworks/MobileVLCKit.xcframework/ios-arm64_armv7_armv7s/MobileVLCKit.framework/MobileVLCKit"
+          lipo "$device" -remove armv7 -remove armv7s -output "$device.thin"
+          mv "$device.thin" "$device"
+          lipo -info "$device"
+
+      - name: Generar el proyecto de Xcode
+        run: npx tauri ios init --ci
+
+      - name: Compilar para iPhone y iPad (sin firmar)
+        run: npx tauri ios build --no-sign --ci
+
+      - name: Recoger el .ipa
+        run: |
+          set -euo pipefail
+          ipa=$(find src-tauri/gen/apple/build -name "*.ipa" | head -n 1)
+          test -n "$ipa"
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$ipa" "$RUNNER_TEMP/out/VIBE-IPTV.ipa"
+          ls -la "$RUNNER_TEMP/out"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VIBE-IPTV-ipa
+          path: ${{ runner.temp }}/out/VIBE-IPTV.ipa
+          retention-days: 14
+
+      # Prueba de humo opcional: arranca la app en un iPhone simulado y guarda capturas.
+      - name: Compilar para el simulador
+        if: inputs.simulator
+        run: npx tauri ios build --target aarch64-sim --debug --ci
+
+      - name: Abrir en el simulador y capturar
+        if: inputs.simulator
+        run: |
+          set -euo pipefail
+          app=$(find src-tauri/gen/apple/build -name "*.app" -path "*sim*" | head -n 1)
+          [ -z "$app" ] && app=$(find src-tauri/gen/apple/build -name "*.app" | head -n 1)
+          echo "app: $app"
+          device=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) for x in d[k] if x['name'].startswith('iPhone')))")
+          xcrun simctl boot "$device"
+          xcrun simctl bootstatus "$device" -b
+          xcrun simctl install "$device" "$app"
+          bundle=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$app/Info.plist")
+          xcrun simctl launch "$device" "$bundle"
+          mkdir -p "$RUNNER_TEMP/shots"
+          for i in 1 2 3; do
+            sleep 10
+            xcrun simctl io "$device" screenshot "$RUNNER_TEMP/shots/arranque-$i.png"
+          done
+          xcrun simctl spawn "$device" log show --last 2m --predicate "process CONTAINS 'VIBE' OR process CONTAINS 'vibe'" > "$RUNNER_TEMP/shots/log.txt" || true
+
+      - uses: actions/upload-artifact@v4
+        if: inputs.simulator && always()
+        with:
+          name: simulador
+          path: ${{ runner.temp }}/shots
+          retention-days: 7

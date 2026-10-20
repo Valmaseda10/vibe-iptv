@@ -24,11 +24,14 @@ type PosterCardProps = {
   /** Quitar de "Continuar viendo" (F "premium") — nunca junto a `favorite`: comparten la
    * misma esquina porque ningún sitio usa las dos cosas a la vez. */
   onRemove?: () => void;
+  /** Ocupa el ancho de su celda en vez del fijo de las filas: la rejilla de pantallas
+   * estrechas (iPhone, F15) reparte el ancho entre sus columnas. */
+  fluid?: boolean;
 };
 
 /** Tarjeta de portada 2:3. Reserva el espacio siempre (aspect-ratio fijo) para no saltar
  * el layout mientras carga la imagen; accesible por teclado (Enter abre, foco visible). */
-export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew, onRemove }: PosterCardProps) {
+export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew, onRemove, fluid }: PosterCardProps) {
   const { data: base } = useApiBase();
   const src = imagePath(base, posterPath, "w342");
   const [loaded, setLoaded] = useState(false);
@@ -37,7 +40,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
   const [failed, setFailed] = useState(false);
 
   return (
-    <div className="group relative w-40 shrink-0 sm:w-44">
+    <div className={`group relative ${fluid ? "w-full min-w-0" : "w-40 shrink-0 sm:w-44"}`}>
       <button
         type="button"
         data-card
@@ -115,9 +118,9 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
   );
 }
 
-export function PosterCardSkeleton() {
+export function PosterCardSkeleton({ fluid }: { fluid?: boolean }) {
   return (
-    <div className="flex w-40 shrink-0 flex-col gap-2 sm:w-44">
+    <div className={`flex flex-col gap-2 ${fluid ? "w-full min-w-0" : "w-40 shrink-0 sm:w-44"}`}>
       <div className="aspect-[2/3] w-full animate-pulse rounded-lg bg-neutral-800" />
       <div className="h-4 w-3/4 animate-pulse rounded bg-neutral-800" />
     </div>

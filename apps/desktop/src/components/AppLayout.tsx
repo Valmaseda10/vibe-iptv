@@ -4,6 +4,7 @@ import { ProfileSwitcher } from "../features/profiles/ProfileSwitcher";
 import { SyncStatusBanner } from "./SyncStatusBanner";
 import { useActiveProfile } from "../lib/activeProfile";
 import { ReminderNotifier } from "./ReminderNotifier";
+import { MobileTabBar } from "./MobileTabBar";
 import { apiGetOrNull } from "../lib/api-client";
 import type { RandomTitleResponse } from "../lib/api-types";
 import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon, DiceIcon } from "./icons";
@@ -19,7 +20,8 @@ const NAV_ITEMS = [
   { to: "/settings", label: "Ajustes", icon: SettingsIcon },
 ] as const;
 
-/** Cascarón de F5: barra lateral colapsable + contenido. Tab funciona como siempre;
+/** Cascarón de F5: barra lateral colapsable + contenido (en pantallas estrechas, una
+ * barra de pestañas abajo: `MobileTabBar`, F15). Tab funciona como siempre;
  * arriba/abajo/derecha además mueven el foco a mano (ver `onNavKeyDown`, pensado para
  * mando a distancia). El foco siempre es visible (ver globals.css). */
 export function AppLayout({ children }: { children: ReactNode }) {
@@ -96,7 +98,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <nav
         ref={navRef}
         onKeyDown={onNavKeyDown}
-        className={`flex shrink-0 flex-col border-r border-neutral-900 bg-neutral-950 py-4 transition-[width] duration-150 ${collapsed ? "w-16" : "w-56"}`}
+        className={`hidden shrink-0 flex-col border-r md:flex border-neutral-900 bg-neutral-950 py-4 transition-[width] duration-150 ${collapsed ? "w-16" : "w-56"}`}
         aria-label="Navegación principal"
       >
         <div className={`mb-3 flex items-center gap-2 px-4 ${collapsed ? "justify-center px-0" : ""}`}>
@@ -152,7 +154,13 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </button>
       </nav>
 
-      <main ref={mainRef} className="min-w-0 flex-1 overflow-y-auto">{children}</main>
+      <main
+        ref={mainRef}
+        className="min-w-0 flex-1 overflow-y-auto pt-[env(safe-area-inset-top)] pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0"
+      >
+        {children}
+      </main>
+      <MobileTabBar onSurprise={surpriseMe} surprising={surprising} />
       <SyncStatusBanner />
       <ReminderNotifier />
     </div>

@@ -1,6 +1,8 @@
 import { createRoute } from "@tanstack/react-router";
 import { rootRoute } from "./__root";
 import { PlayerScreen } from "../features/player/PlayerScreen";
+import { NativePlayerScreen } from "../features/player/NativePlayerScreen";
+import { IS_IOS } from "../lib/platform";
 
 type PlayerSearch = {
   seriesId?: string;
@@ -30,5 +32,6 @@ export const playerRoute = createRoute({
     source: typeof search.source === "number" ? search.source : undefined,
     audioTrack: typeof search.audioTrack === "number" ? search.audioTrack : undefined,
   }),
-  component: PlayerScreen,
+  // En iPhone y iPad reproduce VLC en una pantalla nativa (F15).
+  component: IS_IOS ? NativePlayerScreen : PlayerScreen,
 });

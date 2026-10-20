@@ -434,6 +434,11 @@ struct StreamQuery {
     /// Índice relativo de la pista de subtítulos de texto que se quiere ver (F12). Obliga
     /// a remuxear (nivel 2) aunque el fichero se pudiera servir tal cual.
     subtitle_track: Option<i64>,
+    /// El cliente reproduce cualquier contenedor y códec por sí mismo (el reproductor VLC
+    /// de iPhone y iPad, F15): se le pasan los bytes del proveedor tal cual, sin sonda ni
+    /// remux. Sigue pasando por el proxy y el `StreamGuard` (R1, R5).
+    #[serde(default)]
+    passthrough: bool,
 }
 
 /// Códecs de `audio_passthrough` que se aceptan: solo los que el remux convertiría.
@@ -455,7 +460,8 @@ async fn get_stream(
     let log = Arc::clone(&state.last_errors);
     let audio = client_audio(query.audio_passthrough.as_deref());
     let tracks = TrackChoice { audio: query.audio_track, subtitles: query.subtitle_track };
-    let result = handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, tracks, &audio, range).await;
+    let result =
+        handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, tracks, &audio, query.passthrough, range).await;
     remember_outcome(&log, format!("{kind}:{id}"), result.as_ref());
     match result {
         Ok(response) => response,
@@ -486,6 +492,9 @@ struct CatchupQuery {
     /// sin arriesgarse a pedir un bloque tan largo que el panel lo rechace.
     duration_min: Option<u32>,
     audio_passthrough: Option<String>,
+    /// Igual que en `StreamQuery`: el reproductor VLC de iOS recibe los bytes tal cual.
+    #[serde(default)]
+    passthrough: bool,
 }
 
 async fn get_catchup(
@@ -497,7 +506,8 @@ async fn get_catchup(
     let range = headers.get(header::RANGE).cloned();
     let log = Arc::clone(&state.last_errors);
     let audio = client_audio(query.audio_passthrough.as_deref());
-    let result = handle_catchup(state, channel_id, query.profile_id, query.start, query.duration_min.unwrap_or(60), &audio, range).await;
+    let result =
+        handle_catchup(state, channel_id, query.profile_id, query.start, query.duration_min.unwrap_or(60), &audio, query.passthrough, range).await;
     remember_outcome(&log, format!("catchup:{channel_id}"), result.as_ref());
     match result {
         Ok(response) => response,
@@ -586,6 +596,7 @@ async fn handle_stream(
     start_seconds: Option<f64>,
     tracks: TrackChoice,
     client_audio: &[String],
+    passthrough: bool,
     range_header: Option<HeaderValue>,
 ) -> Result<Response, StreamError> {
     let media_kind = parse_kind(&kind_str)?;
@@ -620,7 +631,7 @@ async fn handle_stream(
     // Nivel 1a: HLS reconocido por la extensión, sin necesidad de sonda. No reescribe
     // las URIs internas del manifiesto (ver docs/DECISIONS.md): no se ha podido probar
     // contra un proveedor que sirva HLS de verdad, ninguno de los dos del usuario lo hace.
-    if primary_url.path().to_ascii_lowercase().ends_with(".m3u8") {
+    if passthrough || primary_url.path().to_ascii_lowercase().ends_with(".m3u8") {
         record_tier(&state.db_path, profile_id, &kind_str, id, 1).await;
         return proxy_passthrough(primary_url, range_header, permit, Arc::clone(&state.stream_guard)).await;
     }
@@ -722,6 +733,7 @@ async fn handle_mpv_launch(state: StreamState, kind_str: String, id: i64, profil
 /// `GET /stream/catchup/:channel_id` — timeshift (F9): reproduce un bloque pasado de un
 /// canal en vez del directo. Solo se ofrece si `channels.has_catchup` y el `start` pedido
 /// cae dentro de `channels.catchup_days`; fuera de eso ni se intenta abrir conexión.
+#[allow(clippy::too_many_arguments)]
 async fn handle_catchup(
     state: StreamState,
     channel_id: i64,
@@ -729,6 +741,7 @@ async fn handle_catchup(
     start_epoch: i64,
     duration_min: u32,
     client_audio: &[String],
+    passthrough: bool,
     range_header: Option<HeaderValue>,
 ) -> Result<Response, StreamError> {
     let channel = with_db(state.db_path.clone(), move |conn| reads::resolve_channel_catchup(conn, channel_id))
@@ -761,6 +774,11 @@ async fn handle_catchup(
 
     let permit = state.stream_guard.acquire().await;
     replace_subtitle_session(&state.subtitles, None);
+
+    if passthrough {
+        record_tier(&state.db_path, profile_id, "channel", channel_id, 1).await;
+        return proxy_passthrough(primary_url, range_header, permit, Arc::clone(&state.stream_guard)).await;
+    }
 
     let (ffmpeg_path, ffprobe_path) = match (&state.ffmpeg_path, &state.ffprobe_path) {
         (Some(ffmpeg), Some(ffprobe)) => (ffmpeg.clone(), ffprobe.clone()),
@@ -1376,6 +1394,53 @@ mod tests {
         // La duración real (VOD) se guarda para que el reproductor pueda pintar una
         // barra de búsqueda aunque TMDB no tenga la duración editorial del título.
         assert!(duration.is_some_and(|d| d > 5.5 && d < 7.0), "duración inesperada: {duration:?}");
+
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// iPhone y iPad (F15): sin ffmpeg ni ffprobe en el dispositivo, un MKV llega tal cual
+    /// al reproductor VLC, con Range para poder saltar a cualquier minuto.
+    #[tokio::test]
+    async fn passthrough_serves_any_container_byte_for_byte_without_ffmpeg() {
+        let dir = std::env::temp_dir().join(format!("vibe-iptv-stream-passthrough-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let bytes: Vec<u8> = (0..64_000u32).map(|i| (i % 251) as u8).collect();
+        let file = dir.join("peli.mkv");
+        std::fs::write(&file, &bytes).unwrap();
+        let base_url = spawn_file_server("/movie/user/pass/7.mkv", file).await;
+
+        let db_path = temp_db_path("passthrough");
+        let (provider_id, _keychain_guard) = seed_provider_with_credential(&db_path, &base_url, "passthrough").await;
+        let movie_id: i64 = {
+            let conn = open_connection_at(&db_path).unwrap();
+            let raw = RawMovie {
+                remote_id: "7".into(),
+                category_remote_id: None,
+                raw_title: "Peli".into(),
+                container_extension: Some("mkv".into()),
+                logo_url: None,
+                added_at: None,
+                rating: None,
+                tmdb_id: None,
+            };
+            let fields = TitleFields { clean_title: "Peli", year: Some(2021), match_key: "peli-2021", quality: None, language: None };
+            write_queries::upsert_movie(&conn, provider_id, &HashMap::new(), &raw, &fields).unwrap();
+            conn.query_row("SELECT id FROM movies WHERE match_key = 'peli-2021'", [], |r| r.get(0)).unwrap()
+        };
+
+        let router = stream_router(base_state(db_path.clone(), None, None));
+        let uri = format!("/stream/movie/{movie_id}?profile_id=1&passthrough=true");
+        let response = router.clone().oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.into_body().collect().await.unwrap().to_bytes().as_ref(), bytes.as_slice());
+
+        let response = router
+            .oneshot(Request::builder().uri(&uri).header(header::RANGE, "bytes=1000-1999").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::PARTIAL_CONTENT);
+        assert_eq!(response.into_body().collect().await.unwrap().to_bytes().as_ref(), &bytes[1000..2000]);
 
         let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::remove_file(&db_path);

@@ -193,6 +193,32 @@ export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | nul
  */
 next_cursor_key: string | null, };
 
+/**
+ * Lo que la interfaz pide reproducir.
+ */
+export type NativePlayRequest = { 
+/**
+ * URL del proxy local, con `passthrough=true`.
+ */
+url: string, title: string, 
+/**
+ * Segunda línea: programa en emisión o nombre del episodio.
+ */
+subtitle: string | null, 
+/**
+ * Segundo por el que empezar (continuar viendo).
+ */
+start_seconds: number, 
+/**
+ * Directo: sin barra de tiempo, y deslizar arriba y abajo cambia de canal.
+ */
+live: boolean, };
+
+/**
+ * Lo que cuenta el reproductor nativo.
+ */
+export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, } | { "type": "zap", direction: number, } | { "type": "error", message: string, };
+
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 
 export type PairResponse = { device_id: number, 

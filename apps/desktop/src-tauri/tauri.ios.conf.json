@@ -1,0 +1,10 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "dev.vibeiptv.mobile",
+  "bundle": {
+    "iOS": {
+      "minimumSystemVersion": "17.0",
+      "template": "ios/project.yml"
+    }
+  }
+}

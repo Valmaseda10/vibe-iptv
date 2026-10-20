@@ -81,7 +81,7 @@ export function SeriesDetailScreen() {
 
       <div className={`relative flex flex-col gap-5 px-6 pb-16 sm:px-10 ${backdrop ? "pt-[26vh]" : "pt-10"}`}>
         <button type="button" onClick={goBack} className="w-fit text-sm text-neutral-400 outline-none hover:text-neutral-200">
-          ← Volver (Esc)
+          ← Volver <span className="pointer-coarse:hidden">(Esc)</span>
         </button>
         {poster && <img src={poster} alt="" className="w-36 rounded-lg shadow-2xl ring-1 ring-white/10 sm:w-44" />}
         <h1 className="max-w-2xl text-4xl font-bold sm:text-5xl">{data.clean_title}</h1>

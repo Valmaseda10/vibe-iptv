@@ -34,6 +34,11 @@ type VirtualPosterGridProps = {
 };
 
 const CARD_WIDTH = 192; // 176px tarjeta (44 * 4) + 16px de separación
+/** Por debajo de este ancho útil (iPhone en vertical, F15) la rejilla pasa a
+ * `NARROW_COLUMNS` columnas que se reparten el ancho, como en cualquier app de móvil:
+ * con tarjetas de ancho fijo cabría una sola. */
+const NARROW_WIDTH = 600;
+const NARROW_COLUMNS = 3;
 /** Solo la estimación inicial: cada fila se mide de verdad al pintarse
  * (`measureElement`). Póster 2:3 de 176px (264) + título y año (~44) + separación (16).
  * Con una altura fija de 300 (la de la tarjeta estrecha de pantallas pequeñas), el año
@@ -60,20 +65,27 @@ export function VirtualPosterGrid({
 }: VirtualPosterGridProps) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [columns, setColumns] = useState(4);
+  const [fluid, setFluid] = useState(false);
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const { isFavorite, toggleFavorite } = useFavorites();
   const restoredForKey = useRef<string | undefined>(undefined);
 
+  // Mientras se ven el esqueleto de carga o el mensaje de vacío, `parentRef` no está
+  // montado: se vuelve a enganchar al aparecer la rejilla (antes se quedaba en 4
+  // columnas fijas para siempre si el primer render era el esqueleto).
+  const showingGrid = !(isInitialLoading && items.length === 0) && !(items.length === 0 && !hasMore);
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
     const observer = new ResizeObserver((entries) => {
       const width = entries[0]?.contentRect.width ?? 0;
-      setColumns(Math.max(1, Math.floor(width / CARD_WIDTH)));
+      const narrow = width > 0 && width < NARROW_WIDTH;
+      setFluid(narrow);
+      setColumns(narrow ? NARROW_COLUMNS : Math.max(1, Math.floor(width / CARD_WIDTH)));
     });
     observer.observe(el);
     return () => observer.disconnect();
-  }, []);
+  }, [showingGrid]);
 
   const loaderRow = hasMore ? 1 : 0;
   const rowCount = Math.ceil(items.length / columns) + loaderRow;
@@ -171,7 +183,7 @@ export function VirtualPosterGrid({
   if (isInitialLoading && items.length === 0) {
     return (
       <div className="flex flex-wrap gap-4 px-6 py-4 sm:px-10">
-        {Array.from({ length: columns * 2 }).map((_, i) => (
+        {Array.from({ length: 8 }).map((_, i) => (
           <PosterCardSkeleton key={i} />
         ))}
       </div>
@@ -195,11 +207,18 @@ export function VirtualPosterGrid({
               key={virtualRow.key}
               ref={virtualizer.measureElement}
               data-index={virtualRow.index}
-              style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${virtualRow.start}px)` }}
-              className="flex gap-4 pb-4"
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${virtualRow.start}px)`,
+                gridTemplateColumns: fluid ? `repeat(${columns}, minmax(0, 1fr))` : undefined,
+              }}
+              className={fluid ? "grid gap-3 pb-4" : "flex gap-4 pb-4"}
             >
               {isLoaderRow
-                ? Array.from({ length: columns }).map((_, i) => <PosterCardSkeleton key={i} />)
+                ? Array.from({ length: columns }).map((_, i) => <PosterCardSkeleton key={i} fluid={fluid} />)
                 : rowItems.map((item, i) => (
                     <PosterCard
                       key={item.id}
@@ -208,6 +227,7 @@ export function VirtualPosterGrid({
                       posterPath={item.posterPath}
                       subtitle={item.subtitle}
                       isNew={item.isNew}
+                      fluid={fluid}
                       onOpen={() => onOpen(item.id)}
                       favorite={
                         favoriteKind

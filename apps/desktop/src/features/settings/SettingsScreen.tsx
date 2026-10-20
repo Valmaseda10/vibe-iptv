@@ -308,8 +308,8 @@ export function SettingsScreen() {
             const progress = progressByProvider[provider.id];
             return (
               <li key={provider.id} className="rounded border border-neutral-800 p-4">
-                <div className="flex items-center justify-between gap-4">
-                  <div>
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div className="min-w-0 break-words">
                     <p className="font-medium">{provider.name}</p>
                     <p className="text-sm text-neutral-400">
                       {provider.kind === "xtream" ? "Xtream" : "M3U"} · {provider.base_url_display}

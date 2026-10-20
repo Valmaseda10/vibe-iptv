@@ -5,6 +5,12 @@ description = "VIBE IPTV — reproductor de escritorio para proveedores IPTV del
 edition = "2021"
 rust-version = "1.82"
 
+# Biblioteca además de ejecutable: iOS no arranca un `main`, enlaza el núcleo como
+# biblioteca estática (F15). `rlib` es la que usan el ejecutable y los tests.
+[lib]
+name = "vibe_iptv_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -20,7 +26,9 @@ serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-keyring = { version = "3", features = ["windows-native"] }
+# Cada almacén solo se activa en su sistema: el Administrador de credenciales en
+# Windows, el llavero en iPhone y iPad (F15).
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
 ts-rs = "10"
 tower-http = { version = "0.6", features = ["cors", "fs"] }
 async-trait = "0.1"

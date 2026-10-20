@@ -194,7 +194,7 @@ export function GuideScreen() {
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Buscar en la guía…"
             aria-label="Buscar en la guía"
-            className="w-56 rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+            className="w-full max-w-56 rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-500"
           />
           {!searching && (
             <>
@@ -250,7 +250,7 @@ export function GuideScreen() {
       ) : (
         <div className="flex min-h-0 flex-1 flex-col px-6 sm:px-10">
           <div className="mb-2 flex border-b border-neutral-800 pb-2 text-xs text-neutral-500">
-            <div className="w-48 shrink-0" />
+            <div className="w-[5.5rem] shrink-0 sm:w-48" />
             <div className="flex flex-1">
               {hourMarks.map((ts) => (
                 <div key={ts} className="flex-1 border-l border-neutral-800 pl-2">
@@ -273,12 +273,12 @@ export function GuideScreen() {
                         onFocus={() => setFocusedIndex(row.index)}
                         className={`flex h-14 items-center rounded-lg outline-none ${row.index === focusedIndex ? "ring-2 ring-red-600" : ""}`}
                       >
-                        <div className="flex w-48 shrink-0 items-center gap-2 pr-3">
+                        <div className="flex w-[5.5rem] shrink-0 items-center gap-2 pr-3 sm:w-48">
                           {channel.number != null && <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500">{channel.number}</span>}
                           <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500">
                             {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
                           </div>
-                          <span className="truncate text-sm">{channel.display_name}</span>
+                          <span className="hidden truncate text-sm sm:inline">{channel.display_name}</span>
                         </div>
 
                         <div className="relative h-full flex-1 overflow-hidden rounded bg-neutral-900">
