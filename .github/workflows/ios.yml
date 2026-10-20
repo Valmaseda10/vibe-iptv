@@ -104,6 +104,12 @@ jobs:
         run: |
           set -euo pipefail
           ipa=$(find src-tauri/gen/apple/build -name "*.ipa" | head -n 1)
+          # MobileVLCKit exporta su propio clock_gettime: si el núcleo se enlaza a él, la
+          # app muere al arrancar. Tiene que venir del sistema (ver ios/project.yml).
+          unzip -q -o "$ipa" -d "$RUNNER_TEMP/ipa"
+          binds=$(nm -m "$RUNNER_TEMP/ipa/Payload/VIBE IPTV.app/VIBE IPTV" | grep " _clock_gettime" || true)
+          echo "$binds"
+          if echo "$binds" | grep -q MobileVLCKit; then echo "clock_gettime enlazado a MobileVLCKit"; exit 1; fi
           test -n "$ipa"
           mkdir -p "$RUNNER_TEMP/out"
           cp "$ipa" "$RUNNER_TEMP/out/VIBE-IPTV.ipa"
@@ -128,6 +134,7 @@ jobs:
           app=$(find src-tauri/gen/apple/build -name "*.app" -path "*sim*" | head -n 1)
           [ -z "$app" ] && app=$(find src-tauri/gen/apple/build -name "*.app" | head -n 1)
           echo "app: $app"
+          nm -m "$app/VIBE IPTV" | grep " _clock_gettime" || true
           device=$(xcrun simctl list devices available -j | python3 -c "import json,sys; d=json.load(sys.stdin)['devices']; print(next(x['udid'] for k in sorted(d, reverse=True) for x in d[k] if x['name'].startswith('iPhone')))")
           xcrun simctl boot "$device"
           xcrun simctl bootstatus "$device" -b
@@ -140,6 +147,11 @@ jobs:
             xcrun simctl io "$device" screenshot "$RUNNER_TEMP/shots/arranque-$i.png"
           done
           xcrun simctl spawn "$device" log show --last 2m --predicate "process CONTAINS 'VIBE' OR process CONTAINS 'vibe'" > "$RUNNER_TEMP/shots/log.txt" || true
+          if grep -q "panicked at" "$RUNNER_TEMP/shots/log.txt"; then
+            grep -A3 "panicked at" "$RUNNER_TEMP/shots/log.txt" | head -20
+            echo "La app se ha cerrado con un pánico del núcleo"
+            exit 1
+          fi
 
       - uses: actions/upload-artifact@v4
         if: inputs.simulator && always()

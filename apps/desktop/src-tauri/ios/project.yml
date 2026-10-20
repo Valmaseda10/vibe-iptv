@@ -1,7 +1,8 @@
 # Plantilla de XcodeGen para iOS (F15): la oficial de tauri-cli 2.11.4
 # (crates/tauri-cli/templates/mobile/ios/project.yml) con tres añadidos, marcados con
 # "VIBE": el código Swift del reproductor nativo, MobileVLCKit (dinámico, se incrusta
-# en la app) y SWIFT_VERSION para que el destino compile Swift. Al subir de versión de
+# en la app), SWIFT_VERSION para que el destino compile Swift y el orden de enlace de
+# libSystem. Al subir de versión de
 # tauri-cli, partir de su plantilla nueva y repetir los añadidos.
 name: {{app.name}}
 options:
@@ -91,6 +92,11 @@ targets:
         EXCLUDED_ARCHS[sdk=iphoneos*]: x86_64
         # VIBE
         SWIFT_VERSION: "5.0"
+        # VIBE: MobileVLCKit exporta su propio `clock_gettime` (compatibilidad con iOS
+        # antiguos) y el enlazador ataba a él las llamadas del núcleo Rust, que ese no
+        # entiende (CLOCK_UPTIME_RAW): la app moría al arrancar en `Instant::now()`.
+        # Con libSystem antes que los frameworks, cada símbolo se resuelve en el sistema.
+        OTHER_LDFLAGS: ["$(inherited)", "-lSystem"]
       groups: [app]
     dependencies:
       - framework: {{ lib-output-file-name }}
