@@ -40,6 +40,21 @@ public func vibePlayerPresent(_ json: UnsafePointer<CChar>) {
     }
 }
 
+/// Raíz de la ventana de los controles (ver `VibePlayerController.controlsWindow`): misma
+/// orientación que el reproductor y transparente, para que se vea el vídeo de debajo.
+private final class ControlsHostController: UIViewController {
+    override var prefersStatusBarHidden: Bool { true }
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        UIDevice.current.userInterfaceIdiom == .pad ? .all : .landscape
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .clear
+    }
+}
+
 final class VibePlayerController: UIViewController {
     private static weak var current: VibePlayerController?
 
@@ -72,6 +87,14 @@ final class VibePlayerController: UIViewController {
     private var closed = false
 
     private let videoView = UIView()
+    /// Los controles van en una ventana propia por encima de la del vídeo. VLC pinta su
+    /// vista de vídeo desde su propio hilo y acaba encima de cualquier vista hermana: los
+    /// controles existían, recibían los toques, y no se veían (comprobado en el simulador
+    /// volcando la jerarquía de vistas). Una ventana de nivel superior siempre se compone
+    /// por encima.
+    private let controlsHost = ControlsHostController()
+    private var controlsWindow: UIWindow?
+    private var controlsRoot: UIView { controlsHost.view }
     private let overlay = UIView()
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
@@ -121,10 +144,6 @@ final class VibePlayerController: UIViewController {
 
         videoView.backgroundColor = .black
         videoView.translatesAutoresizingMaskIntoConstraints = false
-        // VLC mete su propia vista con reconocedores de toques dentro de `videoView`, y se
-        // quedaba con los toques: el gesto de "tocar para ver los controles" de abajo no
-        // llegaba nunca y no había forma de pausar ni de salir. Sin interacción en
-        // `videoView`, los toques caen en `view`, que es donde están los gestos.
         videoView.isUserInteractionEnabled = false
         view.addSubview(videoView)
         player.drawable = videoView
@@ -141,14 +160,14 @@ final class VibePlayerController: UIViewController {
         // que no sea doble.
         let doubleTap = UITapGestureRecognizer(target: self, action: #selector(toggleFill))
         doubleTap.numberOfTapsRequired = 2
-        view.addGestureRecognizer(doubleTap)
+        controlsRoot.addGestureRecognizer(doubleTap)
         let tap = UITapGestureRecognizer(target: self, action: #selector(toggleOverlay))
         tap.require(toFail: doubleTap)
-        view.addGestureRecognizer(tap)
+        controlsRoot.addGestureRecognizer(tap)
         for direction in [UISwipeGestureRecognizer.Direction.up, .down] {
             let swipe = UISwipeGestureRecognizer(target: self, action: #selector(swiped(_:)))
             swipe.direction = direction
-            view.addGestureRecognizer(swipe)
+            controlsRoot.addGestureRecognizer(swipe)
         }
 
         NotificationCenter.default.addObserver(
@@ -159,12 +178,27 @@ final class VibePlayerController: UIViewController {
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         UIApplication.shared.isIdleTimerDisabled = true
+        if controlsWindow == nil, let scene = view.window?.windowScene {
+            let window = UIWindow(windowScene: scene)
+            window.windowLevel = .normal + 1
+            window.backgroundColor = .clear
+            window.rootViewController = controlsHost
+            window.isHidden = false
+            controlsWindow = window
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in self?.qaDumpHierarchy("6 s tras abrir") }
     }
 
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         UIApplication.shared.isIdleTimerDisabled = false
+        removeControlsWindow()
+    }
+
+    private func removeControlsWindow() {
+        controlsWindow?.isHidden = true
+        controlsWindow?.rootViewController = nil
+        controlsWindow = nil
     }
 
     // MARK: - Reproducción
@@ -305,6 +339,7 @@ final class VibePlayerController: UIViewController {
         tickTimer?.invalidate()
         hideTimer?.invalidate()
         player.stop()
+        removeControlsWindow()
         sendEvent(["type": "closed", "position_s": position, "duration_s": duration, "ended": ended])
         dismiss(animated: true)
     }
@@ -426,7 +461,7 @@ final class VibePlayerController: UIViewController {
     private func buildOverlay() {
         overlay.translatesAutoresizingMaskIntoConstraints = false
         overlay.backgroundColor = UIColor.black.withAlphaComponent(0.35)
-        view.addSubview(overlay)
+        controlsRoot.addSubview(overlay)
 
         let config = symbolConfig
         let bigConfig = bigSymbolConfig
@@ -513,37 +548,45 @@ final class VibePlayerController: UIViewController {
         spinner.color = .white
         spinner.hidesWhenStopped = true
         spinner.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(spinner)
+        controlsRoot.addSubview(spinner)
 
         messageLabel.textColor = .white
         messageLabel.numberOfLines = 0
         messageLabel.textAlignment = .center
         messageLabel.isHidden = true
         messageLabel.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(messageLabel)
+        controlsRoot.addSubview(messageLabel)
 
-        let guide = view.safeAreaLayoutGuide
+        let root = controlsRoot
+        let guide = root.safeAreaLayoutGuide
         NSLayoutConstraint.activate([
-            overlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
-            overlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            overlay.topAnchor.constraint(equalTo: view.topAnchor),
-            overlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            overlay.leadingAnchor.constraint(equalTo: root.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: root.trailingAnchor),
+            overlay.topAnchor.constraint(equalTo: root.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             topBar.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 16),
             topBar.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -16),
             topBar.topAnchor.constraint(equalTo: guide.topAnchor, constant: 12),
-            center.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            center.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            center.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            center.centerYAnchor.constraint(equalTo: root.centerYAnchor),
             bottomBar.leadingAnchor.constraint(equalTo: guide.leadingAnchor, constant: 16),
             bottomBar.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -16),
             bottomBar.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -12),
-            spinner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            spinner.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            messageLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            messageLabel.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: 60),
+            spinner.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            spinner.centerYAnchor.constraint(equalTo: root.centerYAnchor),
+            messageLabel.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            messageLabel.centerYAnchor.constraint(equalTo: root.centerYAnchor, constant: 60),
             messageLabel.leadingAnchor.constraint(greaterThanOrEqualTo: guide.leadingAnchor, constant: 32),
             messageLabel.trailingAnchor.constraint(lessThanOrEqualTo: guide.trailingAnchor, constant: -32),
         ])
         titles.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        titles.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        // Los botones de la barra de arriba, a su tamaño: el título se queda con el resto
+        // (antes "Cerrar" se estiraba a media pantalla).
+        for button in [closeButton, liveBadge, goLiveButton, aspectButton, audioButton, subtitlesButton] as [UIView] {
+            button.setContentHuggingPriority(.required, for: .horizontal)
+            button.setContentCompressionResistancePriority(.required, for: .horizontal)
+        }
     }
 
     private func showMessage(_ text: String) {
@@ -582,7 +625,7 @@ final class VibePlayerController: UIViewController {
 
     private func showOverlay(autoHide: Bool = true) {
         overlay.isHidden = false
-        view.bringSubviewToFront(overlay)
+        controlsRoot.bringSubviewToFront(overlay)
         UIView.animate(withDuration: 0.2) { self.overlay.alpha = 1 }
         hideTimer?.invalidate()
         guard autoHide else { return }

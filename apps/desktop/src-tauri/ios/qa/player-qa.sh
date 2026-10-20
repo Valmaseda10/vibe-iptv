@@ -30,6 +30,15 @@ for it in items:
 PY
 }
 visible() { [ -n "$(center_of "$1" "$2")" ]; }
+# Espera hasta $2 segundos a que aparezca la etiqueta $1; deja el último volcado en $3.
+wait_visible() {
+  for _ in $(seq 1 "$2"); do
+    a11y "$3"
+    if visible "$1" "$3"; then return 0; fi
+    sleep 1
+  done
+  return 1
+}
 check() {
   if eval "$2"; then echo "ok   $1"; else echo "MAL  $1"; fail=1; fi
 }
@@ -42,15 +51,15 @@ bundle=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Info.plist"
 xcrun simctl install "$UDID" "$APP"
 SIMCTL_CHILD_VIBE_QA_PLAYER_URL="http://127.0.0.1:8765/prueba.mkv" SIMCTL_CHILD_RUST_BACKTRACE=1 \
   xcrun simctl launch "$UDID" "$bundle" >/dev/null
-sleep 12
-
-# 1. Arranca y enseña los controles.
-shot 01-arranque; a11y 01-arranque
-check "los controles salen al empezar" 'visible "Cerrar" 01-arranque'
+# 1. Arranca y enseña los controles (el modo de prueba abre el reproductor a los 4 s).
+wait_visible "Cerrar" 25 01-arranque; ok1=$?
+shot 01-arranque
+check "los controles salen al empezar" '[ $ok1 -eq 0 ]'
 
 # 2. A los 4 s sin tocar, se esconden.
-sleep 6
+sleep 7
 shot 02-sin-controles; a11y 02-sin-controles
+check "sin tocar, los controles se esconden" '! visible "Cerrar" 02-sin-controles' 
 
 # 3. Un toque en el centro los vuelve a enseñar.
 read -r W H < <(python3 -c "import json;d=json.load(open('$OUT/01-arranque.json'));f=d[0]['frame'];print(int(f['width']),int(f['height']))" 2>/dev/null || echo "400 800")
