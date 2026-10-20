@@ -10,6 +10,14 @@ body,
   height: 100%;
 }
 
+/* iPhone y iPad (F15): con viewport-fit=cover la página llega bajo la hora, la isla y el
+   indicador de inicio. El margen de arriba y de los lados va aquí, para todas las
+   pantallas; el de abajo lo pone la barra de pestañas. En el PC todo vale 0. */
+#root {
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
+}
+
 body {
   @apply bg-neutral-950 text-neutral-100 antialiased;
   font-family:

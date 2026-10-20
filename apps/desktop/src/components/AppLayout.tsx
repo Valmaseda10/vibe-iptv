@@ -94,7 +94,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <div className="flex h-full bg-neutral-950 text-neutral-100">
+    <div className="flex h-full flex-col bg-neutral-950 text-neutral-100 md:flex-row">
       <nav
         ref={navRef}
         onKeyDown={onNavKeyDown}
@@ -154,10 +154,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </button>
       </nav>
 
-      <main
-        ref={mainRef}
-        className="min-w-0 flex-1 overflow-y-auto pt-[env(safe-area-inset-top)] pb-[calc(3.5rem+env(safe-area-inset-bottom))] md:pb-0"
-      >
+      <main ref={mainRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         {children}
       </main>
       <MobileTabBar onSurprise={surpriseMe} surprising={surprising} />

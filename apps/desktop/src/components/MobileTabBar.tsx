@@ -18,7 +18,11 @@ const MORE = [
 ] as const;
 
 /** Barra de pestañas inferior para pantallas estrechas (iPhone, F15): sustituye a la barra
- * lateral, que en vertical se comería media pantalla. Lo que no cabe va en "Más". */
+ * lateral, que en vertical se comería media pantalla. Lo que no cabe va en "Más".
+ *
+ * Va en el flujo de la página (último hijo de la columna de `AppLayout`), no fija con
+ * `position: fixed`: en el WebView de iOS, tras cerrar el teclado, lo fijo se quedaba
+ * desplazado y dejaba un hueco debajo. */
 export function MobileTabBar({ onSurprise, surprising }: { onSurprise: () => void; surprising: boolean }) {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { setProfileId } = useActiveProfile();
@@ -86,7 +90,7 @@ export function MobileTabBar({ onSurprise, surprising }: { onSurprise: () => voi
 
       <nav
         aria-label="Navegación principal"
-        className="fixed inset-x-0 bottom-0 z-50 flex border-t border-neutral-900 bg-neutral-950/95 pb-[env(safe-area-inset-bottom)] backdrop-blur md:hidden"
+        className="relative z-50 flex shrink-0 border-t border-neutral-900 bg-neutral-950 pb-[env(safe-area-inset-bottom)] md:hidden"
       >
         {TABS.map(({ to, label, icon: ItemIcon }) => {
           const active = to === "/" ? pathname === "/" : pathname.startsWith(to);

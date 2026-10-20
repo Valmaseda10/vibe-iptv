@@ -22,7 +22,7 @@ export function ReminderNotifier() {
   if (due.length === 0) return null;
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex w-80 flex-col gap-3" role="status" aria-live="polite">
+    <div className="fixed inset-x-4 bottom-[calc(4.5rem+env(safe-area-inset-bottom))] z-50 flex flex-col gap-3 md:inset-x-auto md:bottom-6 md:right-6 md:w-80" role="status" aria-live="polite">
       {due.map((r) => (
         <div key={`${r.channel.id}-${r.start_ts}`} className="rounded-lg border border-amber-500/40 bg-neutral-900/95 p-4 shadow-xl">
           <p className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-amber-400">

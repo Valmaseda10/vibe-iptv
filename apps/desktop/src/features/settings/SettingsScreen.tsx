@@ -4,6 +4,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { apiGet, apiPost, apiPut, errorMessage } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
+import { IS_IOS } from "../../lib/platform";
 import type {
   AccountStatus,
   AccountStatusResponse,
@@ -879,9 +880,11 @@ function BinariesStatusBanner() {
   const { data } = useQuery({
     queryKey: ["binaries-status"],
     queryFn: () => apiGet<BinariesStatus>("/api/playback/binaries"),
+    // En iPhone y iPad no existen: reproduce VLC (F15).
+    enabled: !IS_IOS,
   });
 
-  if (!data) return null;
+  if (IS_IOS || !data) return null;
   const missing = (["ffmpeg", "ffprobe", "mpv"] as const).filter((name) => !data[name]);
   if (missing.length === 0) return null;
 
