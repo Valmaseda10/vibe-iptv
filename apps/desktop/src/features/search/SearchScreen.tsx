@@ -43,8 +43,8 @@ export function SearchScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-6 px-6 py-8 sm:px-10">
-      <h1 className="text-3xl font-semibold">Buscar</h1>
+    <div className="flex flex-col gap-5 px-4 py-5 sm:gap-6 sm:px-10 sm:py-8">
+      <h1 className="text-2xl font-semibold sm:text-3xl">Buscar</h1>
       <input
         autoFocus
         type="search"

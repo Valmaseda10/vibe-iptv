@@ -118,11 +118,12 @@ export function LiveScreen() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-4 py-8">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-6 sm:px-10">
-        <h1 className="text-3xl font-semibold">Directo</h1>
+    <div className="flex h-full flex-col gap-4 py-5 sm:py-8">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-10">
+        <h1 className="text-2xl font-semibold sm:text-3xl">Directo</h1>
         <select
-          className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none"
+          aria-label="Categoría"
+          className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none sm:w-auto"
           value={categoryId ?? ""}
           onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : null)}
         >
@@ -136,7 +137,7 @@ export function LiveScreen() {
       </div>
 
       {categoryId === null && (recentQuery.data?.length ?? 0) > 0 && (
-        <section className="px-6 sm:px-10" aria-label="Canales recientes">
+        <section className="px-4 sm:px-10" aria-label="Canales recientes">
           <h2 className="mb-2 text-sm font-medium text-neutral-400">Recientes</h2>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {recentQuery.data!.map((channel) => (
@@ -162,7 +163,7 @@ export function LiveScreen() {
         </section>
       )}
 
-      <div ref={parentRef} onKeyDown={onKeyDown} className="min-h-0 flex-1 overflow-y-auto px-6 sm:px-10">
+      <div ref={parentRef} onKeyDown={onKeyDown} className="min-h-0 flex-1 overflow-y-auto px-4 sm:px-10">
         {channelsQuery.isPending ? (
           <div className="flex flex-col gap-2 py-4">
             {Array.from({ length: 10 }).map((_, i) => (
@@ -211,7 +212,7 @@ export function LiveScreen() {
                           value={channel.id}
                           onClick={(e) => e.stopPropagation()}
                           onChange={(e) => setSelectedFeed((prev) => ({ ...prev, [group.displayName]: Number(e.target.value) }))}
-                          className="shrink-0 rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 outline-none pointer-coarse:py-2"
+                          className="max-w-[6.5rem] shrink-0 truncate rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-300 outline-none pointer-coarse:py-2"
                           aria-label={`Elegir fuente para ${group.displayName}`}
                           title={`${group.channels.length} fuentes disponibles para este canal`}
                         >

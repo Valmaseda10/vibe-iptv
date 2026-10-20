@@ -57,8 +57,8 @@ export function MoviesScreen() {
   );
 
   return (
-    <div className="flex h-full flex-col gap-6 py-8">
-      <h1 className="px-6 text-3xl font-semibold sm:px-10">Películas</h1>
+    <div className="flex h-full flex-col gap-4 py-5 sm:gap-6 sm:py-8">
+      <h1 className="px-4 text-2xl font-semibold sm:px-10 sm:text-3xl">Películas</h1>
       <CatalogFilterBar kind="movie" filters={filters} onChange={updateFilters} showQuality />
       <div className="min-h-0 flex-1">
         <VirtualPosterGrid

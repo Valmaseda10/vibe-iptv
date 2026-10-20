@@ -76,7 +76,7 @@ export function MovieDetailScreen() {
         <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/90 via-neutral-950/10 to-transparent" />
       </div>
 
-      <div className={`relative flex flex-col gap-5 px-6 pb-16 sm:px-10 ${backdrop ? "pt-[32vh]" : "pt-10"}`}>
+      <div className={`relative flex flex-col gap-5 px-4 pb-16 sm:px-10 ${backdrop ? "pt-[32vh]" : "pt-10"}`}>
         <button type="button" onClick={goBack} className="w-fit text-sm text-neutral-400 outline-none hover:text-neutral-200">
           ← Volver <span className="pointer-coarse:hidden">(Esc)</span>
         </button>

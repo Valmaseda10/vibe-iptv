@@ -68,12 +68,12 @@ export function Row({ title, children }: RowProps) {
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="px-6 text-lg font-semibold text-neutral-200 sm:px-10">{title}</h2>
+      <h2 className="px-4 text-lg font-semibold text-neutral-200 sm:px-10">{title}</h2>
       <div
         ref={trackRef}
         data-row-track
         onKeyDown={onKeyDown}
-        className="flex gap-4 overflow-x-auto px-6 pb-2 sm:px-10 [scrollbar-width:thin]"
+        className="flex gap-3 overflow-x-auto px-4 pb-2 sm:gap-4 sm:px-10 [scrollbar-width:thin]"
       >
         {children}
       </div>

@@ -56,13 +56,17 @@ export function HomeScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-10 pb-8">
+    <div className="flex flex-col gap-8 pb-8 sm:gap-10">
       {isPending ? <HeroBannerSkeleton /> : data?.featured ? <HeroBanner featured={data.featured} /> : null}
 
       {/* Sin banner (sin clave de TMDB no hay fondos), el título necesita su propio margen. */}
-      <h1 className={`px-6 text-3xl font-semibold sm:px-10 ${!isPending && !data?.featured ? "pt-8" : ""}`}>Inicio</h1>
+      <h1
+        className={`px-4 text-2xl font-semibold sm:px-10 sm:text-3xl ${!isPending && !data?.featured ? "pt-6 sm:pt-8" : "hidden sm:block"}`}
+      >
+        Inicio
+      </h1>
 
-      {isError && <p className="px-6 text-red-400 sm:px-10">No se pudo cargar el inicio. ¿Hay algún proveedor sincronizado?</p>}
+      {isError && <p className="px-4 text-red-400 sm:px-10">No se pudo cargar el inicio. ¿Hay algún proveedor sincronizado?</p>}
 
       {isPending ? (
         <SkeletonRow title="Continuar viendo" />
@@ -226,13 +230,13 @@ function HeroBanner({ featured }: { featured: FeaturedItem }) {
   const backdrop = imagePath(base, featured.backdrop_path, "w1280");
 
   return (
-    <div className="relative h-[60vh] min-h-[360px] w-full overflow-hidden">
+    <div className="relative h-[56vh] min-h-[340px] w-full overflow-hidden sm:h-[60vh] sm:min-h-[360px]">
       {backdrop && <img src={backdrop} alt="" className="absolute inset-0 h-full w-full object-cover" />}
       <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent" />
       <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/80 via-transparent to-transparent" />
 
-      <div className="absolute bottom-0 left-0 flex max-w-xl flex-col gap-4 px-6 pb-10 sm:px-10">
-        <h2 className="text-4xl font-bold drop-shadow-lg sm:text-5xl">{featured.clean_title}</h2>
+      <div className="absolute bottom-0 left-0 flex max-w-xl flex-col gap-4 px-4 pb-8 sm:px-10 sm:pb-10">
+        <h2 className="text-3xl font-bold drop-shadow-lg sm:text-5xl">{featured.clean_title}</h2>
         {featured.overview && <p className="line-clamp-3 text-sm text-neutral-200 drop-shadow sm:text-base">{featured.overview}</p>}
         <div className="flex items-center gap-3">
           <button
@@ -258,7 +262,7 @@ function HeroBanner({ featured }: { featured: FeaturedItem }) {
 function HeroBannerSkeleton() {
   return (
     <div className="relative flex h-[60vh] min-h-[360px] w-full animate-pulse items-end overflow-hidden bg-neutral-900">
-      <div className="flex w-full max-w-xl flex-col gap-4 px-6 pb-10 sm:px-10">
+      <div className="flex w-full max-w-xl flex-col gap-4 px-4 pb-8 sm:px-10 sm:pb-10">
         <div className="h-10 w-2/3 rounded bg-neutral-800" />
         <div className="h-4 w-full rounded bg-neutral-800" />
         <div className="h-4 w-5/6 rounded bg-neutral-800" />
@@ -277,8 +281,8 @@ function progressLabel(positionS: number, durationS: number | null): string | un
 function SkeletonRow({ title }: { title: string }) {
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="px-6 text-lg font-semibold text-neutral-200 sm:px-10">{title}</h2>
-      <div className="flex gap-4 overflow-hidden px-6 sm:px-10">
+      <h2 className="px-4 text-lg font-semibold text-neutral-200 sm:px-10">{title}</h2>
+      <div className="flex gap-4 overflow-hidden px-4 sm:px-10">
         {Array.from({ length: 6 }).map((_, i) => (
           <PosterCardSkeleton key={i} />
         ))}

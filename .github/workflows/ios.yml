@@ -175,6 +175,7 @@ jobs:
         if: inputs.qa_player
         run: |
           brew tap facebook/fb
+          brew trust facebook/fb || true
           brew install idb-companion
           python -m pip install fb-idb
 

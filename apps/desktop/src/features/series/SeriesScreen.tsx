@@ -52,8 +52,8 @@ export function SeriesScreen() {
   );
 
   return (
-    <div className="flex h-full flex-col gap-6 py-8">
-      <h1 className="px-6 text-3xl font-semibold sm:px-10">Series</h1>
+    <div className="flex h-full flex-col gap-4 py-5 sm:gap-6 sm:py-8">
+      <h1 className="px-4 text-2xl font-semibold sm:px-10 sm:text-3xl">Series</h1>
       <CatalogFilterBar kind="tv" filters={filters} onChange={updateFilters} />
       <div className="min-h-0 flex-1">
         <VirtualPosterGrid

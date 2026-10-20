@@ -184,22 +184,22 @@ export function GuideScreen() {
   const nowOffset = ((nowSeconds - windowStart) / WINDOW_SECONDS) * 100;
 
   return (
-    <div className="flex h-full flex-col gap-4 py-8">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-6 sm:px-10">
-        <h1 className="text-3xl font-semibold">Guía</h1>
-        <div className="flex flex-wrap items-center gap-3">
+    <div className="flex h-full flex-col gap-4 py-5 sm:py-8">
+      <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-10">
+        <h1 className="text-2xl font-semibold sm:text-3xl">Guía</h1>
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:gap-3">
           <input
             type="search"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Buscar en la guía…"
             aria-label="Buscar en la guía"
-            className="w-full max-w-56 rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-500"
+            className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus:border-neutral-500 sm:w-56"
           />
           {!searching && (
             <>
               <select
-                className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none"
+                className="min-w-0 flex-1 rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none sm:flex-none"
                 value={categoryId ?? ""}
                 aria-label="Categoría"
                 onChange={(e) => {
@@ -246,9 +246,9 @@ export function GuideScreen() {
       {searching ? (
         <GuideSearchResults query={query.trim()} reminders={reminders} />
       ) : channels.length === 0 ? (
-        <p className="px-6 text-neutral-500 sm:px-10">{channelsQuery.isPending ? "Cargando canales…" : "Sin canales en esta categoría."}</p>
+        <p className="px-4 text-neutral-500 sm:px-10">{channelsQuery.isPending ? "Cargando canales…" : "Sin canales en esta categoría."}</p>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col px-6 sm:px-10">
+        <div className="flex min-h-0 flex-1 flex-col px-4 sm:px-10">
           <div className="mb-2 flex border-b border-neutral-800 pb-2 text-xs text-neutral-500">
             <div className="w-[5.5rem] shrink-0 sm:w-48" />
             <div className="flex flex-1">

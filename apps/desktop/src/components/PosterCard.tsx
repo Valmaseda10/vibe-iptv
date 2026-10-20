@@ -80,7 +80,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
             </div>
           )}
         </div>
-        <div>
+        <div className="w-full min-w-0">
           <p className="truncate text-sm font-medium text-neutral-100">{title}</p>
           {subtitle && <p className="truncate text-xs text-neutral-500">{subtitle}</p>}
         </div>

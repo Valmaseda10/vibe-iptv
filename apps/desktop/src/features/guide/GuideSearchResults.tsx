@@ -26,11 +26,11 @@ export function GuideSearchResults({ query, reminders }: { query: string; remind
   });
   const nowSeconds = Date.now() / 1000;
 
-  if (resultsQuery.isPending) return <p className="px-6 text-neutral-500 sm:px-10">Buscando…</p>;
-  if (results.length === 0) return <p className="px-6 text-neutral-500 sm:px-10">Nada en la guía con «{query}».</p>;
+  if (resultsQuery.isPending) return <p className="px-4 text-neutral-500 sm:px-10">Buscando…</p>;
+  if (results.length === 0) return <p className="px-4 text-neutral-500 sm:px-10">Nada en la guía con «{query}».</p>;
 
   return (
-    <ul className="flex-1 overflow-y-auto px-6 sm:px-10">
+    <ul className="flex-1 overflow-y-auto px-4 sm:px-10">
       {results.map((r) => {
         const airing = r.start_ts <= nowSeconds && r.stop_ts > nowSeconds;
         const reminded = reminders.has(r.channel.id, r.start_ts);

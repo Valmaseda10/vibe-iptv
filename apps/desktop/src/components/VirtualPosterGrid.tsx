@@ -182,7 +182,7 @@ export function VirtualPosterGrid({
 
   if (isInitialLoading && items.length === 0) {
     return (
-      <div className="flex flex-wrap gap-4 px-6 py-4 sm:px-10">
+      <div className="flex flex-wrap gap-4 px-4 py-4 sm:px-10">
         {Array.from({ length: 8 }).map((_, i) => (
           <PosterCardSkeleton key={i} />
         ))}
@@ -191,11 +191,11 @@ export function VirtualPosterGrid({
   }
 
   if (items.length === 0 && !hasMore) {
-    return <p className="px-6 py-10 text-neutral-500 sm:px-10">{emptyMessage}</p>;
+    return <p className="px-4 py-10 text-neutral-500 sm:px-10">{emptyMessage}</p>;
   }
 
   return (
-    <div ref={parentRef} onKeyDown={onKeyDown} onScroll={onScroll} className="h-full overflow-y-auto px-6 sm:px-10">
+    <div ref={parentRef} onKeyDown={onKeyDown} onScroll={onScroll} className="h-full overflow-y-auto overflow-x-hidden px-4 sm:px-10">
       <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
         {virtualRows.map((virtualRow) => {
           const isLoaderRow = virtualRow.index === rowCount - 1 && hasMore;

@@ -154,7 +154,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </button>
       </nav>
 
-      <main ref={mainRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+      <main ref={mainRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
         {children}
       </main>
       <MobileTabBar onSurprise={surpriseMe} surprising={surprising} />

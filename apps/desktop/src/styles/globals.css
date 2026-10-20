@@ -13,7 +13,20 @@ body,
 /* iPhone y iPad (F15): con viewport-fit=cover la página llega bajo la hora, la isla y el
    indicador de inicio. El margen de arriba y de los lados va aquí, para todas las
    pantallas; el de abajo lo pone la barra de pestañas. En el PC todo vale 0. */
+/* Nada se arrastra de lado ni rebota como una web: solo se desplaza el contenido de la
+   pantalla y las filas pensadas para ello (F15, visto en el iPhone). */
+html,
+body {
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Las pantallas fuera del cascarón (cuenta, perfiles) sí pueden necesitar desplazarse en
+   vertical; el cascarón ocupa justo la pantalla y desplaza su propio contenido. */
 #root {
+  overflow-x: hidden;
+  overflow-y: auto;
   box-sizing: border-box;
   padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
@@ -52,8 +65,7 @@ body {
     -webkit-tap-highlight-color: transparent;
     -webkit-touch-callout: none;
   }
-  input,
-  select,
+  input:not([type="checkbox"]):not([type="radio"]),
   textarea {
     font-size: max(16px, 1em);
   }

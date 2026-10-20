@@ -30,8 +30,8 @@ export function FavoritesScreen() {
   }
 
   return (
-    <div className="flex flex-col gap-8 px-6 py-8 sm:px-10">
-      <h1 className="text-3xl font-semibold">Favoritos</h1>
+    <div className="flex flex-col gap-6 px-4 py-5 sm:gap-8 sm:px-10 sm:py-8">
+      <h1 className="text-2xl font-semibold sm:text-3xl">Favoritos</h1>
 
       {isPending && <p className="text-neutral-500">Cargando…</p>}
       {!isPending && channels.length === 0 && movies.length === 0 && series.length === 0 && (

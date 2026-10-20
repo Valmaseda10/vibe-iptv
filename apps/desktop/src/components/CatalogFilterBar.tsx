@@ -72,7 +72,7 @@ export function CatalogFilterBar({
   }
 
   return (
-    <div data-filter-bar onKeyDown={onKeyDown} className="flex flex-wrap items-center gap-3 px-6 sm:px-10">
+    <div data-filter-bar onKeyDown={onKeyDown} className="flex flex-wrap items-center gap-3 px-4 sm:px-10">
       <select
         aria-label="Género"
         className="rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none"
