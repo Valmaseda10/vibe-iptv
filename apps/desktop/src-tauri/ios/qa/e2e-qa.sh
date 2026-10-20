@@ -185,7 +185,7 @@ tap_label "Lista disponible"; sleep 1
 for pair in Directo:/live Películas:/movies Series:/series Buscar:/search; do
   tab=${pair%%:*}; route=${pair#*:}
   go "$tab"
-  check "navegación: «$tab» abre su pantalla" "wait_visible \"ruta:$route\" exacta 8"
+  check "navegación: «${tab}» abre su pantalla" "wait_visible \"ruta:$route\" exacta 8"
 done
 if [ "$W" -lt 768 ]; then
   tap_label "Más" exacta 5; sleep 1; shot menu-mas
