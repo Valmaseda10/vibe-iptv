@@ -435,9 +435,70 @@ fn spawn_tmdb_matching(app: AppHandle) {
 }
 
 async fn fetch_m3u_source(url: &str) -> CmdResult<M3uSource> {
-    let response = reqwest::get(url).await.map_err(|_| format!("no se pudo descargar {}", redact(url)))?;
-    let text = response.text().await.map_err(|_| format!("no se pudo leer {}", redact(url)))?;
+    let text = fetch_m3u_text(url).await?;
     M3uSource::parse(std::io::Cursor::new(text.into_bytes())).map_err(|err| err.to_string())
+}
+
+/// Descarga una lista M3U con la misma identificación de reproductor que el resto de
+/// peticiones al proveedor. Un código de error, o algo que no es una lista, es un error
+/// con el motivo: antes la página de "prohibido" de un panel se leía como una lista vacía
+/// y la validación decía "0 canales, 0 películas, 0 series" como si todo fuera bien.
+async fn fetch_m3u_text(url: &str) -> CmdResult<String> {
+    let client = reqwest::Client::builder()
+        .user_agent(crate::sources::xtream::DEFAULT_USER_AGENT)
+        .build()
+        .map_err(|err| err.to_string())?;
+    let response = client.get(url).send().await.map_err(|_| format!("no se pudo descargar {}", redact(url)))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("el proveedor respondió {status} al pedir la lista {}", redact(url)));
+    }
+    let text = response.text().await.map_err(|_| format!("no se pudo leer {}", redact(url)))?;
+    if !text.trim_start_matches('\u{feff}').trim_start().starts_with("#EXTM3U") {
+        return Err(format!("lo que devuelve {} no es una lista M3U", redact(url)));
+    }
+    Ok(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::routing::get;
+    use axum::Router;
+
+    async fn serve(router: Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn an_m3u_download_rejected_by_the_provider_is_an_error_not_an_empty_list() {
+        let base = serve(
+            Router::new()
+                .route("/prohibido", get(|| async { (StatusCode::FORBIDDEN, "Forbidden") }))
+                .route("/html", get(|| async { "<html>Acceso denegado</html>" }))
+                .route(
+                    "/lista",
+                    get(|headers: HeaderMap| async move {
+                        let ua = headers.get("user-agent").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+                        format!("#EXTM3U\n#EXTINF:-1 group-title=\"G\",{ua}\nhttp://x/1.ts\n")
+                    }),
+                ),
+        )
+        .await;
+
+        let err = fetch_m3u_text(&format!("{base}/prohibido")).await.unwrap_err();
+        assert!(err.contains("403"), "{err}");
+        let err = fetch_m3u_text(&format!("{base}/html")).await.unwrap_err();
+        assert!(err.contains("no es una lista M3U"), "{err}");
+        let text = fetch_m3u_text(&format!("{base}/lista")).await.unwrap();
+        assert!(text.contains(crate::sources::xtream::DEFAULT_USER_AGENT), "la descarga va sin identificarse: {text}");
+    }
 }
 
 /// Proveedores con una sincronización en marcha. Una sincronización se pausa (no se
