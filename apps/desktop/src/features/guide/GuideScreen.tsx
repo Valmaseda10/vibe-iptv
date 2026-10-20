@@ -9,6 +9,7 @@ import { uniqueChannelsByName } from "../../lib/channels";
 import { useReminders } from "../../lib/reminders";
 import { BellIcon } from "../../components/icons";
 import { GuideSearchResults } from "./GuideSearchResults";
+import { LargeTitle } from "../../components/LargeTitle";
 
 const WINDOW_HOURS = 4;
 const WINDOW_SECONDS = WINDOW_HOURS * 3600;
@@ -186,7 +187,7 @@ export function GuideScreen() {
   return (
     <div className="flex h-full flex-col gap-4 py-5 sm:py-8">
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-10">
-        <h1 className="text-2xl font-semibold sm:text-3xl">Guía</h1>
+        <LargeTitle>Guía</LargeTitle>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:gap-3">
           <input
             type="search"

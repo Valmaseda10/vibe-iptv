@@ -6,7 +6,8 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { TrailerModal } from "../../components/TrailerModal";
-import { DETAIL_ACTION } from "../../components/detailAction";
+import { DETAIL_ACTION, PRIMARY_ACTION } from "../../components/detailAction";
+import { FloatingBackButton } from "../../components/FloatingBackButton";
 import { BackdropTrailer } from "../../components/BackdropTrailer";
 import { Row } from "../../components/Row";
 import { PosterCard } from "../../components/PosterCard";
@@ -89,7 +90,8 @@ export function SeriesDetailScreen() {
       </div>
 
       <div className={`relative flex flex-col gap-5 px-4 pb-16 sm:px-10 ${backdrop ? "pt-[26vh]" : "pt-10"}`}>
-        <button type="button" onClick={goBack} className="w-fit text-sm text-neutral-400 outline-none hover:text-neutral-200">
+        <FloatingBackButton onClick={goBack} />
+        <button type="button" onClick={goBack} className="w-fit text-sm text-neutral-400 outline-none hover:text-neutral-200 ios:hidden ios:desk:block">
           ← Volver <span className="pointer-coarse:hidden">(Esc)</span>
         </button>
         {poster && <img src={poster} alt="" className="w-36 rounded-lg shadow-2xl ring-1 ring-white/10 sm:w-44" />}
@@ -106,7 +108,7 @@ export function SeriesDetailScreen() {
             <button
               type="button"
               onClick={() => navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(upNext.id) }, search: { seriesId } })}
-              className="flex w-full items-center justify-center gap-2 rounded-lg bg-white px-6 py-3 font-semibold text-black outline-none hover:bg-neutral-200 sm:w-auto sm:bg-red-600 sm:text-white sm:hover:bg-red-500"
+              className={PRIMARY_ACTION}
             >
               ▶ {startedWatching ? "Continuar" : "Ver"} T{upNext.season} · E{upNext.number}
             </button>

@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { apiGet, apiPost, apiPut, errorMessage } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import { IS_IOS } from "../../lib/platform";
+import { LargeTitle } from "../../components/LargeTitle";
 import type {
   AccountStatus,
   AccountStatusResponse,
@@ -203,7 +204,7 @@ export function SettingsScreen() {
 
   return (
     <div className="mx-auto max-w-3xl p-4 sm:p-8">
-      <h1 className="text-2xl font-semibold sm:text-3xl">Ajustes</h1>
+      <LargeTitle>Ajustes</LargeTitle>
       <p className="mb-6 mt-1 text-xs text-neutral-500">Compilación {__BUILD_ID__}</p>
 
       <BinariesStatusBanner />

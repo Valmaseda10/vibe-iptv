@@ -8,6 +8,7 @@ import type { CategorySummary, ChannelsPage, EpgNowNextResponse } from "../../li
 import { groupChannelsByName, type ChannelGroup } from "../../lib/channels";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
+import { LargeTitle } from "../../components/LargeTitle";
 
 const ROW_HEIGHT = 60;
 const EPG_REFRESH_MS = 60_000;
@@ -120,7 +121,7 @@ export function LiveScreen() {
   return (
     <div className="flex h-full flex-col gap-4 py-5 sm:py-8">
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-10">
-        <h1 className="text-2xl font-semibold sm:text-3xl">Directo</h1>
+        <LargeTitle>Directo</LargeTitle>
         <select
           aria-label="Categoría"
           className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none sm:w-auto"

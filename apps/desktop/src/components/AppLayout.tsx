@@ -159,7 +159,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </button>
       </nav>
 
-      <main ref={mainRef} className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
+      <main ref={mainRef} data-shell-main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
         <div key={pathname} className="page-enter h-full">
           {children}
         </div>

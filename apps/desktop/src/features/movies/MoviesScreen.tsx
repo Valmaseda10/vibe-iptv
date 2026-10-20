@@ -7,6 +7,7 @@ import { CatalogFilterBar, EMPTY_FILTERS, type CatalogFilters, type SortValue } 
 import type { MoviesPage } from "../../lib/api-types";
 import { VirtualPosterGrid } from "../../components/VirtualPosterGrid";
 import { recallScreenState, rememberScreenState } from "../../lib/screenMemory";
+import { LargeTitle } from "../../components/LargeTitle";
 
 type PageParam = { after?: number; afterKey?: string };
 
@@ -58,7 +59,7 @@ export function MoviesScreen() {
 
   return (
     <div className="flex h-full flex-col gap-4 py-5 sm:gap-6 sm:py-8">
-      <h1 className="px-4 text-2xl font-semibold sm:px-10 sm:text-3xl">Películas</h1>
+      <LargeTitle className="px-4 sm:px-10">Películas</LargeTitle>
       <CatalogFilterBar kind="movie" filters={filters} onChange={updateFilters} showQuality />
       <div className="min-h-0 flex-1">
         <VirtualPosterGrid

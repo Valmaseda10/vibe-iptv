@@ -1,6 +1,5 @@
-import { useEffect } from "react";
-import { createPortal } from "react-dom";
 import { useFavorites } from "../lib/favorites";
+import { GlassSheet, SHEET_ROW } from "./GlassSheet";
 import { HeartIcon } from "./icons";
 
 type PosterActionSheetProps = {
@@ -15,8 +14,7 @@ type PosterActionSheetProps = {
 };
 
 /** Hoja de acciones al mantener pulsada una portada (iPhone/iPad, F15), como el menú
- * contextual de Netflix o la app TV: abrir, Mi lista y quitar de "Continuar viendo".
- * Se pinta en `body` para que el `scale` de la tarjeta no la deforme. */
+ * contextual de Netflix o la app TV: abrir, Mi lista y quitar de "Continuar viendo". */
 export function PosterActionSheet({ title, onOpen, onClose, menuItem, favorite, onRemove }: PosterActionSheetProps) {
   const { isFavorite, toggleFavorite } = useFavorites();
   const fav =
@@ -25,51 +23,32 @@ export function PosterActionSheet({ title, onOpen, onClose, menuItem, favorite, 
       ? { isFavorite: isFavorite(menuItem.kind, menuItem.id), onToggle: () => toggleFavorite(menuItem.kind, menuItem.id, !isFavorite(menuItem.kind, menuItem.id)) }
       : undefined);
 
-  useEffect(() => {
-    function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape" || e.key === "Backspace") {
-        e.preventDefault();
-        onClose();
-      }
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [onClose]);
-
   function run(action: () => void) {
     onClose();
     action();
   }
 
-  const itemClass = "flex w-full items-center gap-3 rounded-xl px-4 py-3.5 text-left text-base text-neutral-100 outline-none active:bg-neutral-800 focus-visible:bg-neutral-800";
-
-  return createPortal(
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center" role="dialog" aria-modal="true" aria-label={title}>
-      <button type="button" aria-label="Cerrar" tabIndex={-1} onClick={onClose} className="sheet-fade absolute inset-0 bg-black/60" />
-      <div className="sheet-up relative w-full max-w-md rounded-t-2xl bg-neutral-900 p-2 pb-[calc(0.5rem+env(safe-area-inset-bottom))] shadow-2xl sm:rounded-2xl sm:pb-2">
-        <div className="mx-auto mb-1 mt-1 h-1 w-10 rounded-full bg-neutral-700 sm:hidden" />
-        <p className="truncate px-4 pb-2 pt-2 text-sm font-semibold text-neutral-400">{title}</p>
-        <button type="button" autoFocus onClick={() => run(onOpen)} className={itemClass}>
-          <span className="w-6 text-center">▶</span>
-          Abrir
+  return (
+    <GlassSheet title={title} onClose={onClose}>
+      <button type="button" autoFocus onClick={() => run(onOpen)} className={SHEET_ROW}>
+        <span className="w-6 text-center">▶</span>
+        Abrir
+      </button>
+      {fav && (
+        <button type="button" onClick={() => run(fav.onToggle)} className={SHEET_ROW}>
+          <HeartIcon filled={fav.isFavorite} className={`h-6 w-6 ${fav.isFavorite ? "text-red-500" : ""}`} />
+          {fav.isFavorite ? "Quitar de Mi lista" : "Añadir a Mi lista"}
         </button>
-        {fav && (
-          <button type="button" onClick={() => run(fav.onToggle)} className={itemClass}>
-            <HeartIcon filled={fav.isFavorite} className={`h-6 w-6 ${fav.isFavorite ? "text-red-500" : ""}`} />
-            {fav.isFavorite ? "Quitar de Mi lista" : "Añadir a Mi lista"}
-          </button>
-        )}
-        {onRemove && (
-          <button type="button" onClick={() => run(onRemove)} className={itemClass}>
-            <span className="w-6 text-center">✕</span>
-            Quitar de Continuar viendo
-          </button>
-        )}
-        <button type="button" onClick={onClose} className={`${itemClass} mt-1 justify-center bg-neutral-800/60 font-medium`}>
-          Cancelar
+      )}
+      {onRemove && (
+        <button type="button" onClick={() => run(onRemove)} className={SHEET_ROW}>
+          <span className="w-6 text-center">✕</span>
+          Quitar de Continuar viendo
         </button>
-      </div>
-    </div>,
-    document.body,
+      )}
+      <button type="button" onClick={onClose} className={`${SHEET_ROW} mt-1 justify-center bg-white/10 font-semibold`}>
+        Cancelar
+      </button>
+    </GlassSheet>
   );
 }

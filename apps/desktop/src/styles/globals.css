@@ -4,6 +4,81 @@
    ancho pero muy bajo: ahí sigue la barra de pestañas (F15). */
 @custom-variant desk (@media (min-width: 768px) and (min-height: 560px));
 
+/* "ios": solo en iPhone/iPad (`html.ios`, puesto en `main.tsx`). El rediseño «Liquid
+   Glass» (F15) es solo de iOS: el PC se queda como estaba. */
+@custom-variant ios (&:where(.ios, .ios *));
+
+@theme {
+  --ease-spring: cubic-bezier(0.2, 0.9, 0.3, 1.15);
+  --ease-smooth: cubic-bezier(0.25, 0.8, 0.25, 1);
+  --color-ios-surface-1: #1c1c1e;
+  --color-ios-surface-2: #2c2c2e;
+  --color-ios-label-2: rgb(235 235 245 / 0.6);
+  --color-ios-label-3: rgb(235 235 245 / 0.3);
+  --color-ios-separator: rgb(84 84 88 / 0.6);
+  --color-ios-green: #30d158;
+}
+
+/* Cristal (iOS): solo para lo que flota sobre el contenido — barras, botones flotantes,
+   hojas —, nunca en portadas, filas ni celdas (cada `backdrop-filter` se recompone en
+   cada fotograma de desplazamiento). Un material base y su variante sobre imagen o
+   vídeo. Con «Reducir transparencia» se vuelve casi opaco, no desaparece. */
+@utility glass {
+  background-color: rgb(30 30 32 / 0.55);
+  -webkit-backdrop-filter: blur(24px) saturate(180%);
+  backdrop-filter: blur(24px) saturate(180%);
+  border: 0.5px solid rgb(255 255 255 / 0.14);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.18),
+    inset 0 -1px 0 rgb(0 0 0 / 0.25),
+    0 8px 32px rgb(0 0 0 / 0.45);
+}
+@utility glass-clear {
+  background-color: rgb(255 255 255 / 0.1);
+  -webkit-backdrop-filter: blur(16px) saturate(160%);
+  backdrop-filter: blur(16px) saturate(160%);
+  border: 0.5px solid rgb(255 255 255 / 0.2);
+  box-shadow:
+    inset 0 1px 0 rgb(255 255 255 / 0.22),
+    0 4px 16px rgb(0 0 0 / 0.35);
+}
+/* Mismo aspecto sin desenfoque: para lo que se repite muchas veces (♥/✕ de portadas). */
+@utility glass-lite {
+  background-color: rgb(0 0 0 / 0.45);
+  border: 0.5px solid rgb(255 255 255 / 0.2);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.2);
+}
+@utility glass-pressable {
+  transition:
+    transform 180ms var(--ease-spring),
+    background-color 180ms ease;
+  &:active {
+    transform: scale(0.94);
+    opacity: 1;
+  }
+}
+
+html.ios.reduce-transparency .glass,
+html.ios.reduce-transparency .glass-clear {
+  background-color: rgb(28 28 30 / 0.96);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+@media (prefers-reduced-transparency: reduce) {
+  html.ios .glass,
+  html.ios .glass-clear {
+    background-color: rgb(28 28 30 / 0.96);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+@media (prefers-contrast: more) {
+  html.ios .glass,
+  html.ios .glass-clear {
+    border-color: rgb(255 255 255 / 0.5);
+  }
+}
+
 :root {
   color-scheme: dark;
 }
@@ -41,6 +116,28 @@ body {
     "Segoe UI",
     system-ui,
     -apple-system,
+    sans-serif;
+}
+
+/* iOS sin barra lateral: la barra de pestañas flota sobre el contenido (`MobileTabBar`);
+   lo último de cada pantalla tiene que poder subir por encima de ella. */
+@media (max-width: 767.98px), (max-height: 559.98px) {
+  html.ios [data-shell-main] {
+    padding-bottom: calc(max(10px, env(safe-area-inset-bottom) - 12px) + 74px);
+    scroll-padding-bottom: calc(max(10px, env(safe-area-inset-bottom) - 12px) + 74px);
+  }
+}
+
+/* iOS: negro puro (OLED; el cristal luce más) y la letra del sistema, SF. */
+html.ios,
+html.ios body {
+  background-color: #000;
+}
+html.ios body {
+  font-family:
+    -apple-system,
+    "SF Pro Text",
+    system-ui,
     sans-serif;
 }
 

@@ -4,6 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useActiveProfile } from "../../lib/activeProfile";
 import { apiGet, imagePath, useApiBase } from "../../lib/api-client";
 import type { SearchResults } from "../../lib/api-types";
+import { LargeTitle } from "../../components/LargeTitle";
 
 /** Buscador instantáneo con rebote de 150 ms sobre `GET /api/search` (FTS5). Portadas en
  * vez de una lista de texto plano, y flechas para moverse entre resultados — mismo
@@ -44,7 +45,7 @@ export function SearchScreen() {
 
   return (
     <div className="flex flex-col gap-5 px-4 py-5 sm:gap-6 sm:px-10 sm:py-8">
-      <h1 className="text-2xl font-semibold sm:text-3xl">Buscar</h1>
+      <LargeTitle>Buscar</LargeTitle>
       <input
         autoFocus
         type="search"

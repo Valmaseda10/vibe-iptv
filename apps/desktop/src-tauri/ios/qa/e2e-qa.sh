@@ -96,19 +96,27 @@ check "la barra de pestañas llega abajo del todo" '[ -n "$tab_bottom" ] && [ $(
 for tab in Directo Películas Series Buscar; do
   tap_label "$tab"; sleep 3; shot "pestana-$tab"
 done
-tap_label "Más"; sleep 1; shot "menu-mas"
-tap_label "Guía"; sleep 3; shot "guia"
-tap_label "Más"; sleep 1; tap_label "Ajustes"; sleep 3; shot "ajustes"
+# El simulador pregunta por el dictado la primera vez que se enfoca un campo de texto.
+tap_label "Not Now" exacta 3 >/dev/null; sleep 1
+if [ "$W" -lt 768 ]; then
+  tap_label "Más"; sleep 1; shot "menu-mas"
+  tap_label "Guía"; sleep 3; shot "guia"
+  tap_label "Más"; sleep 1; tap_label "Ajustes"; sleep 3; shot "ajustes"
+else
+  # En el iPad, Guía y Ajustes están en la barra lateral.
+  tap_label "Guía"; sleep 3; shot "guia"
+  tap_label "Ajustes"; sleep 3; shot "ajustes"
+fi
 
 # Película: ficha, reproducir, +30 s, cerrar.
 tap_label "Películas"; sleep 3
 # Mantener pulsada una portada abre el menú de acciones (Mi lista…).
-a11y; xy=$(find_label "Metropolis" contiene)
+a11y; xy=$(find_label "Toy Story" contiene)
 if [ -n "$xy" ]; then set -- $xy; idb ui tap --udid "$UDID" --duration 0.9 "$1" "$2"; fi
 sleep 1; shot menu-mantener
 check "mantener pulsada una portada abre su menú" 'wait_visible "Mi lista" contiene 5'
 tap_label "Cancelar" exacta 5; sleep 1
-tap_label "Metropolis" contiene 10 || tap_label "1927" contiene 5
+tap_label "Toy Story" contiene 10 || tap_label "Del revés" contiene 5
 sleep 3; shot ficha-pelicula
 tap_label "Reproducir" contiene 10
 check "película: se abre el reproductor" 'wait_visible "Cerrar" exacta 25'

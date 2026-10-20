@@ -98,7 +98,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
         }}
         className="flex w-full flex-col gap-2 rounded text-left outline-none"
       >
-        <div className="relative aspect-[2/3] w-full overflow-hidden rounded-lg bg-neutral-800 ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] group-focus-visible:scale-[1.03]">
+        <div className="relative aspect-[2/3] w-full overflow-hidden rounded-lg bg-neutral-800 ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] group-focus-visible:scale-[1.03] ios:rounded-xl ios:bg-ios-surface-1 ios:ring-0">
           {src && !failed ? (
             <img
               src={src}
@@ -125,8 +125,8 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
           )}
         </div>
         <div className="w-full min-w-0">
-          <p className="truncate text-sm font-medium text-neutral-100">{title}</p>
-          {subtitle && <p className="truncate text-xs text-neutral-500">{subtitle}</p>}
+          <p className="truncate text-sm font-medium text-neutral-100 ios:text-[13px] ios:text-white">{title}</p>
+          {subtitle && <p className="truncate text-xs text-neutral-500 ios:text-[12px] ios:text-ios-label-2">{subtitle}</p>}
         </div>
       </button>
 
@@ -139,7 +139,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
           }}
           aria-label={favorite.isFavorite ? "Quitar de favoritos" : "Añadir a favoritos"}
           aria-pressed={favorite.isFavorite}
-          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white outline-none hover:bg-black/80 focus-visible:ring-2 focus-visible:ring-red-500 before:absolute before:-inset-2 before:content-['']"
+          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white outline-none hover:bg-black/80 focus-visible:ring-2 focus-visible:ring-red-500 before:absolute before:-inset-2 before:content-[''] ios:glass-lite ios:h-8 ios:w-8"
         >
           <HeartIcon filled={favorite.isFavorite} className={`h-4 w-4 ${favorite.isFavorite ? "text-red-500" : ""}`} />
         </button>
@@ -153,7 +153,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
             onRemove();
           }}
           aria-label="Quitar de Continuar viendo"
-          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white opacity-0 outline-none transition-opacity hover:bg-black/80 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-red-500 group-hover:opacity-100 pointer-coarse:opacity-100 before:absolute before:-inset-2 before:content-['']"
+          className="absolute right-1.5 top-1.5 flex h-7 w-7 items-center justify-center rounded-full bg-black/60 text-white opacity-0 outline-none transition-opacity hover:bg-black/80 focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-red-500 group-hover:opacity-100 pointer-coarse:opacity-100 before:absolute before:-inset-2 before:content-[''] ios:glass-lite ios:h-8 ios:w-8"
         >
           ✕
         </button>

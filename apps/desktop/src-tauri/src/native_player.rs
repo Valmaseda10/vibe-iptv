@@ -138,6 +138,12 @@ pub fn network_is_metered() -> bool {
     platform::network_is_metered()
 }
 
+/// Comando Tauri: si el sistema pide reducir la transparencia (iOS). En escritorio, `false`.
+#[tauri::command]
+pub fn reduce_transparency() -> bool {
+    platform::reduce_transparency()
+}
+
 #[cfg(target_os = "ios")]
 mod platform {
     use std::ffi::{c_char, CStr, CString};
@@ -153,6 +159,12 @@ mod platform {
         fn vibe_player_present(json: *const c_char);
         fn vibe_network_start();
         fn vibe_network_is_metered() -> bool;
+        fn vibe_reduce_transparency() -> bool;
+    }
+
+    pub fn reduce_transparency() -> bool {
+        // SAFETY: función de Swift sin argumentos; lee un ajuste del sistema.
+        unsafe { vibe_reduce_transparency() }
     }
 
     pub fn network_is_metered() -> bool {
@@ -233,6 +245,10 @@ mod platform {
     pub fn install(_app: tauri::AppHandle) {}
 
     pub fn network_is_metered() -> bool {
+        false
+    }
+
+    pub fn reduce_transparency() -> bool {
         false
     }
 

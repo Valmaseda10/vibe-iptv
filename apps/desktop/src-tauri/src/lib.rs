@@ -108,6 +108,7 @@ pub fn run() {
             ensure_server,
             native_player::native_player_play,
             native_player::network_is_metered,
+            native_player::reduce_transparency,
             commands::qa_e2e_enabled,
             commands::qa_ui_snapshot,
             list_providers,

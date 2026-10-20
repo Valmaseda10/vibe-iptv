@@ -73,6 +73,16 @@ app nuevos por semana.
   abre el reproductor con un vídeo sintético (`ios/qa/prueba.mkv`) y lo maneja con toques
   reales (idb): controles al empezar, se esconden solos, tocar los enseña, +30 s, cerrar,
   y lo mismo en modo directo. Deja capturas y el volcado de accesibilidad de cada paso.
+- **De punta a punta:** con `qa_e2e`, la app de depuración arranca en un iPhone y un iPad
+  simulados con un perfil y el proveedor falso (`tools/proveedor-falso`, en el propio Mac)
+  y `ios/qa/e2e-qa.sh` la recorre con toques: perfil, pestañas, menú "Más", mantener
+  pulsada una portada, ficha, película (+30 s, cerrar) y directo (pausa, "Ir al directo",
+  zapping deslizando), comprobando que la barra de pestañas llega abajo y que nunca hay
+  más de una conexión con el proveedor (R1).
+- **Ver dentro del WebView.** idb solo ve lo nativo (el reproductor): los botones de la
+  página no salen en su árbol de accesibilidad. En modo de pruebas (`VIBE_QA_E2E`, solo en
+  depuración) la página escribe cada medio segundo `qa-ui.json` en los datos de la app
+  con lo que se ve y dónde (`src/lib/qaSnapshot.ts`), y el script lo junta con lo de idb.
 - **Qué saber qué versión hay instalada:** Ajustes de la app ("Compilación ios-N") y
   Ajustes del iPhone → General → Almacenamiento → VIBE IPTV (versión 0.1.0.N).
 

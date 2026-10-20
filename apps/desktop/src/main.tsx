@@ -8,6 +8,7 @@ import { SyncStatusProvider } from "./lib/syncStatus";
 import { onApiBaseChange, recoverApiBase } from "./lib/api-client";
 import { startQaSnapshots } from "./lib/qaSnapshot";
 import { IS_IOS } from "./lib/platform";
+import { invoke } from "@tauri-apps/api/core";
 import "./styles/globals.css";
 
 // Sin esto (`staleTime` a 0 por defecto de TanStack Query) cada vez que se vuelve a
@@ -37,7 +38,19 @@ onApiBaseChange((base) => {
 // iOS solo aplica `:active` (el aspecto de "pulsado") si la página escucha los toques:
 // sin esto, ningún botón reaccionaba al dedo y todo parecía lento.
 document.addEventListener("touchstart", () => {}, { passive: true });
-if (IS_IOS) startQaSnapshots();
+if (IS_IOS) {
+  startQaSnapshots();
+  // Rediseño «Liquid Glass» solo en iOS (ver `globals.css`, variante `ios:`).
+  document.documentElement.classList.add("ios");
+  const applyTransparency = () =>
+    invoke<boolean>("reduce_transparency")
+      .then((reduce) => document.documentElement.classList.toggle("reduce-transparency", reduce))
+      .catch(() => {});
+  applyTransparency();
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible") applyTransparency();
+  });
+}
 
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible") recoverApiBase().catch(() => {});

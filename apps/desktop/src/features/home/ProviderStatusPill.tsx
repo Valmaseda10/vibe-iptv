@@ -40,13 +40,13 @@ export function ProviderStatusPill() {
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-label={ok ? "Lista disponible" : "Sin acceso a la lista"}
-        className="flex items-center gap-1.5 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-neutral-200 outline-none backdrop-blur transition active:scale-95"
+        className="flex items-center gap-1.5 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-neutral-200 outline-none backdrop-blur transition active:scale-95 ios:glass ios:px-3 ios:py-1.5 ios:text-[12px]"
       >
         <span className={`h-2 w-2 rounded-full ${ok ? "bg-emerald-400" : "bg-red-500"}`} />
         {ok ? "Lista disponible" : "Sin acceso"}
       </button>
       {open && (
-        <div role="status" className="absolute right-0 top-full z-30 mt-2 w-72 rounded-xl border border-neutral-800 bg-neutral-900/95 p-3 text-sm shadow-2xl backdrop-blur">
+        <div role="status" className="absolute right-0 top-full z-30 mt-2 w-72 rounded-xl border border-neutral-800 bg-neutral-900/95 p-3 text-sm shadow-2xl backdrop-blur ios:glass ios:rounded-[22px] ios:p-4">
           {ok ? (
             <p className="text-neutral-300">Tu lista responde: los canales, películas y series se pueden reproducir.</p>
           ) : (
