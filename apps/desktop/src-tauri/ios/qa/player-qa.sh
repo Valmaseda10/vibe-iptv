@@ -72,12 +72,11 @@ state_field() {
 ok1=1
 # Primero el estado del reproductor: si idb tarda en responder, los controles ya se habían
 # escondido (a los 4 s) cuando llegaba su respuesta.
-for _ in $(seq 1 50); do
+for _ in $(seq 1 80); do
   if [ "$(state_field controls)" = "True" ]; then ok1=0; break; fi
-  a11y 01-arranque
-  if visible "Cerrar" 01-arranque; then ok1=0; break; fi
-  sleep 0.5
+  sleep 0.3
 done
+if [ $ok1 -ne 0 ]; then a11y 01-arranque; visible "Cerrar" 01-arranque && ok1=0; fi
 a11y 01-arranque
 shot 01-arranque
 check "los controles salen al empezar" '[ $ok1 -eq 0 ]'

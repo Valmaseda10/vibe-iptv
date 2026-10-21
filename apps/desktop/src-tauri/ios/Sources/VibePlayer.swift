@@ -155,6 +155,9 @@ final class VibePlayerController: UIViewController {
     // directo).
     private static let sharedPlayer = VLCMediaPlayer(options: ["--http-reconnect"])
     private let player = VibePlayerController.sharedPlayer
+    /// Sube cada vez que el reproductor empieza algo: un aviso de cierre pendiente sabe así
+    /// si entretanto se abrió otra cosa.
+    private static var playGeneration = 0
     private var request: PlayRequest?
     private var current: Current?
     private var items: [PlayItem] = []
@@ -230,6 +233,8 @@ final class VibePlayerController: UIViewController {
     private var fillScreen = false
     private var savedVideoTrack: Int32?
     private var panMode: PanMode = .none
+    /// Cristal de la barra de abajo (tiempos y progreso): en directo no hay nada que poner.
+    private var bottomGlass: UIView?
     private var panStart: CGFloat = 0
     private var panStartValue: Double = 0
     private let symbolConfig = UIImage.SymbolConfiguration(pointSize: 21, weight: .semibold)
@@ -348,6 +353,7 @@ final class VibePlayerController: UIViewController {
         // Directo sin grabación: no hay nada a lo que ir hacia atrás ni adelante.
         [backButton, forwardButton].forEach { $0.isHidden = item.live && !item.liveBuffer }
         [slider, timeLabel, durationLabel].forEach { $0.isHidden = item.live }
+        bottomGlass?.isHidden = item.live
         backButton.setImage(UIImage(systemName: item.liveBuffer ? "gobackward.30" : "gobackward.10", withConfiguration: bigSymbolConfig), for: .normal)
         backButton.accessibilityLabel = item.liveBuffer ? "Atrás 30 segundos" : "Atrás 10 segundos"
         updateLiveBadge()
@@ -366,6 +372,7 @@ final class VibePlayerController: UIViewController {
         if startSeconds > 1 {
             media.addOption(":start-time=\(Int(startSeconds))")
         }
+        VibePlayerController.playGeneration += 1
         player.media = media
         player.play()
         applyFill()
@@ -396,10 +403,10 @@ final class VibePlayerController: UIViewController {
 
     private func zap(by delta: Int) {
         guard isLive else { return }
-        if let index = currentIndex, !items.isEmpty {
-            let target = index + delta
-            if target >= 0, target < items.count { switchTo(index: target) }
-        } else {
+        if let index = currentIndex, items.count > 1 {
+            // Tras el último canal viene el primero (y al revés), como en TiviMate.
+            switchTo(index: ((index + delta) % items.count + items.count) % items.count)
+        } else if currentIndex == nil {
             sendEvent(["type": "zap", "direction": delta])
         }
     }
@@ -579,7 +586,9 @@ final class VibePlayerController: UIViewController {
         sleepTimer?.invalidate()
         nextCountdown?.invalidate()
         player.stop()
-        if let current = current, current.liveBuffer { releaseLiveBuffer(from: current.url) }
+        if let current = current, current.liveBuffer {
+            VibePlayerController.releaseLiveBufferWhenStopped(current.url, generation: VibePlayerController.playGeneration)
+        }
         removeControlsWindow()
         clearRemoteCommands()
         sendEvent(["type": "closed", "position_s": position, "duration_s": duration, "ended": ended, "id": current?.id ?? NSNull()])
@@ -602,10 +611,28 @@ final class VibePlayerController: UIViewController {
         scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
     }
 
-    /// Pide al núcleo que termine la grabación del directo: así la conexión con el proveedor
-    /// se suelta al momento (regla R1: la cuenta suele admitir una sola). Dice de qué canal
-    /// (`/stream/live-buffer/channel/<id>`): si llegara tarde, no corta el siguiente.
-    private func releaseLiveBuffer(from streamURL: String) {
+    /// Pide al núcleo que termine la grabación del directo, para que la conexión con el
+    /// proveedor se suelte ya (regla R1: la cuenta suele admitir una sola), pero solo cuando
+    /// VLC ha parado de verdad: `stop()` vuelve antes de parar y, si el núcleo cortaba la
+    /// grabación con VLC aún leyendo, `--http-reconnect` la volvía a pedir y quedaba un
+    /// directo abierto sin reproductor hasta cerrar la app (visto en el iPad). Si entretanto
+    /// se abrió otra cosa, no se pide nada: lo nuevo manda.
+    private static func releaseLiveBufferWhenStopped(_ streamURL: String, generation: Int, attempt: Int = 0) {
+        guard generation == playGeneration else { return }
+        let player = sharedPlayer
+        let stopped = player.state == .stopped || player.state == .ended || player.state == .error
+        if !stopped, attempt < 50 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                releaseLiveBufferWhenStopped(streamURL, generation: generation, attempt: attempt + 1)
+            }
+            return
+        }
+        releaseLiveBuffer(from: streamURL)
+    }
+
+    /// Dice de qué canal (`/stream/live-buffer/channel/<id>`): si llegara tarde, el núcleo
+    /// no corta el canal que se abrió después.
+    private static func releaseLiveBuffer(from streamURL: String) {
         guard var components = URLComponents(string: streamURL) else { return }
         let channelId = components.path.split(separator: "/").last.flatMap { Int($0) }
         components.path = "/api/live-buffer"
@@ -1263,6 +1290,7 @@ final class VibePlayerController: UIViewController {
         let bottomGlass = glassWrap(bottomBar, cornerRadius: 24, insets: UIEdgeInsets(top: 6, left: 18, bottom: 6, right: 18))
         bottomGlass.heightAnchor.constraint(equalToConstant: 48).isActive = true
         overlay.addSubview(bottomGlass)
+        self.bottomGlass = bottomGlass
 
         spinner.color = .white
         spinner.hidesWhenStopped = true

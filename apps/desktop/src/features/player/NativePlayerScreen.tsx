@@ -3,7 +3,7 @@ import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { apiDelete, apiGetOrNull, apiPost, errorMessage, useApiBase } from "../../lib/api-client";
+import { apiGetOrNull, apiPost, errorMessage, useApiBase } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type {
   ChannelsPage,
@@ -266,9 +266,8 @@ export function NativePlayerScreen() {
           const saved = saveProgress(position, payload.duration_s, payload.id);
           playedPathRef.current = null;
           lastRequestRef.current = null;
-          // Suelta ya la conexión con el proveedor: la grabación del directo no tiene que
-          // esperar a quedarse sin lectores.
-          if (latest.kind === "channel") apiDelete(`/api/live-buffer?channel_id=${payload.id ?? latest.itemId}`).catch(() => {});
+          // La grabación del directo la suelta el propio reproductor (VibePlayer.swift) en
+          // cuanto VLC ha parado: pedirlo desde aquí, antes, hacía que VLC reconectara.
           latest.goBack();
           // Lo visto cambia la ficha ("Continuar", "Quedan N min"), Inicio y los recientes:
           // sin esto, la ficha seguía con los datos de antes de ver nada.
@@ -293,7 +292,8 @@ export function NativePlayerScreen() {
         case "zap": {
           const list = latest.channels ?? [];
           const index = list.findIndex((c) => c.id === latest.itemId);
-          const target = index === -1 ? undefined : list[index + payload.direction];
+          // Tras el último canal viene el primero (y al revés), como en TiviMate.
+          const target = index === -1 || list.length < 2 ? undefined : list[(((index + payload.direction) % list.length) + list.length) % list.length];
           if (target) {
             navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(target.id) }, search: { categoryId: latest.search.categoryId } });
           }

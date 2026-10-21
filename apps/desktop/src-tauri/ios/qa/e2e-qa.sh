@@ -185,11 +185,24 @@ player_time() { player_field position; }
 player_titles() { echo "$(player_field title)|$(player_field subtitle)"; }
 # Enseña los controles del reproductor si están escondidos (un toque los alterna, así que
 # se mira antes y se comprueba después).
+tap_video() {
+  local uw uh
+  read -r uw uh < <(ui_size)
+  tap_point $((uw / 2)) $((uh / 4))
+}
 show_controls() {
   player_open || return 1
   for _ in 1 2 3; do
     [ "$(player_field controls)" = "True" ] && return 0
-    idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1
+    tap_video; sleep 1
+  done
+  return 1
+}
+# Abre la lista del reproductor (canales o episodios), comprobándolo.
+open_list() {
+  for _ in 1 2 3; do
+    player_tap "Lista"; sleep 2
+    [ "$(player_field list)" = "True" ] && return 0
   done
   return 1
 }
@@ -206,7 +219,7 @@ player_tap() {
   done
   if [ -z "$xy" ]; then echo "  (no encontré «${1}» en el reproductor)"; return 1; fi
   if [ "$(player_field controls)" != "True" ]; then
-    idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 0.6
+    tap_video; sleep 0.6
     a11y; xy=$(find_label "$1" "$mode"); [ -n "$xy" ] || return 1
   fi
   set -- $xy
@@ -259,6 +272,7 @@ go() {
 back() { tap_label "Volver" contiene 5; sleep 3; }
 
 bundle=$(/usr/libexec/PlistBuddy -c "Print CFBundleIdentifier" "$APP/Info.plist")
+xcrun simctl uninstall "$UDID" "$bundle" >/dev/null 2>&1 || true
 xcrun simctl install "$UDID" "$APP"
 SIMCTL_CHILD_VIBE_QA_E2E=1 SIMCTL_CHILD_VIBE_QA_PROVIDER_URL="http://127.0.0.1:8899" SIMCTL_CHILD_RUST_BACKTRACE=1 \
   xcrun simctl launch "$UDID" "$bundle" >/dev/null
@@ -398,7 +412,7 @@ tap_label "Ver T1 · E1" contiene 5
 check "serie: se abre el episodio" 'wait_player_open 25'
 check "episodio: el reproductor dice qué episodio es" 'wait_player_text "S01E01" 10'
 sleep 3
-player_tap "Lista"; sleep 2; shot lista-episodios
+open_list; shot lista-episodios
 check "episodio: la lista del reproductor enseña los episodios" 'wait_native "S01E02" 5 && [ "$(player_field list)" = "True" ]'
 tap_label "S01E02" contiene 5; sleep 5
 check "episodio: elegir otro en la lista lo reproduce" 'wait_player_text "S01E02" 8 && wait_visible "ruta:/player/episode/" contiene 5'
@@ -422,7 +436,7 @@ check "directo: tras la pausa va por detrás del directo" '[ "$(player_field beh
 player_tap "Ir al directo" contiene; sleep 4
 check "directo: «Ir al directo» vuelve al directo" '[ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ]'
 before=$(player_titles)
-player_tap "Lista"; sleep 2; shot lista-canales
+open_list; shot lista-canales
 check "directo: la lista de canales se abre en el reproductor" 'wait_native "La 2" 5 && [ "$(player_field list)" = "True" ]'
 tap_label "La 2" contiene 5; sleep 6
 after=$(player_titles)
@@ -433,6 +447,11 @@ check "directo: una sola conexión tras cambiar de canal" '[ "$(active_cons)" -l
 before=$(player_titles)
 a11y; read -r UW UH < <(ui_size)
 if [ "$(player_field list)" = "True" ]; then tap_point $((UW / 6)) $((UH / 2)); sleep 1.5; fi
+# Con los controles escondidos, como al ver la tele: un toque en el vídeo los alterna.
+for _ in 1 2 3; do
+  [ "$(player_field controls)" = "True" ] || break
+  tap_video; sleep 1.5
+done
 ui_swipe $((UW / 2)) $((UH * 7 / 10)) $((UW / 2)) $((UH * 3 / 10)); sleep 6
 after=$(player_titles); shot directo-tras-zapping
 echo "  zapping: «${before}» → «${after}»"
@@ -441,6 +460,9 @@ check "directo: una sola conexión tras el zapping" '[ "$(active_cons)" -le 1 ]'
 close_player; sleep 2
 check "directo: cerrar vuelve a la lista de canales" 'wait_player_closed 10 && wait_visible "ruta:/live" exacta 8'
 check "directo: al cerrar se suelta la conexión" 'wait_cons_zero'
+# Y no vuelve a abrirse sola: VLC reconectaba si el núcleo cortaba antes de que parase.
+sleep 10
+check "directo: la conexión sigue cerrada después" '[ "$(active_cons)" = "0" ]'
 check "directo: el canal visto sale en «Recientes»" 'wait_visible "Recientes" exacta 8'
 
 # ───────── 8. Buscar ─────────

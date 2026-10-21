@@ -1692,6 +1692,15 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
   - *Guía en el iPhone:* 2 horas a la vista en vez de 4, y sin el marco rojo al tocar.
   - *Directo en el iPhone:* el selector «Fuente» de un canal con varias fuentes se salía
     de la pantalla.
+  - *Un directo se quedaba abierto sin reproductor* (visto en el iPad, hasta cerrar la
+    app; bloqueaba además la sincronización). `stop()` de VLCKit vuelve antes de parar: el
+    aviso de soltar la grabación llegaba con VLC aún leyendo, el núcleo cortaba y
+    `--http-reconnect` volvía a pedir el canal. Con un reproductor que ya no se libera, esa
+    reconexión quedaba viva. Ahora lo pide solo el reproductor nativo, cuando VLC ha parado
+    de verdad (y no si entretanto se abrió otra cosa), y dice de qué canal es. La prueba
+    comprueba también que la conexión sigue cerrada 10 s después.
+  - *Zapping:* después del último canal viene el primero (y al revés), como en TiviMate.
+  - *Directo:* sin la barra de cristal vacía abajo (no hay tiempos que enseñar).
 
 ## Deuda técnica conocida desde el diseño
 
