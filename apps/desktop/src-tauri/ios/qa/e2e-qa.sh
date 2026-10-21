@@ -69,6 +69,27 @@ if found:
     print(f"{f.get('x', 0) + f.get('width', 0) / 2:.0f} {f.get('y', 0) + f.get('height', 0) / 2:.0f} {f.get('y', 0) + f.get('height', 0):.0f}")
 PY
 }
+# idb da los marcos en las coordenadas de la interfaz, pero toca en las de la pantalla en
+# vertical: con el reproductor del iPhone en horizontal no coinciden (el borde de arriba de
+# la interfaz queda a la derecha de la pantalla). Esto pasa de unas a otras.
+ui_is_landscape() {
+  python3 -c "import json,sys; f=json.load(open('$OUT/a11y-nativo.json'))[0]['frame']; sys.exit(0 if f['width'] > f['height'] else 1)" 2>/dev/null \
+    && [ "$W" -lt "$H" ]
+}
+tap_point() {
+  local x=${1%.*} y=${2%.*}
+  if ui_is_landscape; then idb ui tap --udid "$UDID" $((W - y)) "$x"; else idb ui tap --udid "$UDID" "$x" "$y"; fi
+}
+# Arrastre en coordenadas de la interfaz (x1 y1 → x2 y2).
+ui_swipe() {
+  if ui_is_landscape; then
+    idb ui swipe --udid "$UDID" $((W - $2)) "$1" $((W - $4)) "$3" 2>/dev/null
+  else
+    idb ui swipe --udid "$UDID" "$1" "$2" "$3" "$4" 2>/dev/null
+  fi
+}
+# Tamaño de la interfaz ahora mismo (en horizontal, ancho y alto cambian).
+ui_size() { python3 -c "import json; f=json.load(open('$OUT/a11y-nativo.json'))[0]['frame']; print(int(f['width']), int(f['height']))" 2>/dev/null || echo "$W $H"; }
 tap_label() {
   local xy
   for _ in $(seq 1 "${3:-15}"); do
@@ -76,12 +97,12 @@ tap_label() {
     xy=$(find_label "$1" "${2:-exacta}")
     if [ -n "$xy" ]; then
       set -- $xy
-      idb ui tap --udid "$UDID" "$1" "$2"
+      tap_point "$1" "$2"
       return 0
     fi
     sleep 1
   done
-  echo "  (no encontré «$1»)"
+  echo "  (no encontré «${1}»)"
   return 1
 }
 # Mantener pulsado (menú de una portada).
@@ -148,8 +169,34 @@ show_controls() {
   done
   return 1
 }
-# Toca un botón del reproductor (con los controles a la vista).
-player_tap() { show_controls; tap_label "$1" exacta 5; }
+# Toca un botón del reproductor. Primero busca dónde está (con los controles a la vista) y,
+# justo antes de tocar, comprueba que no se han escondido mientras tanto (se esconden a los
+# 4 s): si no, el toque caía en el vídeo y solo volvía a enseñar los controles.
+player_tap() {
+  local xy="" mode="${2:-exacta}"
+  for _ in 1 2 3; do
+    show_controls
+    a11y; xy=$(find_label "$1" "$mode")
+    [ -n "$xy" ] && break
+    sleep 0.5
+  done
+  if [ -z "$xy" ]; then echo "  (no encontré «${1}» en el reproductor)"; return 1; fi
+  [ "$(player_field controls)" = "True" ] || { idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 0.6; }
+  set -- $xy
+  tap_point "$1" "$2"
+}
+
+app_alive() { xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -q "UIKitApplication:$bundle"; }
+section() {
+  echo "-- $1"
+  if ! app_alive; then
+    echo "MAL  la app se cerró sola (antes de «${1}»)"; fail=1; shot "app-cerrada"
+    SIMCTL_CHILD_VIBE_QA_E2E=1 SIMCTL_CHILD_VIBE_QA_PROVIDER_URL="http://127.0.0.1:8899" SIMCTL_CHILD_RUST_BACKTRACE=1 \
+      xcrun simctl launch "$UDID" "$bundle" >/dev/null
+    sleep 10
+    tap_label "QA" contiene 20; sleep 4
+  fi
+}
 
 # Navegación: pestañas en el iPhone; en el iPad todo está en la barra lateral.
 go() {
@@ -202,6 +249,7 @@ check "inicio: «Comprobar otra vez» sigue diciendo que responde" 'wait_visible
 tap_label "Lista disponible"; sleep 1
 
 # ───────── 2. Navegación por todas las pantallas ─────────
+section "navegación"
 for pair in Directo:/live Películas:/movies Series:/series Buscar:/search; do
   tab=${pair%%:*}; route=${pair#*:}
   go "$tab"
@@ -222,6 +270,7 @@ go Favoritos
 check "favoritos: vacío al principio" 'wait_visible "Todavía no has marcado nada" contiene 8'
 
 # ───────── 3. Mi lista desde el menú de una portada ─────────
+section "mi lista"
 go Películas
 check "películas: la rejilla carga" 'wait_visible "Toy Story" contiene 20'
 long_press "Toy Story" contiene; sleep 1; shot menu-mantener
@@ -236,6 +285,7 @@ go Inicio
 check "inicio: aparece la fila «Mi lista»" 'wait_visible "Mi lista" exacta 10'
 
 # ───────── 4. Ficha y reproducción de una película ─────────
+section "película"
 go Películas
 tap_label "Toy Story" contiene 10; sleep 3; shot ficha-pelicula
 check "ficha: sabe que está en Mi lista" 'wait_visible "En mi lista" contiene 8'
@@ -272,6 +322,7 @@ check "película: «Continuar» retoma donde se dejó" 'wait_player_open 25 && s
 player_tap "Cerrar"; sleep 3; wait_player_closed 10
 
 # ───────── 5. Continuar viendo ─────────
+section "continuar viendo"
 go Inicio
 check "inicio: la película sale en «Continuar viendo»" 'wait_visible "Continuar viendo" exacta 10'
 long_press "Toy Story" contiene; sleep 1
@@ -283,6 +334,7 @@ tap_label "Quitar de Mi lista" ultima 3; sleep 2
 check "mi lista: quitarla vacía la fila" 'wait_gone "Mi lista" exacta 8'
 
 # ───────── 6. Serie: temporadas, episodios y lista dentro del reproductor ─────────
+section "serie"
 go Series
 tap_label "Breaking Bad" contiene 10; sleep 3; shot ficha-serie
 check "serie: la ficha ofrece «Ver T1 · E1»" 'wait_visible "Ver T1 · E1" contiene 10'
@@ -306,6 +358,7 @@ player_tap "Cerrar"; sleep 3
 check "episodio: cerrar vuelve a la ficha de la serie" 'wait_player_closed 10 && wait_visible "ruta:/series/" contiene 8'
 
 # ───────── 7. Directo: pausa, ir al directo, lista de canales y zapping ─────────
+section "directo"
 go Directo
 tap_label "Reloj" contiene 10
 check "directo: se abre el reproductor" 'wait_player_open 25'
@@ -317,7 +370,7 @@ player_tap "Reproducir o pausar"; sleep 3
 shot directo-tras-pausa
 echo "  retraso tras 12 s de pausa: $(player_field behind)s"
 check "directo: tras la pausa va por detrás del directo" '[ "$(player_field behind)" -ge 8 ] && wait_native "Ir al directo" 5'
-player_tap "Ir al directo"; sleep 4
+player_tap "Ir al directo" contiene; sleep 4
 check "directo: «Ir al directo» vuelve al directo" '[ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ]'
 before=$(player_titles)
 player_tap "Lista"; sleep 2; shot lista-canales
@@ -329,7 +382,8 @@ check "directo: elegir un canal de la lista cambia de canal" 'wait_player_text "
 check "directo: el canal nuevo se reproduce" '[ "$(player_field playing)" = "True" ]'
 check "directo: una sola conexión tras cambiar de canal" '[ "$(active_cons)" -le 1 ]'
 before=$(player_titles)
-idb ui swipe --udid "$UDID" $((W / 2)) $((H * 2 / 3)) $((W / 2)) $((H / 3)) 2>/dev/null; sleep 6
+a11y; read -r UW UH < <(ui_size)
+ui_swipe $((UW / 2)) $((UH * 3 / 4)) $((UW / 2)) $((UH / 4)); sleep 6
 after=$(player_titles); shot directo-tras-zapping
 echo "  zapping: «${before}» → «${after}»"
 check "directo: deslizar hacia arriba cambia de canal" 'player_open && [ "$before" != "$after" ]'
@@ -340,6 +394,7 @@ check "directo: al cerrar se suelta la conexión" 'wait_cons_zero'
 check "directo: el canal visto sale en «Recientes»" 'wait_visible "Recientes" exacta 8'
 
 # ───────── 8. Buscar ─────────
+section "buscar"
 go Buscar
 tap_label "Campo de búsqueda" exacta 5; sleep 1
 tap_label "Not Now" exacta 2 >/dev/null; sleep 1
@@ -357,6 +412,7 @@ if [ "$W" -lt 768 ]; then
 fi
 
 # ───────── 9. Ajustes: sincronizar y eliminar (sin borrar) ─────────
+section "ajustes"
 go Ajustes
 check "ajustes: enseña la compilación" 'wait_visible "Compilación" contiene 5'
 check "ajustes: lista el proveedor" 'wait_visible "Proveedor de pruebas" contiene 8'
@@ -371,6 +427,7 @@ idb ui swipe --udid "$UDID" $((W / 2)) $((H * 3 / 4)) $((W / 2)) $((H / 4)) 2>/d
 shot ajustes-abajo
 
 # ───────── 10. Cambiar de perfil ─────────
+section "perfiles"
 if [ "$W" -lt 768 ]; then
   tap_label "Más" exacta 5; sleep 1
   tap_label "Cambiar de perfil" contiene 5; sleep 2
@@ -380,10 +437,12 @@ if [ "$W" -lt 768 ]; then
 fi
 
 # ───────── 11. Segundo plano: la app sigue funcionando al volver ─────────
+section "segundo plano"
 idb ui button --udid "$UDID" HOME 2>/dev/null; sleep 25
 xcrun simctl launch "$UDID" "$bundle" >/dev/null; sleep 4
 go Películas
 check "segundo plano: al volver, el catálogo sigue cargando" 'wait_visible "Toy Story" contiene 15'
+section "fin"
 shot fin
 
 xcrun simctl spawn "$UDID" log show --last 15m --predicate "process CONTAINS 'VIBE'" > "$OUT/log.txt" 2>/dev/null || true

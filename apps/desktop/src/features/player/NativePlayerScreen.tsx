@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { apiDelete, apiGetOrNull, apiPost, errorMessage, useApiBase } from "../../lib/api-client";
@@ -62,6 +62,7 @@ export function NativePlayerScreen() {
   const { kind, id } = useParams({ from: "/player/$kind/$id" }) as { kind: Kind; id: string };
   const search = useSearch({ from: "/player/$kind/$id" });
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { data: base } = useApiBase();
   const { profileId } = useActiveProfile();
   const itemId = Number(id);
@@ -244,8 +245,8 @@ export function NativePlayerScreen() {
       // El reproductor dice a qué episodio se refiere: tras un cambio dentro de él, la
       // interfaz puede ir un instante por detrás.
       const itemId = eventId ?? latestRef.current.itemId;
-      if (kind === "channel" || profileId === null || position <= 0) return;
-      apiPost("/api/playback/progress", {
+      if (kind === "channel" || profileId === null || position <= 0) return Promise.resolve();
+      return apiPost("/api/playback/progress", {
         profile_id: profileId,
         item_kind: kind,
         item_id: itemId,
@@ -262,13 +263,16 @@ export function NativePlayerScreen() {
           break;
         case "closed": {
           const position = payload.ended && payload.duration_s ? payload.duration_s : payload.position_s;
-          saveProgress(position, payload.duration_s, payload.id);
+          const saved = saveProgress(position, payload.duration_s, payload.id);
           playedPathRef.current = null;
           lastRequestRef.current = null;
           // Suelta ya la conexión con el proveedor: la grabación del directo no tiene que
           // esperar a quedarse sin lectores.
           if (latest.kind === "channel") apiDelete("/api/live-buffer").catch(() => {});
           latest.goBack();
+          // Lo visto cambia la ficha ("Continuar", "Quedan N min"), Inicio y los recientes:
+          // sin esto, la ficha seguía con los datos de antes de ver nada.
+          saved.finally(() => queryClient.invalidateQueries());
           break;
         }
         case "switched": {
@@ -315,7 +319,7 @@ export function NativePlayerScreen() {
     return () => {
       unlisten.then((stop) => stop());
     };
-  }, [navigate]);
+  }, [navigate, queryClient]);
 
   return (
     <div className="flex h-full min-h-screen flex-col items-center justify-center gap-4 bg-black px-4 text-center text-neutral-300">

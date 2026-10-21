@@ -241,6 +241,10 @@ jobs:
             idb connect localhost "$port" || true
             idb list-targets 2>/dev/null | grep -i booted || true
             bash src-tauri/ios/qa/e2e-qa.sh "$device" "$app" "$RUNNER_TEMP/qa-e2e/$kind" || status=1
+            # Si la app se cerró sola, el informe de fallo del sistema dice dónde.
+            mkdir -p "$RUNNER_TEMP/qa-e2e/$kind/informes-de-fallo"
+            find ~/Library/Logs/DiagnosticReports -iname "*vibe*" -exec cp {} "$RUNNER_TEMP/qa-e2e/$kind/informes-de-fallo/" \; 2>/dev/null || true
+            ls "$RUNNER_TEMP/qa-e2e/$kind/informes-de-fallo" || true
             xcrun simctl shutdown "$device" || true
           done
           exit $status

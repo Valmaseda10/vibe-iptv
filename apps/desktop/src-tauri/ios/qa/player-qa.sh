@@ -22,10 +22,19 @@ try:
     items = json.load(open(sys.argv[1]))
 except Exception:
     sys.exit(0)
+# El reproductor pone el iPhone en horizontal: idb da los marcos en coordenadas de la
+# interfaz pero toca en las de la pantalla en vertical. Se devuelven ya en las de tocar.
+root = (items[0].get("frame") or {}) if items else {}
+landscape = root.get("width", 0) > root.get("height", 0)
+portrait_w = root.get("height", 0)
 for it in items:
     if (it.get("AXLabel") or "") == sys.argv[2]:
         f = it.get("frame") or {}
-        print(f"{f.get('x', 0) + f.get('width', 0) / 2:.0f} {f.get('y', 0) + f.get('height', 0) / 2:.0f}")
+        x = f.get('x', 0) + f.get('width', 0) / 2
+        y = f.get('y', 0) + f.get('height', 0) / 2
+        if landscape:
+            x, y = portrait_w - y, x
+        print(f"{x:.0f} {y:.0f}")
         break
 PY
 }
