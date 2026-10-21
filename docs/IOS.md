@@ -120,7 +120,18 @@ que se repite). Reglas:
   y `ios/qa/e2e-qa.sh` la recorre con toques: perfil, pestañas, menú "Más", mantener
   pulsada una portada, ficha, película (+30 s, cerrar) y directo (pausa, "Ir al directo",
   zapping deslizando), comprobando que la barra de pestañas llega abajo y que nunca hay
-  más de una conexión con el proveedor (R1).
+  más de una conexión con el proveedor (R1). Son ~70 comprobaciones por aparato, en
+  secciones (perfil, navegación, Mi lista, película, continuar viendo, serie, directo,
+  Buscar, Ajustes, perfiles, segundo plano). Cada sección mira antes si la app se cerró
+  sola (lo apunta como fallo y la vuelve a abrir) o si quedó el reproductor abierto (lo
+  cierra), para que un fallo no arrastre al resto. Los informes de fallo del sistema se
+  guardan con las capturas.
+- **Estado exacto del reproductor.** En modo de pruebas, `VibePlayer.swift` escribe cada
+  medio segundo `qa-player.json` (posición, pausa, retraso del directo, título, controles,
+  lista y tamaño de la interfaz): la prueba comprueba con eso, no con lo que idb crea ver,
+  y gira sus toques cuando el iPhone está en horizontal (idb toca en coordenadas de la
+  pantalla en vertical). En la prueba de punta a punta los controles tardan 15 s en
+  esconderse en vez de 4: cada consulta a idb tarda 2 o 3 s.
 - **Ver dentro del WebView.** idb solo ve lo nativo (el reproductor): los botones de la
   página no salen en su árbol de accesibilidad. En modo de pruebas (`VIBE_QA_E2E`, solo en
   depuración) la página escribe cada medio segundo `qa-ui.json` en los datos de la app

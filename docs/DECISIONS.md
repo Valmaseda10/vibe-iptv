@@ -1676,6 +1676,22 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
   iOS 26. Se documenta SideStore con renovación diaria por Atajos (ver `docs/IOS.md`).
 - **Pruebas:** la de punta a punta ahora ve dentro del WebView (`qaSnapshot.ts`), porque
   idb solo veía lo nativo.
+- **Fallos que encontró la prueba de interacción y se corrigieron:**
+  - *La app se cerraba al cerrar un directo* (EXC_BAD_ACCESS en `vlc_http_dbg`): cada
+    `VLCMediaPlayer` creado con opciones tiene su propia instancia de libVLC, que se
+    liberaba al cerrar mientras un hilo de red de VLC seguía escribiendo en su registro.
+    Ahora hay un solo reproductor de VLC para toda la vida de la app, que nunca se libera.
+  - *El iPhone se quedaba en horizontal* al cerrar el reproductor: se pide volver a la
+    orientación del aparato al cerrarlo.
+  - *El directo tardaba hasta 30 s en soltar la conexión* si la interfaz web no llegaba a
+    pedirlo: el reproductor nativo pide él mismo `DELETE /api/live-buffer` al cerrar.
+  - *La ficha seguía diciendo «Reproducir»* tras ver un rato: se refresca cuando el
+    progreso ya está guardado, y el progreso de cada episodio va con su id.
+  - *Un 416 del proveedor* (pedir más allá del final) se trataba como proveedor caído:
+    ahora se pasa tal cual a VLC.
+  - *Guía en el iPhone:* 2 horas a la vista en vez de 4, y sin el marco rojo al tocar.
+  - *Directo en el iPhone:* el selector «Fuente» de un canal con varias fuentes se salía
+    de la pantalla.
 
 ## Deuda técnica conocida desde el diseño
 
