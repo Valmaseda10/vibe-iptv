@@ -147,7 +147,14 @@ final class VibePlayerController: UIViewController {
     }
 
     // `--http-reconnect`: un directo IPTV se corta a menudo un instante; VLC reabre solo.
-    private let player = VLCMediaPlayer(options: ["--http-reconnect"])
+    //
+    // Uno solo para toda la vida de la app, nunca liberado: creado con opciones, VLC le da
+    // su propia instancia de libVLC y la liberaba al cerrar el reproductor; si uno de sus
+    // hilos de red seguía vivo, escribía en el registro de esa instancia ya liberada y la
+    // app se cerraba (EXC_BAD_ACCESS en `vlc_http_dbg`, visto en el simulador al cerrar un
+    // directo).
+    private static let sharedPlayer = VLCMediaPlayer(options: ["--http-reconnect"])
+    private let player = VibePlayerController.sharedPlayer
     private var request: PlayRequest?
     private var current: Current?
     private var items: [PlayItem] = []
@@ -251,6 +258,8 @@ final class VibePlayerController: UIViewController {
         videoView.isUserInteractionEnabled = false
         view.addSubview(videoView)
         player.drawable = videoView
+        // El reproductor se reutiliza: lo de la vez anterior no se arrastra.
+        player.rate = 1
         NSLayoutConstraint.activate([
             videoView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             videoView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
@@ -566,10 +575,40 @@ final class VibePlayerController: UIViewController {
         sleepTimer?.invalidate()
         nextCountdown?.invalidate()
         player.stop()
+        if let current = current, current.liveBuffer { releaseLiveBuffer(from: current.url) }
         removeControlsWindow()
         clearRemoteCommands()
         sendEvent(["type": "closed", "position_s": position, "duration_s": duration, "ended": ended, "id": current?.id ?? NSNull()])
-        dismiss(animated: true)
+        dismiss(animated: true) { VibePlayerController.restoreOrientation() }
+    }
+
+    /// En el iPhone el reproductor va en horizontal; al cerrarlo, la app vuelve a como se
+    /// sujeta el teléfono (en vertical si no se sabe). Sin esto, toda la app se quedaba
+    /// tumbada después de ver algo (visto en el simulador).
+    static func restoreOrientation() {
+        guard UIDevice.current.userInterfaceIdiom == .phone,
+              let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
+        let mask: UIInterfaceOrientationMask
+        switch UIDevice.current.orientation {
+        case .landscapeLeft: mask = .landscapeRight
+        case .landscapeRight: mask = .landscapeLeft
+        default: mask = .portrait
+        }
+        scene.windows.forEach { $0.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations() }
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: mask)) { _ in }
+    }
+
+    /// Pide al núcleo que termine la grabación del directo: así la conexión con el proveedor
+    /// se suelta al momento (regla R1: la cuenta suele admitir una sola).
+    private func releaseLiveBuffer(from streamURL: String) {
+        guard var components = URLComponents(string: streamURL) else { return }
+        components.path = "/api/live-buffer"
+        components.query = nil
+        guard let url = components.url else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "DELETE"
+        request.timeoutInterval = 5
+        URLSession.shared.dataTask(with: request).resume()
     }
 
     // MARK: - Capítulos: saltar intro y siguiente episodio

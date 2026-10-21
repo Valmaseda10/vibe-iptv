@@ -186,7 +186,9 @@ player_tap() {
   tap_point "$1" "$2"
 }
 
-app_alive() { xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep -q "UIKitApplication:$bundle"; }
+# Sin `grep -q` en tubería: con `pipefail`, grep cierra pronto, launchctl muere por SIGPIPE
+# y la comprobación fallaba aunque la app estuviera abierta.
+app_alive() { [ -n "$(xcrun simctl spawn "$UDID" launchctl list 2>/dev/null | grep "UIKitApplication:$bundle")" ]; }
 section() {
   echo "-- $1"
   if ! app_alive; then
@@ -326,8 +328,9 @@ section "continuar viendo"
 go Inicio
 check "inicio: la película sale en «Continuar viendo»" 'wait_visible "Continuar viendo" exacta 10'
 long_press "Toy Story" contiene; sleep 1
-check "continuar viendo: el menú permite quitarla" 'wait_visible "Quitar de Continuar viendo" exacta 5'
-tap_label "Quitar de Continuar viendo" ultima 3; sleep 2
+# El botón de la hoja lleva el ✕ delante; el ✕ de la portada (debajo de la hoja) no.
+check "continuar viendo: el menú permite quitarla" 'wait_visible "✕ Quitar de Continuar viendo" exacta 5'
+tap_label "✕ Quitar de Continuar viendo" exacta 3; sleep 2
 check "continuar viendo: desaparece al quitarla" 'wait_gone "Continuar viendo" exacta 8'
 long_press "Toy Story" contiene; sleep 1
 tap_label "Quitar de Mi lista" ultima 3; sleep 2
