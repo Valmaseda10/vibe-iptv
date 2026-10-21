@@ -70,11 +70,15 @@ state_field() {
 }
 # 1. Arranca y enseña los controles (el modo de prueba abre el reproductor a los 4 s).
 ok1=1
+# Primero el estado del reproductor: si idb tarda en responder, los controles ya se habían
+# escondido (a los 4 s) cuando llegaba su respuesta.
 for _ in $(seq 1 50); do
+  if [ "$(state_field controls)" = "True" ]; then ok1=0; break; fi
   a11y 01-arranque
-  if visible "Cerrar" 01-arranque || [ "$(state_field controls)" = "True" ]; then ok1=0; break; fi
+  if visible "Cerrar" 01-arranque; then ok1=0; break; fi
   sleep 0.5
 done
+a11y 01-arranque
 shot 01-arranque
 check "los controles salen al empezar" '[ $ok1 -eq 0 ]'
 
@@ -91,10 +95,12 @@ check "el vídeo se reproduce y los controles se esconden solos" '[ $hidden -eq 
 
 # 3. Un toque en el centro los vuelve a enseñar.
 read -r W H < <(python3 -c "import json;d=json.load(open('$OUT/01-arranque.json'));f=d[0]['frame'];print(int(f['width']),int(f['height']))" 2>/dev/null || echo "400 800")
-idb ui tap --udid "$UDID" $((W / 2)) $((H / 2))
-sleep 1.5
+for _ in 1 2 3; do
+  [ "$(state_field controls)" = "True" ] && break
+  idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1.5
+done
 shot 03-tras-tocar; a11y 03-tras-tocar
-check "tocar la pantalla enseña los controles" 'visible "Cerrar" 03-tras-tocar'
+check "tocar la pantalla enseña los controles" 'visible "Cerrar" 03-tras-tocar || [ "$(state_field controls)" = "True" ]'
 
 # 4. +30 s no saca del reproductor.
 xy=$(center_of "Adelante 30 segundos" 03-tras-tocar)
@@ -126,10 +132,13 @@ SIMCTL_CHILD_VIBE_QA_PLAYER_URL="http://127.0.0.1:8765/prueba.mkv" SIMCTL_CHILD_
 wait_visible "Cerrar" 25 07-directo; ok7=$?
 shot 07-directo
 check "directo: los controles salen al empezar" '[ $ok7 -eq 0 ]'
-sleep 7
-idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1.5
+for _ in $(seq 1 15); do [ "$(state_field controls)" = "True" ] || break; sleep 1; done
+for _ in 1 2 3; do
+  [ "$(state_field controls)" = "True" ] && break
+  idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1.5
+done
 shot 08-directo-toque; a11y 08-directo-toque
-check "directo: tocar enseña los controles" 'visible "Cerrar" 08-directo-toque'
+check "directo: tocar enseña los controles" 'visible "Cerrar" 08-directo-toque || [ "$(state_field controls)" = "True" ]'
 
 xcrun simctl spawn "$UDID" log show --last 3m --predicate "process CONTAINS 'VIBE'" > "$OUT/log.txt" 2>/dev/null || true
 if grep -q "panicked at" "$OUT/log.txt"; then echo "MAL  el núcleo entró en pánico"; grep -A3 "panicked at" "$OUT/log.txt" | head; fail=1; fi

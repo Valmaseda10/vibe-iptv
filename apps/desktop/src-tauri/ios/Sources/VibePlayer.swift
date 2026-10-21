@@ -469,6 +469,10 @@ final class VibePlayerController: UIViewController {
             state["subtitle"] = subtitleLabel.text ?? ""
             state["controls"] = overlayVisible
             state["list"] = !listPanel.isHidden
+            // Tamaño de la interfaz (en horizontal, el ancho es el lado largo): la prueba
+            // lo necesita para girar sus toques y no depender de que idb devuelva la pantalla.
+            state["uiWidth"] = Int(controlsRoot.bounds.width)
+            state["uiHeight"] = Int(controlsRoot.bounds.height)
         }
         if let data = try? JSONSerialization.data(withJSONObject: state) {
             try? data.write(to: url, options: .atomic)
@@ -1444,8 +1448,14 @@ final class VibePlayerController: UIViewController {
         UIView.animate(withDuration: 0.2) { self.overlay.alpha = 1 }
         hideTimer?.invalidate()
         guard autoHide else { return }
-        scheduleHide(after: 4)
+        scheduleHide(after: Self.controlsHideDelay)
     }
+
+    /// Los controles se esconden a los 4 s. En la prueba de punta a punta (`VIBE_QA_E2E`),
+    /// a los 15: cada consulta a idb tarda 2 o 3 s y, si no, el toque llegaba cuando ya se
+    /// habían escondido. La prueba corta del reproductor sigue comprobando los 4 s.
+    private static let controlsHideDelay: TimeInterval =
+        ProcessInfo.processInfo.environment["VIBE_QA_E2E"] != nil ? 15 : 4
 
     /// Esconde los controles cuando el vídeo esté en marcha; mientras carga o está en pausa
     /// se quedan, y se vuelve a mirar al rato.

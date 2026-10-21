@@ -73,8 +73,13 @@ PY
 # vertical: con el reproductor del iPhone en horizontal no coinciden (el borde de arriba de
 # la interfaz queda a la derecha de la pantalla). Esto pasa de unas a otras.
 ui_is_landscape() {
-  python3 -c "import json,sys; f=json.load(open('$OUT/a11y-nativo.json'))[0]['frame']; sys.exit(0 if f['width'] > f['height'] else 1)" 2>/dev/null \
-    && [ "$W" -lt "$H" ]
+  [ "$W" -lt "$H" ] || return 1
+  if player_open; then
+    local uw uh
+    uw=$(player_field uiWidth); uh=$(player_field uiHeight)
+    if [ -n "$uw" ] && [ -n "$uh" ]; then [ "$uw" -gt "$uh" ]; return; fi
+  fi
+  python3 -c "import json,sys; f=json.load(open('$OUT/a11y-nativo.json'))[0]['frame']; sys.exit(0 if f['width'] > f['height'] else 1)" 2>/dev/null
 }
 tap_point() {
   local x=${1%.*} y=${2%.*}
@@ -89,7 +94,10 @@ ui_swipe() {
   fi
 }
 # Tamaño de la interfaz ahora mismo (en horizontal, ancho y alto cambian).
-ui_size() { python3 -c "import json; f=json.load(open('$OUT/a11y-nativo.json'))[0]['frame']; print(int(f['width']), int(f['height']))" 2>/dev/null || echo "$W $H"; }
+ui_size() {
+  if player_open && [ -n "$(player_field uiWidth)" ]; then echo "$(player_field uiWidth) $(player_field uiHeight)"; return; fi
+  python3 -c "import json; f=json.load(open('$OUT/a11y-nativo.json'))[0]['frame']; print(int(f['width']), int(f['height']))" 2>/dev/null || echo "$W $H"
+}
 tap_label() {
   local xy
   for _ in $(seq 1 "${3:-15}"); do
@@ -103,6 +111,21 @@ tap_label() {
     sleep 1
   done
   echo "  (no encontré «${1}»)"
+  return 1
+}
+# Toca la etiqueta $1 bajando por la página hasta encontrarla. Solo vale si queda por encima
+# de la barra de pestañas (si no, el toque caería en ella).
+scroll_tap_label() {
+  local xy
+  for _ in $(seq 1 "${3:-8}"); do
+    a11y; xy=$(find_label "$1" "${2:-exacta}")
+    if [ -n "$xy" ]; then
+      set -- $xy
+      if [ "${2%.*}" -lt $((H - 130)) ]; then tap_point "$1" "$2"; return 0; fi
+    fi
+    idb ui swipe --udid "$UDID" $((W / 2)) $((H * 7 / 10)) $((W / 2)) $((H * 4 / 10)) 2>/dev/null; sleep 1.5
+  done
+  echo "  (no encontré «${1}» ni bajando por la página)"
   return 1
 }
 # Mantener pulsado (menú de una portada).
@@ -163,6 +186,7 @@ player_titles() { echo "$(player_field title)|$(player_field subtitle)"; }
 # Enseña los controles del reproductor si están escondidos (un toque los alterna, así que
 # se mira antes y se comprueba después).
 show_controls() {
+  player_open || return 1
   for _ in 1 2 3; do
     [ "$(player_field controls)" = "True" ] && return 0
     idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 1
@@ -181,9 +205,31 @@ player_tap() {
     sleep 0.5
   done
   if [ -z "$xy" ]; then echo "  (no encontré «${1}» en el reproductor)"; return 1; fi
-  [ "$(player_field controls)" = "True" ] || { idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 0.6; }
+  if [ "$(player_field controls)" != "True" ]; then
+    idb ui tap --udid "$UDID" $((W / 2)) $((H / 2)); sleep 0.6
+    a11y; xy=$(find_label "$1" "$mode"); [ -n "$xy" ] || return 1
+  fi
   set -- $xy
   tap_point "$1" "$2"
+}
+
+close_player() {
+  local n
+  for n in 1 2 3; do
+    player_open || return 0
+    [ "$n" -gt 1 ] && echo "  (cerrar: intento $n)"
+    player_tap "Cerrar"
+    wait_player_closed 5 && return 0
+  done
+  return 1
+}
+relaunch() {
+  xcrun simctl terminate "$UDID" "$bundle" >/dev/null 2>&1 || true
+  [ -n "$PLAYER_STATE" ] && rm -f "$PLAYER_STATE"
+  SIMCTL_CHILD_VIBE_QA_E2E=1 SIMCTL_CHILD_VIBE_QA_PROVIDER_URL="http://127.0.0.1:8899" SIMCTL_CHILD_RUST_BACKTRACE=1 \
+    xcrun simctl launch "$UDID" "$bundle" >/dev/null
+  sleep 10
+  tap_label "QA" contiene 20; sleep 4
 }
 
 # Sin `grep -q` en tubería: con `pipefail`, grep cierra pronto, launchctl muere por SIGPIPE
@@ -193,10 +239,10 @@ section() {
   echo "-- $1"
   if ! app_alive; then
     echo "MAL  la app se cerró sola (antes de «${1}»)"; fail=1; shot "app-cerrada"
-    SIMCTL_CHILD_VIBE_QA_E2E=1 SIMCTL_CHILD_VIBE_QA_PROVIDER_URL="http://127.0.0.1:8899" SIMCTL_CHILD_RUST_BACKTRACE=1 \
-      xcrun simctl launch "$UDID" "$bundle" >/dev/null
-    sleep 10
-    tap_label "QA" contiene 20; sleep 4
+    relaunch
+  elif player_open; then
+    echo "  (el reproductor seguía abierto: se cierra antes de «${1}»)"
+    close_player || { echo "  (no se cerró: se vuelve a abrir la app)"; relaunch; }
   fi
 }
 
@@ -315,13 +361,13 @@ player_tap "Reproducir o pausar"; sleep 4
 p3=$(player_time)
 check "película: reanudar sigue avanzando" '[ "$(player_field playing)" = "True" ] && [ "$p3" -gt "$p2" ]'
 shot reproductor-pelicula
-player_tap "Cerrar"; sleep 3
+close_player; sleep 2
 check "película: cerrar sale del reproductor" 'wait_player_closed 10'
 check "película: vuelve a la ficha con «Continuar»" 'wait_visible "Continuar" contiene 8'
 check "ficha: enseña cuánto queda" 'visible "Quedan" contiene'
 tap_label "Continuar" contiene 5
 check "película: «Continuar» retoma donde se dejó" 'wait_player_open 25 && sleep 4 && [ "$(player_time)" -ge $((p3 - 10)) ]'
-player_tap "Cerrar"; sleep 3; wait_player_closed 10
+close_player; sleep 2
 
 # ───────── 5. Continuar viendo ─────────
 section "continuar viendo"
@@ -357,13 +403,13 @@ check "episodio: la lista del reproductor enseña los episodios" 'wait_native "S
 tap_label "S01E02" contiene 5; sleep 5
 check "episodio: elegir otro en la lista lo reproduce" 'wait_player_text "S01E02" 8 && wait_visible "ruta:/player/episode/" contiene 5'
 check "episodio: el nuevo episodio se reproduce" 'sleep 3; [ "$(player_field playing)" = "True" ]'
-player_tap "Cerrar"; sleep 3
+close_player; sleep 2
 check "episodio: cerrar vuelve a la ficha de la serie" 'wait_player_closed 10 && wait_visible "ruta:/series/" contiene 8'
 
 # ───────── 7. Directo: pausa, ir al directo, lista de canales y zapping ─────────
 section "directo"
 go Directo
-tap_label "Reloj" contiene 10
+scroll_tap_label "Reloj" contiene
 check "directo: se abre el reproductor" 'wait_player_open 25'
 check "directo: marca EN DIRECTO" 'wait_native "EN DIRECTO" 10 && [ "$(player_field live)" = "True" ]'
 sleep 4
@@ -372,7 +418,7 @@ player_tap "Reproducir o pausar"; sleep 12
 player_tap "Reproducir o pausar"; sleep 3
 shot directo-tras-pausa
 echo "  retraso tras 12 s de pausa: $(player_field behind)s"
-check "directo: tras la pausa va por detrás del directo" '[ "$(player_field behind)" -ge 8 ] && wait_native "Ir al directo" 5'
+check "directo: tras la pausa va por detrás del directo" '[ "$(player_field behind)" -ge 8 ] && show_controls && wait_native "Ir al directo" 5'
 player_tap "Ir al directo" contiene; sleep 4
 check "directo: «Ir al directo» vuelve al directo" '[ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ]'
 before=$(player_titles)
@@ -386,12 +432,13 @@ check "directo: el canal nuevo se reproduce" '[ "$(player_field playing)" = "Tru
 check "directo: una sola conexión tras cambiar de canal" '[ "$(active_cons)" -le 1 ]'
 before=$(player_titles)
 a11y; read -r UW UH < <(ui_size)
-ui_swipe $((UW / 2)) $((UH * 3 / 4)) $((UW / 2)) $((UH / 4)); sleep 6
+if [ "$(player_field list)" = "True" ]; then tap_point $((UW / 6)) $((UH / 2)); sleep 1.5; fi
+ui_swipe $((UW / 2)) $((UH * 7 / 10)) $((UW / 2)) $((UH * 3 / 10)); sleep 6
 after=$(player_titles); shot directo-tras-zapping
 echo "  zapping: «${before}» → «${after}»"
 check "directo: deslizar hacia arriba cambia de canal" 'player_open && [ "$before" != "$after" ]'
 check "directo: una sola conexión tras el zapping" '[ "$(active_cons)" -le 1 ]'
-player_tap "Cerrar"; sleep 3
+close_player; sleep 2
 check "directo: cerrar vuelve a la lista de canales" 'wait_player_closed 10 && wait_visible "ruta:/live" exacta 8'
 check "directo: al cerrar se suelta la conexión" 'wait_cons_zero'
 check "directo: el canal visto sale en «Recientes»" 'wait_visible "Recientes" exacta 8'

@@ -41,7 +41,8 @@ env:
 jobs:
   build:
     runs-on: macos-latest
-    timeout-minutes: 75
+    # La prueba de punta a punta recorre la app entera en dos aparatos: ~40 min.
+    timeout-minutes: 150
     defaults:
       run:
         working-directory: apps/desktop
@@ -193,8 +194,8 @@ jobs:
           xcrun simctl boot "$device" || true
           xcrun simctl bootstatus "$device" -b
           idb_companion --udid "$device" > "$RUNNER_TEMP/companion.log" 2>&1 &
-          sleep 8
-          idb connect localhost 10882 || true
+          # El companion tarda en escuchar justo tras arrancar el simulador: se reintenta.
+          for _ in $(seq 1 10); do idb connect localhost 10882 && break; sleep 3; done
           bash src-tauri/ios/qa/player-qa.sh "$device" "$app" "$RUNNER_TEMP/qa-player"
 
       - uses: actions/upload-artifact@v4
@@ -237,8 +238,7 @@ jobs:
             sleep 2
             port=$((10882 + ${#kind}))
             idb_companion --udid "$device" --grpc-port "$port" > "$RUNNER_TEMP/companion-$kind.log" 2>&1 &
-            sleep 8
-            idb connect localhost "$port" || true
+            for _ in $(seq 1 10); do idb connect localhost "$port" && break; sleep 3; done
             idb list-targets 2>/dev/null | grep -i booted || true
             bash src-tauri/ios/qa/e2e-qa.sh "$device" "$app" "$RUNNER_TEMP/qa-e2e/$kind" || status=1
             # Si la app se cerró sola, el informe de fallo del sistema dice dónde.

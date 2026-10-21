@@ -195,7 +195,7 @@ export function LiveScreen() {
                             search: channel.category_id ? { categoryId: String(channel.category_id) } : {},
                           })
                         }
-                        className="flex h-full flex-1 items-center gap-4 rounded-lg px-3 text-left outline-none hover:bg-neutral-900 ios:gap-3 ios:rounded-2xl ios:px-2 ios:active:bg-white/10"
+                        className="flex h-full min-w-0 flex-1 items-center gap-4 rounded-lg px-3 text-left outline-none hover:bg-neutral-900 ios:gap-3 ios:rounded-2xl ios:px-2 ios:active:bg-white/10"
                       >
                         <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500">{channel.number ?? ""}</span>
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500 ios:rounded-[10px] ios:bg-ios-surface-2">
