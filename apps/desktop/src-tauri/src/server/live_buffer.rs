@@ -116,9 +116,14 @@ impl LiveBufferSlot {
         Ok(recording)
     }
 
-    /// Termina la grabación en curso ya (el reproductor se cerró).
-    pub fn stop(&self) {
+    /// Termina la grabación en curso ya (el reproductor se cerró). Con `channel_id`, solo
+    /// si es la de ese canal: un aviso de cierre que llega tarde no corta el canal que se
+    /// abrió después.
+    pub fn stop(&self, channel_id: Option<i64>) {
         if let Ok(mut current) = self.current.lock() {
+            if channel_id.is_some_and(|id| current.as_ref().is_some_and(|rec| rec.channel_id != id)) {
+                return;
+            }
             if let Some(recording) = current.take() {
                 recording.stop_requested.store(true, Ordering::SeqCst);
                 recording.notify.notify_waiters();
@@ -437,6 +442,26 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         assert!(rec.finished.load(Ordering::SeqCst));
+        assert!(slot.existing(7, &guard).is_none());
+    }
+
+    #[tokio::test]
+    async fn closing_another_channel_does_not_end_the_current_recording() {
+        let guard = StreamGuard::new();
+        let slot = LiveBufferSlot::with_config(LiveBufferConfig { capacity: 1_000 * TS_PACKET, idle_timeout: Duration::from_secs(60) });
+        let chunks: Vec<Vec<u8>> = (0..200).map(|i| packet(i as u8)).collect();
+        let permit = guard.acquire().await;
+        let rec = slot.start(7, bytes_stream(chunks, Duration::from_millis(20)), permit, Arc::clone(&guard)).await.unwrap();
+        wait_written(&rec, TS_PACKET).await;
+
+        // El aviso de cierre del canal 3 llega tarde, con el 7 ya abierto: no lo toca.
+        slot.stop(Some(3));
+        assert!(slot.existing(7, &guard).is_some());
+        assert!(!rec.stop_requested.load(Ordering::SeqCst));
+
+        // El del propio canal sí lo termina.
+        slot.stop(Some(7));
+        assert!(rec.stop_requested.load(Ordering::SeqCst));
         assert!(slot.existing(7, &guard).is_none());
     }
 

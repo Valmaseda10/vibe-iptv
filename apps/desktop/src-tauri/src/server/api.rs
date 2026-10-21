@@ -357,6 +357,11 @@ pub struct SeriesDetailResponse {
     pub age_rating: Option<String>,
     pub similar: Vec<SimilarTitleSummary>,
     pub episodes: Vec<EpisodeSummary>,
+    /// Episodio del botón "Ver/Continuar T·E" (`reads::up_next_episode`); `null` sin episodios.
+    #[ts(type = "number | null")]
+    pub up_next_episode_id: Option<i64>,
+    /// `true` si el perfil ya iba por la serie: el botón dice "Continuar" y no "Ver".
+    pub up_next_started: bool,
 }
 
 #[derive(Serialize, TS)]
@@ -1154,7 +1159,7 @@ async fn get_series_detail(
     // Checkmark de "visto" por episodio (F "premium") — nunca rompe la ficha si falla:
     // sin marcas es como estaba la ficha antes de que existiera esta función.
     let profile_id = query.profile_id;
-    let watched = with_db(db_path.clone(), move |conn| reads::list_watched_episode_ids(conn, profile_id, id)).await.unwrap_or_default();
+    let progress = with_db(db_path.clone(), move |conn| reads::list_episode_progress(conn, profile_id, id)).await.unwrap_or_default();
 
     // "Títulos similares" (F "premium") — mismo criterio que en la ficha de película:
     // se resuelve contra el catálogo local actual, no contra lo que había cuando se
@@ -1177,8 +1182,12 @@ async fn get_series_detail(
 
     let mut episodes: Vec<EpisodeSummary> = series.episodes.into_iter().map(Into::into).collect();
     for episode in &mut episodes {
-        episode.watched = watched.contains(&episode.id);
+        episode.watched = progress.get(&episode.id).is_some_and(|p| p.finished);
     }
+    let mut ordered: Vec<(i64, i64, i64)> = episodes.iter().map(|e| (e.season, e.number, e.id)).collect();
+    ordered.sort_unstable();
+    let ordered: Vec<i64> = ordered.into_iter().map(|(_, _, id)| id).collect();
+    let up_next = reads::up_next_episode(&ordered, &progress);
 
     Ok(Json(SeriesDetailResponse {
         id: series.id,
@@ -1194,6 +1203,8 @@ async fn get_series_detail(
         age_rating: series.age_rating,
         similar: similar.into_iter().map(Into::into).collect(),
         episodes,
+        up_next_episode_id: up_next.map(|(id, _)| id),
+        up_next_started: up_next.is_some_and(|(_, started)| started),
     }))
 }
 

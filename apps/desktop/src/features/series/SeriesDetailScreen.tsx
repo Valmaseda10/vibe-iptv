@@ -73,12 +73,8 @@ export function SeriesDetailScreen() {
   // Mismo criterio que la ficha de película: sin fondo de TMDB, el póster ocupa su lugar.
   const poster = backdrop ? null : imagePath(base, data.poster_path, "w500");
   const episodesOfSeason = seasons.find((s) => s.season === activeSeason)?.episodes ?? [];
-  // "Continuar T·E" (como Netflix): el episodio que sigue al último visto; sin ninguno
-  // visto, el primero; con todos vistos, también el primero, para volver a empezar.
-  const allEpisodes = seasons.flatMap((s) => s.episodes);
-  const lastWatched = allEpisodes.reduce((last, episode, index) => (episode.watched ? index : last), -1);
-  const startedWatching = lastWatched >= 0 && lastWatched < allEpisodes.length - 1;
-  const upNext = allEpisodes[startedWatching ? lastWatched + 1 : 0];
+  // "Ver/Continuar T·E" (como Netflix): el núcleo decide qué episodio toca.
+  const upNext = data.episodes.find((e) => e.id === data.up_next_episode_id);
 
   return (
     <div className="relative min-h-full">
@@ -110,7 +106,7 @@ export function SeriesDetailScreen() {
               onClick={() => navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(upNext.id) }, search: { seriesId } })}
               className={PRIMARY_ACTION}
             >
-              ▶ {startedWatching ? "Continuar" : "Ver"} T{upNext.season} · E{upNext.number}
+              ▶ {data.up_next_started ? "Continuar" : "Ver"} T{upNext.season} · E{upNext.number}
             </button>
           )}
           <div className="grid grid-cols-3 gap-1 sm:flex sm:gap-3">

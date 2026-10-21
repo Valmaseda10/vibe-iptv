@@ -268,7 +268,7 @@ export function NativePlayerScreen() {
           lastRequestRef.current = null;
           // Suelta ya la conexión con el proveedor: la grabación del directo no tiene que
           // esperar a quedarse sin lectores.
-          if (latest.kind === "channel") apiDelete("/api/live-buffer").catch(() => {});
+          if (latest.kind === "channel") apiDelete(`/api/live-buffer?channel_id=${payload.id ?? latest.itemId}`).catch(() => {});
           latest.goBack();
           // Lo visto cambia la ficha ("Continuar", "Quedan N min"), Inicio y los recientes:
           // sin esto, la ficha seguía con los datos de antes de ver nada.

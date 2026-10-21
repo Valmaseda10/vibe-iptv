@@ -13,6 +13,7 @@
 //! en vez de seguir aproximando con solo el `id`.
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, ToSql};
+use std::collections::HashMap;
 
 use crate::util::redact;
 
@@ -1786,15 +1787,49 @@ pub fn remove_favorite(conn: &Connection, profile_id: i64, item_kind: &str, item
 /// Ids de episodio ya vistos del todo (F "premium" — checkmark en la ficha de serie),
 /// para un perfil y una serie concretos. `finished` ya lo calcula
 /// `upsert_playback_progress` (90% o más), no hay que repetir el umbral aquí.
-pub fn list_watched_episode_ids(conn: &Connection, profile_id: i64, series_id: i64) -> Result<std::collections::HashSet<i64>> {
+/// Progreso de un episodio para un perfil.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EpisodeProgress {
+    pub finished: bool,
+    pub position_s: i64,
+    pub played_at: i64,
+}
+
+/// Progreso de cada episodio de una serie (de cualquiera de sus fuentes) para un perfil,
+/// por id de episodio: da el checkmark de "visto" y el "Continuar T·E" de la ficha.
+pub fn list_episode_progress(conn: &Connection, profile_id: i64, series_id: i64) -> Result<HashMap<i64, EpisodeProgress>> {
     let mut stmt = conn.prepare(
-        "SELECT ps.item_id FROM playback_state ps
+        "SELECT ps.item_id, ps.finished, ps.position_s, ps.played_at FROM playback_state ps
          JOIN episodes e ON e.id = ps.item_id
          JOIN series_sources ss ON ss.id = e.series_source_id
-         WHERE ps.profile_id = ?1 AND ps.item_kind = 'episode' AND ps.finished = 1 AND ss.series_id = ?2",
+         WHERE ps.profile_id = ?1 AND ps.item_kind = 'episode' AND ss.series_id = ?2",
     )?;
-    let rows = stmt.query_map(params![profile_id, series_id], |row| row.get::<_, i64>(0))?;
-    rows.collect::<rusqlite::Result<std::collections::HashSet<_>>>().map_err(Into::into)
+    let rows = stmt.query_map(params![profile_id, series_id], |row| {
+        Ok((row.get::<_, i64>(0)?, EpisodeProgress { finished: row.get::<_, i64>(1)? != 0, position_s: row.get(2)?, played_at: row.get(3)? }))
+    })?;
+    rows.collect::<rusqlite::Result<HashMap<_, _>>>().map_err(Into::into)
+}
+
+/// El episodio que ofrece la ficha de serie ("Ver/Continuar T·E", como Netflix), con
+/// `ordered` = ids en orden de temporada y número. Manda lo último que se tocó: empezado
+/// sin terminar, ese mismo; terminado, el siguiente; tras el último, o sin nada visto, el
+/// primero. El `bool` dice si el perfil ya iba por la serie ("Continuar" y no "Ver").
+pub fn up_next_episode(ordered: &[i64], progress: &HashMap<i64, EpisodeProgress>) -> Option<(i64, bool)> {
+    let first = *ordered.first()?;
+    // A igual momento (marcar una temporada entera), cuenta el último en orden.
+    let latest = ordered
+        .iter()
+        .enumerate()
+        .filter_map(|(index, id)| progress.get(id).filter(|p| p.finished || p.position_s > 0).map(|p| (p.played_at, index, p.finished)))
+        .max_by_key(|(played_at, index, _)| (*played_at, *index));
+    match latest {
+        None => Some((first, false)),
+        Some((_, index, false)) => Some((ordered[index], true)),
+        Some((_, index, true)) => match ordered.get(index + 1) {
+            Some(next) => Some((*next, true)),
+            None => Some((first, false)),
+        },
+    }
 }
 
 /// Quitar algo de "Continuar viendo" a mano (F "premium" — Netflix deja hacer esto,
@@ -1811,7 +1846,7 @@ pub fn remove_playback_progress(conn: &Connection, profile_id: i64, item_kind: &
 
 /// Ids de episodio de una temporada de una serie, en orden — usado por "marcar
 /// temporada como vista" (F "premium": Plex/Emby dejan marcar sin reproducir, esta
-/// app solo tenía el checkmark de lectura, ver `list_watched_episode_ids`).
+/// app solo tenía el checkmark de lectura, ver `list_episode_progress`).
 pub fn episode_ids_for_season(conn: &Connection, series_id: i64, season: i64) -> Result<Vec<i64>> {
     let mut stmt = conn.prepare(
         "SELECT e.id FROM episodes e
@@ -2415,6 +2450,52 @@ mod tests {
         assert_eq!(finished, 1);
     }
 
+    fn watched_ids(conn: &Connection, profile_id: i64, series_id: i64) -> std::collections::HashSet<i64> {
+        list_episode_progress(conn, profile_id, series_id).unwrap().into_iter().filter(|(_, p)| p.finished).map(|(id, _)| id).collect()
+    }
+
+    fn progress(finished: bool, position_s: i64, played_at: i64) -> EpisodeProgress {
+        EpisodeProgress { finished, position_s, played_at }
+    }
+
+    #[test]
+    fn up_next_starts_at_the_first_episode_without_progress() {
+        assert_eq!(up_next_episode(&[10, 11, 12], &HashMap::new()), Some((10, false)));
+        assert_eq!(up_next_episode(&[], &HashMap::new()), None);
+    }
+
+    #[test]
+    fn up_next_resumes_an_episode_left_halfway() {
+        let map = HashMap::from([(10, progress(true, 1200, 100)), (11, progress(false, 300, 200))]);
+        assert_eq!(up_next_episode(&[10, 11, 12], &map), Some((11, true)));
+    }
+
+    #[test]
+    fn up_next_goes_to_the_episode_after_the_last_one_finished() {
+        let map = HashMap::from([(10, progress(true, 1200, 100))]);
+        assert_eq!(up_next_episode(&[10, 11, 12], &map), Some((11, true)));
+    }
+
+    #[test]
+    fn up_next_follows_what_was_touched_last_not_the_furthest() {
+        // Vio el 3 hace tiempo y ahora ha vuelto a ver el 1: sigue por el 2.
+        let map = HashMap::from([(12, progress(true, 1200, 100)), (10, progress(true, 1200, 300))]);
+        assert_eq!(up_next_episode(&[10, 11, 12], &map), Some((11, true)));
+    }
+
+    #[test]
+    fn up_next_after_marking_a_whole_season_is_the_next_season() {
+        // Marcar la temporada pone a todos el mismo momento: cuenta el último en orden.
+        let map = HashMap::from([(10, progress(true, 0, 500)), (11, progress(true, 0, 500))]);
+        assert_eq!(up_next_episode(&[10, 11, 20], &map), Some((20, true)));
+    }
+
+    #[test]
+    fn up_next_starts_over_after_the_last_episode() {
+        let map = HashMap::from([(12, progress(true, 1200, 100))]);
+        assert_eq!(up_next_episode(&[10, 11, 12], &map), Some((10, false)));
+    }
+
     #[test]
     fn list_watched_episode_ids_only_counts_finished_episodes_of_that_series() {
         let conn = memory_conn();
@@ -2438,9 +2519,11 @@ mod tests {
         upsert_playback_progress(&conn, profile_id, "episode", ep1, 1150, Some(1200)).unwrap(); // >90%: visto.
         upsert_playback_progress(&conn, profile_id, "episode", ep2, 60, Some(1200)).unwrap(); // recién empezado: no.
 
-        let watched = list_watched_episode_ids(&conn, profile_id, series_id).unwrap();
+        let watched = watched_ids(&conn, profile_id, series_id);
         assert!(watched.contains(&ep1));
         assert!(!watched.contains(&ep2));
+        let all = list_episode_progress(&conn, profile_id, series_id).unwrap();
+        assert_eq!(all.get(&ep2).map(|p| (p.finished, p.position_s)), Some((false, 60)));
     }
 
     #[test]
@@ -2520,13 +2603,13 @@ mod tests {
         let affected = set_season_watched(&conn, profile_id, series_id, 1, true).unwrap();
         assert_eq!(affected.len(), 2);
 
-        let watched = list_watched_episode_ids(&conn, profile_id, series_id).unwrap();
+        let watched = watched_ids(&conn, profile_id, series_id);
         assert_eq!(watched.len(), 2, "solo la temporada 1 debe quedar marcada");
         let s2e1: i64 = conn.query_row("SELECT id FROM episodes WHERE remote_id = 's2e1'", [], |r| r.get(0)).unwrap();
         assert!(!watched.contains(&s2e1));
 
         set_season_watched(&conn, profile_id, series_id, 1, false).unwrap();
-        assert!(list_watched_episode_ids(&conn, profile_id, series_id).unwrap().is_empty());
+        assert!(watched_ids(&conn, profile_id, series_id).is_empty());
     }
 
     #[test]

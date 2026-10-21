@@ -29,7 +29,9 @@ export function HomeScreen() {
     queryFn: () => apiGet<FavoriteItem[]>(`/api/favorites?profile_id=${profileId}`),
     enabled: profileId !== null,
   });
-  const myList = (favoritesQuery.data ?? []).filter((f) => (f.item_kind === "movie" || f.item_kind === "series") && f.title);
+  // Las 40 más recientes (el núcleo las da de la más nueva a la más vieja): una fila no
+  // pinta cientos de portadas; la lista entera está en Favoritos.
+  const myList = (favoritesQuery.data ?? []).filter((f) => (f.item_kind === "movie" || f.item_kind === "series") && f.title).slice(0, 40);
 
   // Optimista: la fila se siente al instante como Netflix, en vez de esperar la
   // respuesta del servidor para que el ítem desaparezca.

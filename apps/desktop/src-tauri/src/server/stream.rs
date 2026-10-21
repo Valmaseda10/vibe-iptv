@@ -598,8 +598,14 @@ async fn handle_live_buffer(state: StreamState, channel_id: i64, profile_id: i64
 }
 
 /// El reproductor se cerró: la grabación termina ya y suelta la conexión con el proveedor.
-async fn delete_live_buffer(State(state): State<StreamState>) -> StatusCode {
-    state.live_buffer.stop();
+#[derive(Deserialize)]
+struct DeleteLiveBufferQuery {
+    /// Canal que se cerró: si la grabación en curso es de otro, se deja.
+    channel_id: Option<i64>,
+}
+
+async fn delete_live_buffer(State(state): State<StreamState>, Query(query): Query<DeleteLiveBufferQuery>) -> StatusCode {
+    state.live_buffer.stop(query.channel_id);
     StatusCode::NO_CONTENT
 }
 

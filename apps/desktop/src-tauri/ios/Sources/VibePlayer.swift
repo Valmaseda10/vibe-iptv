@@ -603,11 +603,13 @@ final class VibePlayerController: UIViewController {
     }
 
     /// Pide al núcleo que termine la grabación del directo: así la conexión con el proveedor
-    /// se suelta al momento (regla R1: la cuenta suele admitir una sola).
+    /// se suelta al momento (regla R1: la cuenta suele admitir una sola). Dice de qué canal
+    /// (`/stream/live-buffer/channel/<id>`): si llegara tarde, no corta el siguiente.
     private func releaseLiveBuffer(from streamURL: String) {
         guard var components = URLComponents(string: streamURL) else { return }
+        let channelId = components.path.split(separator: "/").last.flatMap { Int($0) }
         components.path = "/api/live-buffer"
-        components.query = nil
+        components.queryItems = channelId.map { [URLQueryItem(name: "channel_id", value: String($0))] }
         guard let url = components.url else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"

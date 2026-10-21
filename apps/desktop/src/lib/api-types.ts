@@ -375,7 +375,15 @@ export type SearchHitResponse = { item_kind: string, item_id: number, title: str
 
 export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, };
 
-export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, trailer_key: string | null, age_rating: string | null, similar: Array<SimilarTitleSummary>, episodes: Array<EpisodeSummary>, };
+export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, trailer_key: string | null, age_rating: string | null, similar: Array<SimilarTitleSummary>, episodes: Array<EpisodeSummary>, 
+/**
+ * Episodio del botón "Ver/Continuar T·E" (`reads::up_next_episode`); `null` sin episodios.
+ */
+up_next_episode_id: number | null, 
+/**
+ * `true` si el perfil ya iba por la serie: el botón dice "Continuar" y no "Ver".
+ */
+up_next_started: boolean, };
 
 export type SeriesPage = { items: Array<SeriesSummary>, next_cursor: number | null, next_cursor_key: string | null, };
 

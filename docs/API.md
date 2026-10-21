@@ -68,7 +68,11 @@ proveedor/calidad — varias si la misma película viene de más de una fuente).
 no existe.
 
 ### `GET /api/series` / `GET /api/series/:id`
-Igual que películas; el detalle trae `episodes[]` (temporada, número, título, duración).
+Igual que películas; el detalle trae `episodes[]` (temporada, número, título, duración,
+`watched`) y el episodio del botón «Ver/Continuar T·E»: `up_next_episode_id` y
+`up_next_started` (si el perfil ya iba por la serie). La regla vive en el núcleo
+(`reads::up_next_episode`): manda lo último que se tocó; empezado sin terminar, ese
+mismo; terminado, el siguiente; tras el último o sin nada visto, el primero.
 
 ### `GET /api/search?q=&profile_id=`
 Búsqueda instantánea (FTS5). `{ channels: [], movies: [], series: [] }`, cada uno hasta
@@ -151,6 +155,14 @@ Mientras se ve un canal en directo por `/stream/channel/:id`, el núcleo lo grab
   mandarla cada pocos segundos** mientras se esté en pausa o en la grabación: sin leer el
   directo ni señales de vida, la sesión se cierra a los 20 s y libera la conexión.
 - `DELETE /api/timeshift/:channel_id`: el cliente se va; la conexión se libera ya.
+
+En iPhone/iPad (sin ffmpeg) la grabación es un anillo de MPEG-TS crudo:
+
+- `GET /stream/live-buffer/channel/:id?profile_id=&behind_s=<segundos>`: el directo desde
+  la grabación, `behind_s` segundos por detrás (0: en directo).
+- `DELETE /api/live-buffer?channel_id=<id>`: el reproductor se cerró; la grabación termina
+  y la conexión se libera ya. Con `channel_id`, solo si la grabación es de ese canal (un
+  aviso tardío no corta el canal abierto después); sin él, termina la que haya.
 
 Mientras la lista empieza en su primer trozo (`#EXT-X-MEDIA-SEQUENCE:0`, los primeros
 30 min), sus segundos son los mismos que los del directo: pausar en el segundo 120 del
