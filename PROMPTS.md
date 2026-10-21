@@ -388,8 +388,11 @@ el mismo minuto, con el PC apagado.
 ## F16 — Cliente Fire TV
 
 ```
-Pospuesto hasta tener un Fire TV para probar. Kotlin, Compose for TV y Media3
-(ExoPlayer) contra la misma API LAN y la misma cuenta Firebase que el cliente iOS.
+Pospuesto hasta tener un Fire TV para probar. Replanteada el 2026-10-21 (ver
+docs/DECISIONS.md): como el iPhone, la misma app de Tauri compilada para Android,
+autónoma (su propio núcleo, el proveedor directo, sin el PC encendido) y con la misma
+cuenta Firebase. Interfaz de TV manejada con el mando (flechas, OK, Atrás), que la app ya
+admite desde F5. Ya no hay cliente nativo en Kotlin ni API LAN.
 ```
 
 ---

@@ -1702,6 +1702,20 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
   - *Zapping:* después del último canal viene el primero (y al revés), como en TiviMate.
   - *Directo:* sin la barra de cristal vacía abajo (no hay tiempos que enseñar).
 
+## 2026-10-21 — Rumbo tras F15 (decidido con el usuario)
+
+- **Fire TV (F16) será la misma app en Android**, autónoma como la de iPhone: su propio
+  núcleo, el proveedor directo y sin el PC encendido. Se descarta el cliente nativo en
+  Kotlin contra la API LAN del PC. Sigue pospuesta hasta tener un Fire TV para probar.
+- **El modo LAN de F10 se quita.** No funciona (el servidor solo escucha en
+  `127.0.0.1`) y ya no lo necesita ningún cliente: menos código y nada abierto en la red.
+  Se hará con su propio plan después de cerrar F15.
+- **Lo siguiente tras F15: probar con el proveedor real del usuario**, en el PC y en el
+  iPhone, en una sesión guiada y con cuidado de no provocar el bloqueo del panel. Todo lo
+  de F15 se ha probado con el proveedor falso.
+- **Instalación en el iPhone: SideStore** (renovación diaria con un Atajo), ver
+  `docs/IOS.md`.
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la
