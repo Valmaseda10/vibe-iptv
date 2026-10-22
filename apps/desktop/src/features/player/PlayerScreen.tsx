@@ -17,6 +17,7 @@ import type {
 } from "../../lib/api-types";
 import { ArrowDownIcon, ArrowUpIcon, FullscreenIcon, MuteIcon, PauseIcon, PlayIcon, VolumeIcon } from "../../components/icons";
 import { useLiveTimeshift } from "./useLiveTimeshift";
+import { SUBTITLE_SIZES, subtitleCueCss, useSubtitleStyle } from "../../lib/subtitleStyle";
 import { findNextEpisode } from "./episodes";
 
 type Kind = "channel" | "movie" | "episode";
@@ -119,6 +120,8 @@ export function PlayerScreen() {
   // Pista de subtítulos elegida, ligada al ítem: al pasar al siguiente episodio no se
   // arrastra un índice que en ese fichero puede ser otro idioma (o no existir).
   const [subtitleChoice, setSubtitleChoice] = useState<{ item: string; track: number } | null>(null);
+  // Aspecto de los subtítulos del perfil (Ajustes → Subtítulos).
+  const [subtitleStyle, setSubtitleStyle] = useSubtitleStyle();
   const subtitleTrack = kind !== "channel" && subtitleChoice?.item === `${kind}:${itemId}` ? subtitleChoice.track : null;
 
   const movieQuery = useQuery({
@@ -140,10 +143,10 @@ export function PlayerScreen() {
   // en listas de miles el canal podía no estar en ella. La ventana da la vuelta por los
   // extremos y se recentra en cada cambio de canal; mientras llega la nueva, sigue la vieja.
   const channelsQuery = useQuery({
-    queryKey: ["player-channels", profileId, search.categoryId, itemId],
+    queryKey: ["player-channels", profileId, search.categoryId, search.favorites, itemId],
     queryFn: () =>
       apiGetOrNull<ChannelsPage>(
-        `/api/live/channels?profile_id=${profileId}&limit=100&around=${itemId}${search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
+        `/api/live/channels?profile_id=${profileId}&limit=100&around=${itemId}${search.favorites ? "&favorites=1" : search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
       ),
     placeholderData: keepPreviousData,
     enabled: kind === "channel" && profileId !== null,
@@ -475,9 +478,9 @@ export function PlayerScreen() {
       // Tras el último canal viene el primero (y al revés), como en TiviMate y el iPhone.
       const next = idx === -1 || items.length < 2 ? undefined : items[(idx + direction + items.length) % items.length];
       if (!next) return;
-      navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(next.id) }, search: { categoryId: search.categoryId } });
+      navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(next.id) }, search: { categoryId: search.categoryId, favorites: search.favorites } });
     },
-    [channelsQuery.data, itemId, navigate, search.categoryId],
+    [channelsQuery.data, itemId, navigate, search.categoryId, search.favorites],
   );
 
   // Selector de pista de audio (F "premium", pendiente desde el plan original de F6).
@@ -770,6 +773,7 @@ export function PlayerScreen() {
   return (
     <div
       ref={containerRef}
+      data-vibe-player=""
       className={`relative flex h-full w-full items-center justify-center bg-black outline-none ${controlsVisible ? "" : "cursor-none"}`}
       onMouseMove={resetHideTimer}
       onWheel={(e) => {
@@ -779,6 +783,7 @@ export function PlayerScreen() {
       }}
       tabIndex={-1}
     >
+      <style>{subtitleCueCss(subtitleStyle, "[data-vibe-player]")}</style>
       {canRenderVideo ? (
         <video
           key={timeshift.bufferKey ?? `${streamPath}::${retryNonce}`}
@@ -1083,6 +1088,25 @@ export function PlayerScreen() {
                 {tierQuery.data!.subtitle_tracks.map((track) => (
                   <option key={track.index} value={track.index}>
                     {track.language ? languageName(track.language) : `Pista ${track.index + 1}`}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {subtitleTrack != null && (
+            <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+              Tamaño
+              <select
+                value={subtitleStyle.size}
+                onChange={(e) => setSubtitleStyle({ ...subtitleStyle, size: e.target.value })}
+                className="rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-2 focus:ring-white/60"
+                aria-label="Tamaño de los subtítulos"
+                title="Más opciones en Ajustes → Subtítulos"
+              >
+                {SUBTITLE_SIZES.map((size) => (
+                  <option key={size.value} value={size.value}>
+                    {size.label}
                   </option>
                 ))}
               </select>

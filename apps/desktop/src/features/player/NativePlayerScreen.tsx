@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { readSubtitleStyle, saveSubtitleStyle } from "../../lib/subtitleStyle";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
@@ -58,6 +59,10 @@ function episodeLabel(episode: EpisodeSummary): string {
  *
  * El VOD va con `passthrough=true` (el núcleo no tiene ffmpeg en iOS: VLC abre cualquier
  * contenedor); el directo, desde la grabación del núcleo para poder pausarlo. */
+/** Datos que cambian al ver algo: fichas («Continuar», «Quedan»), Inicio («Continuar
+ * viendo»), el progreso y los canales recientes. */
+const WATCH_DEPENDENT_QUERY_KEYS = ["movie", "series", "home", "progress", "live-recent", "player-series", "player-movie"];
+
 export function NativePlayerScreen() {
   const { kind, id } = useParams({ from: "/player/$kind/$id" }) as { kind: Kind; id: string };
   const search = useSearch({ from: "/player/$kind/$id" });
@@ -86,10 +91,10 @@ export function NativePlayerScreen() {
   // en listas de miles el canal podía no estar en ella. La ventana da la vuelta por los
   // extremos y se recentra en cada cambio de canal; mientras llega la nueva, sigue la vieja.
   const channelsQuery = useQuery({
-    queryKey: ["player-channels", profileId, search.categoryId, itemId],
+    queryKey: ["player-channels", profileId, search.categoryId, search.favorites, itemId],
     queryFn: () =>
       apiGetOrNull<ChannelsPage>(
-        `/api/live/channels?profile_id=${profileId}&limit=100&around=${itemId}${search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
+        `/api/live/channels?profile_id=${profileId}&limit=100&around=${itemId}${search.favorites ? "&favorites=1" : search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
       ),
     placeholderData: keepPreviousData,
     enabled: kind === "channel" && profileId !== null,
@@ -219,6 +224,7 @@ export function NativePlayerScreen() {
       next,
       preferred_audio: tracks.audio,
       preferred_subtitle: tracks.subtitle,
+      subtitle_style: readSubtitleStyle(profileId),
       update_only: false,
     };
   }, [base, startSeconds, profileId, streamPath, title, subtitle, kind, isCatchup, liveBuffer, items, currentIndex, next]);
@@ -292,7 +298,11 @@ export function NativePlayerScreen() {
           latest.goBack();
           // Lo visto cambia la ficha ("Continuar", "Quedan N min"), Inicio y los recientes:
           // sin esto, la ficha seguía con los datos de antes de ver nada.
-          saved.finally(() => queryClient.invalidateQueries());
+          // Solo lo que depende de lo visto: refrescar todo hacía que la app tardara en
+          // volver a responder al salir de una película (visto en un iPhone).
+          saved.finally(() => {
+            for (const key of WATCH_DEPENDENT_QUERY_KEYS) queryClient.invalidateQueries({ queryKey: [key] });
+          });
           break;
         }
         case "switched": {
@@ -300,7 +310,7 @@ export function NativePlayerScreen() {
           // se pone al día (ruta, recientes, progreso) sin pedirle que vuelva a empezar.
           if (latest.kind === "channel") {
             playedPathRef.current = latest.channelPath(payload.id);
-            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(payload.id) }, search: { categoryId: latest.search.categoryId } });
+            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(payload.id) }, search: { categoryId: latest.search.categoryId, favorites: latest.search.favorites } });
           } else if (latest.kind === "episode") {
             playedPathRef.current = latest.episodePath(payload.id);
             navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(payload.id) }, search: { seriesId: latest.search.seriesId } });
@@ -310,13 +320,16 @@ export function NativePlayerScreen() {
         case "tracks":
           saveTrackPreference(latest.profileId, { audio: payload.audio, subtitle: payload.subtitle });
           break;
+        case "subtitle_style":
+          saveSubtitleStyle(latest.profileId, payload.style);
+          break;
         case "zap": {
           const list = latest.channels ?? [];
           const index = list.findIndex((c) => c.id === latest.itemId);
           // Tras el último canal viene el primero (y al revés), como en TiviMate.
           const target = index === -1 || list.length < 2 ? undefined : list[(((index + payload.direction) % list.length) + list.length) % list.length];
           if (target) {
-            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(target.id) }, search: { categoryId: latest.search.categoryId } });
+            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(target.id) }, search: { categoryId: latest.search.categoryId, favorites: latest.search.favorites } });
           }
           break;
         }

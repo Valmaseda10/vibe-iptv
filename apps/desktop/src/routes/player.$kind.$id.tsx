@@ -19,6 +19,8 @@ type PlayerSearch = {
   /** Índice relativo de pista de audio elegida (F "premium" — selector de pista de
    * audio). Solo tiene efecto en nivel 2 (remux); en nivel 1 no hay selector todavía. */
   audioTrack?: number;
+  /** Abierto desde «★ Favoritos» del directo: la lista y el zapping son los favoritos. */
+  favorites?: boolean;
 };
 
 export const playerRoute = createRoute({
@@ -31,6 +33,7 @@ export const playerRoute = createRoute({
     catchupDuration: typeof search.catchupDuration === "number" ? search.catchupDuration : undefined,
     source: typeof search.source === "number" ? search.source : undefined,
     audioTrack: typeof search.audioTrack === "number" ? search.audioTrack : undefined,
+    favorites: search.favorites === true ? true : undefined,
   }),
   // En iPhone y iPad reproduce VLC en una pantalla nativa (F15).
   component: IS_IOS ? NativePlayerScreen : PlayerScreen,

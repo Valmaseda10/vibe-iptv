@@ -249,12 +249,16 @@ preferred_audio: string | null, preferred_subtitle: string | null,
  * Solo actualiza `items`, `next` y las preferencias del reproductor abierto, sin
  * volver a cargar el vídeo (tras un cambio hecho por el propio reproductor).
  */
-update_only: boolean, };
+update_only: boolean, 
+/**
+ * Aspecto de los subtítulos que eligió el perfil (Ajustes → Subtítulos).
+ */
+subtitle_style: SubtitleStyle | null, };
 
 /**
  * Lo que cuenta el reproductor nativo.
  */
-export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, };
+export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, } | { "type": "subtitle_style", style: SubtitleStyle, };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 
@@ -383,6 +387,13 @@ export type SubtitleCuesResponse = {
  * cambió de contenido): el cliente deja de preguntar.
  */
 active: boolean, cues: Array<SubtitleCue>, };
+
+/**
+ * Aspecto de los subtítulos: igual en el reproductor del PC (`::cue`) y en el de iPhone y
+ * iPad (opciones de texto de VLC). Valores: `size` small|normal|large|xlarge, `look`
+ * outline|box|shadow, `color` white|yellow, `font` system|serif|wide.
+ */
+export type SubtitleStyle = { size: string, look: string, color: string, font: string, };
 
 export type SubtitleTrackSummary = { index: number, language: string | null, codec_name: string | null, };
 

@@ -296,10 +296,25 @@ pub struct ChannelListItem {
 /// repetirlos en cuanto los ids no seguían el orden de los números.
 pub type ChannelCursor = (Option<i64>, i64);
 
+/// Qué canales entran en una lista: los de una categoría, los favoritos de un perfil
+/// («★ Favoritos» del directo), o todos.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ChannelScope {
+    pub category_id: Option<i64>,
+    /// Perfil cuyos canales favoritos forman la lista.
+    pub favorites_of: Option<i64>,
+}
+
+impl ChannelScope {
+    pub fn category(category_id: Option<i64>) -> Self {
+        Self { category_id, favorites_of: None }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn list_channels_page(
     conn: &Connection,
-    category_id: Option<i64>,
+    scope: ChannelScope,
     search: Option<&str>,
     after: Option<ChannelCursor>,
     limit: i64,
@@ -307,13 +322,7 @@ pub fn list_channels_page(
 ) -> Result<Vec<ChannelListItem>> {
     let mut sql = format!("SELECT {CHANNEL_LIST_COLUMNS} FROM channels c WHERE 1=1");
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
-    if !include_adult {
-        sql.push_str(NOT_ADULT_CHANNEL);
-    }
-    if let Some(cat) = category_id {
-        sql.push_str(" AND c.category_id = ?");
-        args.push(Box::new(cat));
-    }
+    push_channel_filters(&mut sql, &mut args, scope, include_adult);
     if let Some(q) = search {
         sql.push_str(" AND c.display_name LIKE ? ESCAPE '\\'");
         args.push(Box::new(like_pattern(q)));
@@ -340,23 +349,28 @@ pub fn list_channels_page(
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
-/// Filtros comunes de las listas de canales (categoría y adultos) sobre `channels c`.
-fn push_channel_filters(sql: &mut String, args: &mut Vec<Box<dyn ToSql>>, category_id: Option<i64>, include_adult: bool) {
+/// Filtros comunes de las listas de canales (categoría, favoritos y adultos) sobre
+/// `channels c`. Los favoritos van por la clave primaria de `favorites` (perfil, tipo, id).
+fn push_channel_filters(sql: &mut String, args: &mut Vec<Box<dyn ToSql>>, scope: ChannelScope, include_adult: bool) {
     if !include_adult {
         sql.push_str(NOT_ADULT_CHANNEL);
     }
-    if let Some(cat) = category_id {
+    if let Some(cat) = scope.category_id {
         sql.push_str(" AND c.category_id = ?");
         args.push(Box::new(cat));
+    }
+    if let Some(profile_id) = scope.favorites_of {
+        sql.push_str(" AND c.id IN (SELECT f.item_id FROM favorites f WHERE f.profile_id = ? AND f.item_kind = 'channel')");
+        args.push(Box::new(profile_id));
     }
 }
 
 /// Hasta `limit` canales justo antes de `anchor` en el orden de la lista, del más cercano
 /// al más lejano; sin `anchor`, los últimos de la lista.
-fn list_channels_before(conn: &Connection, category_id: Option<i64>, anchor: Option<ChannelCursor>, limit: i64, include_adult: bool) -> Result<Vec<ChannelListItem>> {
+fn list_channels_before(conn: &Connection, scope: ChannelScope, anchor: Option<ChannelCursor>, limit: i64, include_adult: bool) -> Result<Vec<ChannelListItem>> {
     let mut sql = format!("SELECT {CHANNEL_LIST_COLUMNS} FROM channels c WHERE 1=1");
     let mut args: Vec<Box<dyn ToSql>> = Vec::new();
-    push_channel_filters(&mut sql, &mut args, category_id, include_adult);
+    push_channel_filters(&mut sql, &mut args, scope, include_adult);
     match anchor {
         Some((Some(number), id)) => {
             sql.push_str(" AND c.sort_order IS NOT NULL AND (c.sort_order < ? OR (c.sort_order = ? AND c.id < ?))");
@@ -382,40 +396,40 @@ fn list_channels_before(conn: &Connection, category_id: Option<i64>, anchor: Opt
 /// da la vuelta por los extremos (tras el último viene el primero), igual que el zapping.
 /// Antes el reproductor pedía la primera página y, en listas de miles, el canal que se
 /// veía podía no estar: se quedaba sin nombre y sin zapping.
-pub fn list_channels_around(conn: &Connection, category_id: Option<i64>, channel_id: i64, limit: i64, include_adult: bool) -> Result<Vec<ChannelListItem>> {
+pub fn list_channels_around(conn: &Connection, scope: ChannelScope, channel_id: i64, limit: i64, include_adult: bool) -> Result<Vec<ChannelListItem>> {
     let mut count_sql = String::from("SELECT COUNT(*) FROM channels c WHERE 1=1");
     let mut count_args: Vec<Box<dyn ToSql>> = Vec::new();
-    push_channel_filters(&mut count_sql, &mut count_args, category_id, include_adult);
+    push_channel_filters(&mut count_sql, &mut count_args, scope, include_adult);
     let total: i64 = conn.query_row(&count_sql, params_from_iter(count_args.iter().map(|b| b.as_ref())), |r| r.get(0))?;
     if total <= limit {
-        return list_channels_page(conn, category_id, None, None, limit, include_adult);
+        return list_channels_page(conn, scope, None, None, limit, include_adult);
     }
 
     let mut anchor_sql = format!("SELECT {CHANNEL_LIST_COLUMNS} FROM channels c WHERE c.id = ?");
     let mut anchor_args: Vec<Box<dyn ToSql>> = vec![Box::new(channel_id)];
-    push_channel_filters(&mut anchor_sql, &mut anchor_args, category_id, include_adult);
+    push_channel_filters(&mut anchor_sql, &mut anchor_args, scope, include_adult);
     let anchor = conn
         .query_row(&anchor_sql, params_from_iter(anchor_args.iter().map(|b| b.as_ref())), channel_list_item)
         .optional()?;
     let Some(anchor) = anchor else {
-        return list_channels_page(conn, category_id, None, None, limit, include_adult);
+        return list_channels_page(conn, scope, None, None, limit, include_adult);
     };
     let cursor: ChannelCursor = (anchor.number, anchor.id);
 
     let want_before = (limit - 1) / 2;
     let want_after = limit - 1 - want_before;
-    let mut before = list_channels_before(conn, category_id, Some(cursor), want_before, include_adult)?;
-    let mut after = list_channels_page(conn, category_id, None, Some(cursor), want_after, include_adult)?;
+    let mut before = list_channels_before(conn, scope, Some(cursor), want_before, include_adult)?;
+    let mut after = list_channels_page(conn, scope, None, Some(cursor), want_after, include_adult)?;
     // Cerca de un extremo, lo que falta se toma del otro: la ventana da la vuelta. Como la
     // lista es mayor que la ventana, no se repite ningún canal.
     let short_before = want_before - before.len() as i64;
     let short_after = want_after - after.len() as i64;
     if short_before > 0 {
-        let tail = list_channels_before(conn, category_id, None, short_before, include_adult)?;
+        let tail = list_channels_before(conn, scope, None, short_before, include_adult)?;
         before.extend(tail);
     }
     if short_after > 0 {
-        let head = list_channels_page(conn, category_id, None, None, short_after, include_adult)?;
+        let head = list_channels_page(conn, scope, None, None, short_after, include_adult)?;
         after.extend(head);
     }
     before.reverse();
@@ -2970,8 +2984,8 @@ mod tests {
         let fields = TitleFields { clean_title: "Canal Adulto", year: None, match_key: "n/a", quality: None, language: None };
         queries::upsert_channel(&conn, provider_id, &map, &channel, &fields).unwrap();
 
-        assert!(list_channels_page(&conn, None, None, None, 50, false).unwrap().is_empty());
-        assert_eq!(list_channels_page(&conn, None, None, None, 50, true).unwrap().len(), 1);
+        assert!(list_channels_page(&conn, ChannelScope::default(), None, None, 50, false).unwrap().is_empty());
+        assert_eq!(list_channels_page(&conn, ChannelScope::default(), None, None, 50, true).unwrap().len(), 1);
     }
 
     /// Mismo criterio que canales/películas, pero para series (migración 005): antes de
@@ -3172,7 +3186,7 @@ mod tests {
         let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
         queries::upsert_channel(&conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
 
-        let channels = list_channels_page(&conn, None, None, None, 50, true).unwrap();
+        let channels = list_channels_page(&conn, ChannelScope::default(), None, None, 50, true).unwrap();
         let logo = channels[0].logo_url.as_deref().unwrap();
         assert!(!logo.contains("juan"));
         assert!(!logo.contains("hunter2"));
@@ -3211,7 +3225,7 @@ mod tests {
     fn channels_around_put_the_watched_one_in_the_middle_of_a_long_list() {
         let conn = memory_conn();
         let ids = seed_numbered_channels(&conn, 10);
-        let window = list_channels_around(&conn, None, ids["5"], 5, true).unwrap();
+        let window = list_channels_around(&conn, ChannelScope::default(), ids["5"], 5, true).unwrap();
         assert_eq!(numbers(&window), ["3", "4", "5", "6", "7"]);
     }
 
@@ -3220,16 +3234,33 @@ mod tests {
         let conn = memory_conn();
         let ids = seed_numbered_channels(&conn, 10);
         // Antes del 1 vienen el último (sin número) y el 10.
-        assert_eq!(numbers(&list_channels_around(&conn, None, ids["1"], 5, true).unwrap()), ["10", "sin", "1", "2", "3"]);
+        assert_eq!(numbers(&list_channels_around(&conn, ChannelScope::default(), ids["1"], 5, true).unwrap()), ["10", "sin", "1", "2", "3"]);
         // Tras el último vuelven el 1 y el 2.
-        assert_eq!(numbers(&list_channels_around(&conn, None, ids["sin"], 5, true).unwrap()), ["9", "10", "sin", "1", "2"]);
+        assert_eq!(numbers(&list_channels_around(&conn, ChannelScope::default(), ids["sin"], 5, true).unwrap()), ["9", "10", "sin", "1", "2"]);
+    }
+
+    #[test]
+    fn favourite_channels_form_their_own_list_per_profile() {
+        let conn = memory_conn();
+        let ids = seed_numbered_channels(&conn, 5);
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        for n in ["4", "2"] {
+            conn.execute("INSERT INTO favorites (profile_id, item_kind, item_id, added_at) VALUES (?1, 'channel', ?2, 0)", params![profile_id, ids[n]]).unwrap();
+        }
+        // Una película favorita con el mismo id no se cuela entre los canales.
+        conn.execute("INSERT INTO favorites (profile_id, item_kind, item_id, added_at) VALUES (?1, 'movie', ?2, 0)", params![profile_id, ids["3"]]).unwrap();
+        let scope = ChannelScope { category_id: None, favorites_of: Some(profile_id) };
+        assert_eq!(numbers(&list_channels_page(&conn, scope, None, None, 50, true).unwrap()), ["2", "4"]);
+        let other = ChannelScope { category_id: None, favorites_of: Some(profile_id + 1) };
+        assert!(list_channels_page(&conn, other, None, None, 50, true).unwrap().is_empty());
+        assert_eq!(numbers(&list_channels_around(&conn, scope, ids["4"], 10, true).unwrap()), ["2", "4"]);
     }
 
     #[test]
     fn channels_around_return_the_whole_list_when_it_fits() {
         let conn = memory_conn();
         let ids = seed_numbered_channels(&conn, 3);
-        let window = list_channels_around(&conn, None, ids["2"], 10, true).unwrap();
+        let window = list_channels_around(&conn, ChannelScope::default(), ids["2"], 10, true).unwrap();
         assert_eq!(numbers(&window), ["1", "2", "3", "sin"]);
     }
 

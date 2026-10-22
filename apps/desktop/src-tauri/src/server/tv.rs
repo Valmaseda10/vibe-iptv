@@ -406,7 +406,7 @@ mod tests {
         let mut seen = Vec::new();
         let mut after = None;
         loop {
-            let page = reads::list_channels_page(&conn, None, None, after, 2, true).unwrap();
+            let page = reads::list_channels_page(&conn, reads::ChannelScope::default(), None, after, 2, true).unwrap();
             if page.is_empty() {
                 break;
             }

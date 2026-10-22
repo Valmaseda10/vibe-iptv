@@ -1777,6 +1777,32 @@ canales) no se veía, con uno real de miles casi siempre. Ahora piden
 canal en medio que da la vuelta por los extremos (`reads::list_channels_around`, con
 tests), recentrada en cada cambio de canal.
 
+## 2026-10-22 — Mejoras tras probar la versión ios-36 en el iPhone (pedidas por el usuario)
+
+- **Favoritos del directo:** «★ Favoritos» en el selector de categorías de Directo (tras
+  «Todas») y una fila de favoritos encima de «Recientes». Abierto un canal desde ellos, la
+  lista y el zapping del reproductor son los favoritos (`?favorites=true` en la ruta). El
+  núcleo filtra con `favorites=1` en `/api/live/channels` (`reads::ChannelScope`, con
+  test). La categoría elegida se recuerda en el aparato.
+- **Subtítulos a gusto:** tamaño, estilo (contorno, fondo o sombra), color (blanco o
+  amarillo) y letra, por perfil, en Ajustes → Subtítulos con vista previa. En el PC se
+  aplican con `video::cue`; en iPhone y iPad, con las opciones de texto de VLC
+  (`freetype-*`) al abrir el vídeo. Desde el propio reproductor se cambia el tamaño (PC:
+  junto al selector de subtítulos; iPhone/iPad: menú de subtítulos → Tamaño de letra, que
+  reabre el vídeo en el mismo punto con las mismas pistas). Se guarda en el aparato, como
+  las pistas preferidas (no viaja por la nube).
+- **Fluidez al salir de una película:** al cerrar el reproductor solo se refresca lo que
+  depende de lo visto (fichas, Inicio, progreso, recientes), no toda la app. La prueba del
+  simulador mide ahora si la interfaz web sigue viva debajo del reproductor y cuánto
+  tarda en volver la ficha, para decidir si hace falta abrir el reproductor sin quitar la
+  app de la pantalla (cambia cómo se gira el iPhone).
+- **Botón de llenar la pantalla:** al volver a darle, VLC no quitaba el recorte (`nil` no
+  siempre lo deshace); ahora se recorta a la proporción del propio vídeo, que es no
+  recortar.
+- **Pendiente:** la fuente de directo con menos retraso (medir si las fuentes del usuario
+  traen la hora de emisión, en la sesión con su proveedor real), y después
+  recomendaciones por perfil y los más vistos en España.
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

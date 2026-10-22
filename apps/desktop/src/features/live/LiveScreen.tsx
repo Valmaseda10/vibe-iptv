@@ -15,10 +15,33 @@ const EPG_REFRESH_MS = 60_000;
 
 type ChannelItem = ChannelsPage["items"][number];
 
+const LIVE_SCOPE_KEY = "vibe.live.scope";
+const FAVORITES_SCOPE = "fav";
+
+function readSavedScope(): string {
+  try {
+    return window.localStorage.getItem(LIVE_SCOPE_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export function LiveScreen() {
   const navigate = useNavigate();
   const { profileId } = useActiveProfile();
-  const [categoryId, setCategoryId] = useState<number | null>(null);
+  // Qué lista se ve: todas, «★ Favoritos» o una categoría. Se recuerda en este aparato: quien
+  // ve sobre todo sus favoritos los tiene al entrar.
+  const [scope, setScopeState] = useState<string>(() => readSavedScope());
+  const setScope = (next: string) => {
+    setScopeState(next);
+    try {
+      window.localStorage.setItem(LIVE_SCOPE_KEY, next);
+    } catch {
+      // Sin almacenamiento: solo no se recuerda.
+    }
+  };
+  const favoritesOnly = scope === FAVORITES_SCOPE;
+  const categoryId = !favoritesOnly && scope ? Number(scope) : null;
   const [focusedIndex, setFocusedIndex] = useState<number | null>(null);
   const categoriesQuery = useQuery({
     queryKey: ["live-categories", profileId],
@@ -27,15 +50,20 @@ export function LiveScreen() {
   });
 
   const channelsQuery = useInfiniteQuery({
-    queryKey: ["live-channels", profileId, categoryId],
+    queryKey: ["live-channels", profileId, categoryId, favoritesOnly],
     queryFn: ({ pageParam }: { pageParam: { after: number; key: string } | undefined }) =>
       apiGet<ChannelsPage>(
-        `/api/live/channels?profile_id=${profileId}&limit=80${categoryId ? `&category_id=${categoryId}` : ""}${
+        `/api/live/channels?profile_id=${profileId}&limit=80${favoritesOnly ? "&favorites=1" : categoryId ? `&category_id=${categoryId}` : ""}${
           pageParam ? `&after=${pageParam.after}&after_key=${encodeURIComponent(pageParam.key)}` : ""
         }`,
       ),
     initialPageParam: undefined as { after: number; key: string } | undefined,
     getNextPageParam: (lastPage) => (lastPage.next_cursor != null ? { after: lastPage.next_cursor, key: lastPage.next_cursor_key ?? "" } : undefined),
+    enabled: profileId !== null,
+  });
+  const favoritesQuery = useQuery({
+    queryKey: ["live-favorites", profileId],
+    queryFn: () => apiGet<ChannelsPage>(`/api/live/channels?profile_id=${profileId}&limit=40&favorites=1`),
     enabled: profileId !== null,
   });
   const recentQuery = useQuery({
@@ -125,10 +153,11 @@ export function LiveScreen() {
         <select
           aria-label="Categoría"
           className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none sm:w-auto ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4 ios:py-2.5 ios:text-[15px]"
-          value={categoryId ?? ""}
-          onChange={(e) => setCategoryId(e.target.value ? Number(e.target.value) : null)}
+          value={scope}
+          onChange={(e) => setScope(e.target.value)}
         >
           <option value="">Todas las categorías</option>
+          <option value={FAVORITES_SCOPE}>★ Favoritos</option>
           {categoriesQuery.data?.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
@@ -137,7 +166,28 @@ export function LiveScreen() {
         </select>
       </div>
 
-      {categoryId === null && (recentQuery.data?.length ?? 0) > 0 && (
+      {scope === "" && (favoritesQuery.data?.items.length ?? 0) > 0 && (
+        <section className="px-4 sm:px-10" aria-label="Canales favoritos">
+          <h2 className="mb-2 text-sm font-medium text-neutral-400 ios:text-[20px] ios:font-bold ios:tracking-tight ios:text-white">★ Favoritos</h2>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {favoritesQuery.data!.items.map((channel) => (
+              <button
+                key={channel.id}
+                type="button"
+                onClick={() => navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(channel.id) }, search: { favorites: true } })}
+                className="flex shrink-0 items-center gap-2 rounded-lg bg-neutral-900 px-3 py-2 text-sm outline-none hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-red-600 ios:rounded-full ios:bg-ios-surface-1 ios:py-1.5 ios:pl-1.5 ios:pr-4 ios:text-[15px]"
+              >
+                <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500 ios:rounded-full ios:bg-ios-surface-2">
+                  {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
+                </span>
+                <span className="max-w-40 truncate">{channel.display_name}</span>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {scope === "" && (recentQuery.data?.length ?? 0) > 0 && (
         <section className="px-4 sm:px-10" aria-label="Canales recientes">
           <h2 className="mb-2 text-sm font-medium text-neutral-400 ios:text-[20px] ios:font-bold ios:tracking-tight ios:text-white">Recientes</h2>
           <div className="flex gap-2 overflow-x-auto pb-1">
@@ -172,7 +222,9 @@ export function LiveScreen() {
             ))}
           </div>
         ) : groups.length === 0 && !hasMore ? (
-          <p className="py-10 text-neutral-500">Sin canales en esta categoría.</p>
+          <p className="py-10 text-neutral-500">
+            {favoritesOnly ? "Aún no tienes canales favoritos: toca el corazón de un canal para tenerlo aquí." : "Sin canales en esta categoría."}
+          </p>
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative", width: "100%" }}>
             {virtualRows.map((row) => {
@@ -192,7 +244,7 @@ export function LiveScreen() {
                           navigate({
                             to: "/player/$kind/$id",
                             params: { kind: "channel", id: String(channel.id) },
-                            search: channel.category_id ? { categoryId: String(channel.category_id) } : {},
+                            search: favoritesOnly ? { favorites: true } : channel.category_id ? { categoryId: String(channel.category_id) } : {},
                           })
                         }
                         className="flex h-full min-w-0 flex-1 items-center gap-4 rounded-lg px-3 text-left outline-none hover:bg-neutral-900 ios:gap-3 ios:rounded-2xl ios:px-2 ios:active:bg-white/10"

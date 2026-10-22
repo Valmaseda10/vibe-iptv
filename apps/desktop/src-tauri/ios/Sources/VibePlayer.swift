@@ -55,6 +55,43 @@ private struct PlayRequest: Decodable {
     /// Solo actualiza la lista, el siguiente episodio y las preferencias del reproductor ya
     /// abierto, sin volver a cargar el vídeo.
     let update_only: Bool?
+    /// Aspecto de los subtítulos del perfil (Ajustes → Subtítulos).
+    let subtitle_style: SubtitleStyle?
+}
+
+/// Aspecto de los subtítulos, igual que en el reproductor del PC (`subtitleStyle.ts`):
+/// `size` small|normal|large|xlarge, `look` outline|box|shadow, `color` white|yellow,
+/// `font` system|serif|wide. Se aplica con las opciones de texto de VLC (freetype).
+private struct SubtitleStyle: Codable, Equatable {
+    var size: String
+    var look: String
+    var color: String
+    var font: String
+
+    static let standard = SubtitleStyle(size: "normal", look: "outline", color: "white", font: "system")
+    static let sizes: [(value: String, label: String)] = [("small", "Pequeño"), ("normal", "Normal"), ("large", "Grande"), ("xlarge", "Muy grande")]
+
+    /// Opciones de VLC para un `VLCMedia`.
+    var vlcOptions: [String] {
+        // Tamaño relativo de VLC: cuanto mayor el número, más pequeña la letra.
+        let relativeSize = ["small": 20, "normal": 16, "large": 12, "xlarge": 9][size] ?? 16
+        let rgb = color == "yellow" ? 0xFFD60A : 0xFFFFFF
+        let fontName = ["serif": "Georgia", "wide": "Verdana"][font] ?? "Helvetica Neue"
+        var options = [
+            ":freetype-rel-fontsize=\(relativeSize)",
+            ":freetype-color=\(rgb)",
+            ":freetype-font=\(fontName)",
+        ]
+        switch look {
+        case "box":
+            options += [":freetype-background-opacity=180", ":freetype-background-color=0", ":freetype-outline-thickness=0", ":freetype-shadow-opacity=0"]
+        case "shadow":
+            options += [":freetype-background-opacity=0", ":freetype-outline-thickness=0", ":freetype-shadow-opacity=220"]
+        default:
+            options += [":freetype-background-opacity=0", ":freetype-outline-thickness=4", ":freetype-outline-opacity=255", ":freetype-shadow-opacity=0"]
+        }
+        return options
+    }
 }
 
 /// Lo que se está reproduciendo ahora (puede cambiar sin pasar por la interfaz web).
@@ -291,6 +328,10 @@ final class VibePlayerController: UIViewController {
     private var seekRetried = false
     /// Último botón tocado, para la prueba del simulador (¿llegó el toque?).
     private var lastAction = ""
+    private var subtitleStyle = SubtitleStyle.standard
+    /// Pistas que se estaban viendo antes de reabrir el vídeo para cambiar el aspecto de los
+    /// subtítulos: se recuperan en vez de las preferidas del perfil.
+    private var restoreTracks: (audio: String?, subtitle: String?)?
     private var vodReconnects = 0
     private var errorRetries = 0
     private var lastRetryAt = Date.distantPast
@@ -391,6 +432,7 @@ final class VibePlayerController: UIViewController {
 
     /// Lista, siguiente episodio y preferencias, sin tocar lo que se reproduce.
     private func update(_ request: PlayRequest) {
+        if let style = request.subtitle_style { subtitleStyle = style }
         if let list = request.items { items = list }
         currentIndex = request.current_index
         nextItem = request.next
@@ -443,6 +485,7 @@ final class VibePlayerController: UIViewController {
         if startSeconds > 1 {
             media.addOption(":start-time=\(Int(startSeconds))")
         }
+        subtitleStyle.vlcOptions.forEach { media.addOption($0) }
         VibePlayerController.playGeneration += 1
         player.media = media
         player.play()
@@ -829,10 +872,12 @@ final class VibePlayerController: UIViewController {
         let audioNames: [Any] = player.audioTrackNames
         guard !audioNames.isEmpty else { return }
         tracksApplied = true
-        if let wanted = request.preferred_audio?.lowercased(), !wanted.isEmpty {
+        let restore = restoreTracks
+        restoreTracks = nil
+        if let wanted = (restore?.audio ?? request.preferred_audio)?.lowercased(), !wanted.isEmpty {
             selectTrack(wanted, names: audioNames, indexes: player.audioTrackIndexes) { self.player.currentAudioTrackIndex = $0 }
         }
-        if let wanted = request.preferred_subtitle?.lowercased(), !wanted.isEmpty {
+        if let wanted = (restore?.subtitle ?? request.preferred_subtitle)?.lowercased(), !wanted.isEmpty {
             selectTrack(wanted, names: player.videoSubTitlesNames, indexes: player.videoSubTitlesIndexes) { self.player.currentVideoSubTitleIndex = $0 }
         }
     }
@@ -1025,7 +1070,17 @@ final class VibePlayerController: UIViewController {
             player.videoCropGeometry = geometry
             free(geometry)
         } else {
-            player.videoCropGeometry = nil
+            // Volver a la imagen entera: quitarle el recorte a VLC (nil) no siempre lo deshace
+            // una vez aplicado (visto en un iPhone: se quedaba llenando la pantalla). Recortar a
+            // la proporción del propio vídeo es no recortar nada, y eso sí lo aplica siempre.
+            let size = player.videoSize
+            if size.width > 0, size.height > 0 {
+                let geometry = strdup("\(Int(size.width)):\(Int(size.height))")
+                player.videoCropGeometry = geometry
+                free(geometry)
+            } else {
+                player.videoCropGeometry = nil
+            }
         }
         aspectButton.setImage(
             UIImage(systemName: fillScreen ? "arrow.down.right.and.arrow.up.left" : "arrow.up.left.and.arrow.down.right", withConfiguration: symbolConfig),
@@ -1218,6 +1273,34 @@ final class VibePlayerController: UIViewController {
         MPNowPlayingInfoCenter.default().nowPlayingInfo = info
     }
 
+    /// Cambia el tamaño de los subtítulos desde el reproductor: se guarda para el perfil (la
+    /// interfaz web lo recibe como si se hubiera cambiado en Ajustes) y, como VLC solo lo
+    /// aplica al abrir el vídeo, se reabre en el mismo punto con las mismas pistas.
+    private func setSubtitleSize(_ size: String, label: String) {
+        guard size != subtitleStyle.size, let current = current else { return }
+        subtitleStyle.size = size
+        if let data = try? JSONEncoder().encode(subtitleStyle),
+           let style = try? JSONSerialization.jsonObject(with: data) {
+            sendEvent(["type": "subtitle_style", "style": style])
+        }
+        hud("Subtítulos: \(label)")
+        restoreTracks = (
+            currentTrackName(names: player.audioTrackNames, indexes: player.audioTrackIndexes, current: player.currentAudioTrackIndex),
+            currentTrackName(names: player.videoSubTitlesNames, indexes: player.videoSubTitlesIndexes, current: player.currentVideoSubTitleIndex)
+        )
+        tracksApplied = false
+        if current.live {
+            if current.liveBuffer {
+                behindLive = currentBehind
+                reopenLive()
+            } else if let url = URL(string: current.url) {
+                startPlayback(url, startSeconds: 0)
+            }
+        } else if let url = URL(string: current.url) {
+            startPlayback(url, startSeconds: progressSeconds)
+        }
+    }
+
     // MARK: - Menús
 
     private func trackMenu(
@@ -1359,7 +1442,7 @@ final class VibePlayerController: UIViewController {
                 self?.reportTracks()
             })
         subtitlesButton.showsMenuAsPrimaryAction = true
-        subtitlesButton.menu = trackMenu(
+        let subtitleTracks = trackMenu(
             names: { [weak self] in self?.player.videoSubTitlesNames ?? [] },
             indexes: { [weak self] in self?.player.videoSubTitlesIndexes ?? [] },
             current: { [weak self] in self?.player.currentVideoSubTitleIndex ?? -1 },
@@ -1367,6 +1450,20 @@ final class VibePlayerController: UIViewController {
                 self?.player.currentVideoSubTitleIndex = index
                 self?.reportTracks()
             })
+        let subtitleSize = UIMenu(title: "Tamaño de letra", image: UIImage(systemName: "textformat.size"), children: [
+            UIDeferredMenuElement.uncached { [weak self] completion in
+                guard let self = self else { return completion([]) }
+                completion(SubtitleStyle.sizes.map { size in
+                    UIAction(title: size.label, state: self.subtitleStyle.size == size.value ? .on : .off) { [weak self] _ in
+                        self?.setSubtitleSize(size.value, label: size.label)
+                    }
+                })
+            },
+        ])
+        subtitlesButton.menu = UIMenu(children: [
+            UIMenu(options: .displayInline, children: subtitleTracks.children),
+            subtitleSize,
+        ])
         moreButton.showsMenuAsPrimaryAction = true
         moreButton.menu = moreMenu()
 

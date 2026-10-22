@@ -41,7 +41,13 @@ export function useFavorites() {
     onError: (_err, _vars, context) => {
       if (context?.previous) queryClient.setQueryData(queryKey, context.previous);
     },
-    onSettled: () => queryClient.invalidateQueries({ queryKey }),
+    onSettled: (_data, _err, { itemKind }) => {
+      queryClient.invalidateQueries({ queryKey });
+      if (itemKind === "channel") {
+        queryClient.invalidateQueries({ queryKey: ["live-favorites"] });
+        queryClient.invalidateQueries({ queryKey: ["live-channels"] });
+      }
+    },
   });
 
   return {

@@ -790,17 +790,24 @@ struct ChannelsQuery {
     /// Canal que se está viendo: en vez de una página, los canales de su alrededor
     /// (`reads::list_channels_around`), para el reproductor.
     around: Option<i64>,
+    /// `1`: solo los canales favoritos del perfil («★ Favoritos» del directo).
+    #[serde(default)]
+    favorites: Option<u8>,
 }
 
 async fn get_live_channels(State(state): State<CatalogState>, Query(query): Query<ChannelsQuery>) -> Result<Json<ChannelsPage>, ApiError> {
     let limit = clamp_limit(query.limit);
     let after = query.after.map(|id| (query.after_key.as_deref().and_then(|k| k.parse::<i64>().ok()), id));
     let around = query.around;
+    let scope = reads::ChannelScope {
+        category_id: query.category_id,
+        favorites_of: (query.favorites == Some(1)).then_some(query.profile_id),
+    };
     let items = with_db(state.db_path, move |conn| {
         let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
         match around {
-            Some(channel_id) => reads::list_channels_around(conn, query.category_id, channel_id, limit, include_adult),
-            None => reads::list_channels_page(conn, query.category_id, query.q.as_deref(), after, limit, include_adult),
+            Some(channel_id) => reads::list_channels_around(conn, scope, channel_id, limit, include_adult),
+            None => reads::list_channels_page(conn, scope, query.q.as_deref(), after, limit, include_adult),
         }
     })
     .await?;

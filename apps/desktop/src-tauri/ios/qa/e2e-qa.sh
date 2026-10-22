@@ -408,9 +408,15 @@ if [ "$(player_field playing)" != "True" ]; then echo "  (reanudar: el toque no 
 p3=$(player_time)
 check "película: reanudar sigue avanzando" '[ "$(player_field playing)" = "True" ] && [ "$p3" -gt "$p2" ]'
 shot reproductor-pelicula
-close_player; sleep 2
+# Fluidez al salir: ¿la interfaz web siguió viva debajo del reproductor (su mapa se escribe
+# cada medio segundo)? ¿y cuánto tarda la ficha en volver tras cerrar?
+web_age=$(python3 -c "import os,sys,time; print(int(time.time() - os.path.getmtime(sys.argv[1])))" "${WEB_MAP:-/nonexistent}" 2>/dev/null || echo "?")
+echo "  interfaz web debajo del reproductor: último repintado hace ${web_age}s"
+close_started=$(python3 -c "import time; print(time.time())")
+close_player
 check "película: cerrar sale del reproductor" 'wait_player_closed 10'
 check "película: vuelve a la ficha con «Continuar»" 'wait_visible "Continuar" contiene 8'
+echo "  vuelta a la ficha: $(python3 -c "import time,sys; print(round(time.time() - float(sys.argv[1]), 1))" "$close_started") s desde el toque en cerrar"
 check "ficha: enseña cuánto queda" 'visible "Quedan" contiene'
 tap_label "Continuar" contiene 5
 check "película: «Continuar» retoma donde se dejó" 'wait_player_open 25 && sleep 4 && [ "$(player_time)" -ge $((p3 - 10)) ]'
