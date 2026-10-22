@@ -32,6 +32,9 @@ export function SeriesDetailScreen() {
     // series_detail() puede llamarse bajo demanda en el núcleo (primera visita o caché
     // de más de 7 días): esta petición puede tardar más que el resto de la API.
     queryFn: () => apiGet<SeriesDetailResponse>(`/api/series/${seriesId}?profile_id=${profileId}`),
+    // La ficha llega al instante con lo guardado; lo que faltaba (tráiler, clasificación,
+    // duración, episodios nuevos) se pide por detrás: se vuelve a preguntar unas veces.
+    refetchInterval: (query) => (query.state.data?.pending_details && query.state.dataUpdateCount < 4 ? 2500 : false),
     enabled: profileId !== null,
   });
 

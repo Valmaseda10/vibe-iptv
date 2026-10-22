@@ -164,6 +164,11 @@ trailer_key: string | null,
  */
 age_rating: string | null, sources: Array<MovieSourceSummary>, 
 /**
+ * Se están pidiendo por detrás datos que faltan (tráiler, clasificación, duración):
+ * la ficha se enseña ya y vuelve a preguntar en unos segundos.
+ */
+pending_details: boolean, 
+/**
  * "Más como esto" (F "premium"): recomendaciones de TMDB para este título en
  * concreto, cruzadas contra el catálogo local (nunca sugerir algo que el
  * proveedor no tiene) — se rellena aparte en el handler, no aquí, porque hace
@@ -389,6 +394,10 @@ export type SearchHitResponse = { item_kind: string, item_id: number, title: str
 export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, };
 
 export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, trailer_key: string | null, age_rating: string | null, similar: Array<SimilarTitleSummary>, episodes: Array<EpisodeSummary>, 
+/**
+ * Igual que en la película: episodios o extras pedidos por detrás.
+ */
+pending_details: boolean, 
 /**
  * Episodio del botón "Ver/Continuar T·E" (`reads::up_next_episode`); `null` sin episodios.
  */

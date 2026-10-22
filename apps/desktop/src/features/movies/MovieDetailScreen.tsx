@@ -40,6 +40,9 @@ export function MovieDetailScreen() {
   const { data, isPending, isError, error } = useQuery({
     queryKey: ["movie", movieId, profileId],
     queryFn: () => apiGet<MovieDetailResponse>(`/api/movies/${movieId}${profileId != null ? `?profile_id=${profileId}` : ""}`),
+    // La ficha llega al instante con lo guardado; lo que faltaba (tráiler, clasificación,
+    // duración, episodios nuevos) se pide por detrás: se vuelve a preguntar unas veces.
+    refetchInterval: (query) => (query.state.data?.pending_details && query.state.dataUpdateCount < 4 ? 2500 : false),
   });
 
   // Marcar como vista sin reproducir (F "premium", como Plex/Emby) — paridad con el

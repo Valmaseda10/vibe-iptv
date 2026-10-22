@@ -228,6 +228,9 @@ pub struct MovieDetailResponse {
     /// clasificación para esto, o si todavía no se ha comprobado. Nunca del proveedor.
     pub age_rating: Option<String>,
     pub sources: Vec<MovieSourceSummary>,
+    /// Se están pidiendo por detrás datos que faltan (tráiler, clasificación, duración):
+    /// la ficha se enseña ya y vuelve a preguntar en unos segundos.
+    pub pending_details: bool,
     /// "Más como esto" (F "premium"): recomendaciones de TMDB para este título en
     /// concreto, cruzadas contra el catálogo local (nunca sugerir algo que el
     /// proveedor no tiene) — se rellena aparte en el handler, no aquí, porque hace
@@ -256,6 +259,7 @@ impl From<reads::MovieDetail> for MovieDetailResponse {
             age_rating: row.age_rating,
             sources: row.sources.into_iter().map(Into::into).collect(),
             watched: false,
+            pending_details: false,
             similar: Vec::new(),
         }
     }
@@ -357,6 +361,8 @@ pub struct SeriesDetailResponse {
     pub age_rating: Option<String>,
     pub similar: Vec<SimilarTitleSummary>,
     pub episodes: Vec<EpisodeSummary>,
+    /// Igual que en la película: episodios o extras pedidos por detrás.
+    pub pending_details: bool,
     /// Episodio del botón "Ver/Continuar T·E" (`reads::up_next_episode`); `null` sin episodios.
     #[ts(type = "number | null")]
     pub up_next_episode_id: Option<i64>,
@@ -1001,44 +1007,60 @@ async fn get_movie_detail(
     let db_path = state.db_path.clone();
     let movie = with_db(db_path.clone(), move |conn| reads::get_movie(conn, id)).await?;
     let mut movie = movie.ok_or(ApiError::NotFound)?;
-
-    if movie.trailer_checked_at.is_none() {
-        if let Some(tmdb_id) = movie.tmdb_id {
-            match fetch_and_store_movie_extras(db_path.clone(), id, tmdb_id).await {
-                Ok(extras) => {
-                    movie.youtube_trailer_key = extras.trailer_key;
-                    movie.age_rating = extras.age_rating;
-                    movie.similar_tmdb_ids = extras.similar_tmdb_ids;
-                }
-                Err(err) => tracing::warn!(movie_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
-            }
-        }
-    }
-
-    // Duración/códecs reales (F "premium", `Source::vod_info`): solo la primera fuente
-    // sin comprobar, y solo una por visita a la ficha — no tiene sentido preguntarle al
-    // proveedor por cada fuente disponible de la misma película a la vez.
-    if let Some(source) = movie.sources.iter().find(|s| s.vod_info_checked_at.is_none()) {
-        let (source_id, provider_id, remote_id) = (source.id, source.provider_id, source.remote_id.clone());
-        match fetch_and_store_vod_info(db_path.clone(), source_id, provider_id, remote_id).await {
-            Ok(info) => {
-                if let Some(s) = movie.sources.iter_mut().find(|s| s.id == source_id) {
-                    s.duration_s = info.duration_seconds;
-                    s.video_codec = info.video_codec;
-                    s.audio_codec = info.audio_codec;
-                }
-            }
-            Err(err) => tracing::warn!(movie_id = id, source_id, error = %err, "no se pudo comprobar la información técnica"),
-        }
-    }
-
-    // Un perfil con restricciones no ve la ficha de lo que no puede ver (F14). Aquí y no
-    // antes: los extras de arriba son lo que trae la clasificación por edad de un título
-    // que aún no la tenía.
     let access = match query.profile_id {
         Some(profile_id) => with_db(db_path.clone(), move |conn| reads::profile_access(conn, profile_id)).await?,
         None => reads::ProfileAccess::UNRESTRICTED,
     };
+    let mut pending_details = false;
+
+    // Tráiler, clasificación y similares de TMDB. Antes la ficha esperaba a TMDB la primera
+    // vez; ahora se enseña al instante y esto llega por detrás (se ve al volver a pedirla).
+    // Excepción: un perfil con límite de edad sí espera, porque es lo que trae la
+    // clasificación de un título que aún no la tenía (F14).
+    if movie.trailer_checked_at.is_none() {
+        if let Some(tmdb_id) = movie.tmdb_id {
+            if access.max_age.is_some() {
+                match fetch_and_store_movie_extras(db_path.clone(), id, tmdb_id).await {
+                    Ok(extras) => {
+                        movie.youtube_trailer_key = extras.trailer_key;
+                        movie.age_rating = extras.age_rating;
+                        movie.similar_tmdb_ids = extras.similar_tmdb_ids;
+                    }
+                    Err(err) => tracing::warn!(movie_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
+                }
+            } else if let Some(key) = detail_refresh::begin(format!("movie-extras:{id}")) {
+                pending_details = true;
+                let db_path = db_path.clone();
+                tokio::spawn(async move {
+                    let result = fetch_and_store_movie_extras(db_path, id, tmdb_id).await;
+                    if let Err(err) = &result {
+                        tracing::warn!(movie_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación");
+                    }
+                    detail_refresh::end(key, result.is_ok());
+                });
+            }
+        }
+    }
+
+    // Duración/códecs reales (F "premium", `Source::vod_info`) del proveedor: por detrás y
+    // de una fuente por visita. Si el proveedor falla, no se le vuelve a preguntar en una
+    // hora (antes se le preguntaba en cada visita y la ficha esperaba cada vez).
+    if let Some(source) = movie.sources.iter().find(|s| s.vod_info_checked_at.is_none()) {
+        let (source_id, provider_id, remote_id) = (source.id, source.provider_id, source.remote_id.clone());
+        if let Some(key) = detail_refresh::begin(format!("vod-info:{source_id}")) {
+            pending_details = true;
+            let db_path = db_path.clone();
+            tokio::spawn(async move {
+                let result = fetch_and_store_vod_info(db_path, source_id, provider_id, remote_id).await;
+                if let Err(err) = &result {
+                    tracing::warn!(movie_id = id, source_id, error = %err, "no se pudo comprobar la información técnica");
+                }
+                detail_refresh::end(key, result.is_ok());
+            });
+        }
+    }
+
+    // Un perfil con restricciones no ve la ficha de lo que no puede ver (F14).
     if !with_db(db_path.clone(), move |conn| reads::item_allowed(conn, "movie", id, access)).await? {
         return Err(ApiError::NotForProfile);
     }
@@ -1077,7 +1099,65 @@ async fn get_movie_detail(
     let mut response: MovieDetailResponse = movie.into();
     response.similar = similar.into_iter().map(Into::into).collect();
     response.watched = watched;
+    response.pending_details = pending_details;
     Ok(Json(response))
+}
+
+/// Datos de las fichas que se piden por detrás (TMDB, proveedor): nunca dos veces a la vez
+/// lo mismo, y lo que falló no se vuelve a intentar en una hora (un proveedor que no
+/// responde no se martillea en cada visita a la ficha).
+mod detail_refresh {
+    use std::collections::{HashMap, HashSet};
+    use std::sync::{LazyLock, Mutex};
+    use std::time::{Duration, Instant};
+
+    const RETRY_AFTER_FAILURE: Duration = Duration::from_secs(3600);
+
+    #[derive(Default)]
+    struct State {
+        in_flight: HashSet<String>,
+        failed_at: HashMap<String, Instant>,
+    }
+
+    static STATE: LazyLock<Mutex<State>> = LazyLock::new(|| Mutex::new(State::default()));
+
+    /// `Some(clave)` si toca pedirlo ahora; `None` si ya se está pidiendo o falló hace poco.
+    pub fn begin(key: String) -> Option<String> {
+        let mut state = STATE.lock().ok()?;
+        if state.in_flight.contains(&key) || state.failed_at.get(&key).is_some_and(|at| at.elapsed() < RETRY_AFTER_FAILURE) {
+            return None;
+        }
+        state.in_flight.insert(key.clone());
+        Some(key)
+    }
+
+    pub fn end(key: String, ok: bool) {
+        if let Ok(mut state) = STATE.lock() {
+            state.in_flight.remove(&key);
+            if ok {
+                state.failed_at.remove(&key);
+            } else {
+                state.failed_at.insert(key, Instant::now());
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn the_same_thing_is_not_asked_twice_at_once_nor_right_after_failing() {
+            let key = || "prueba:detail-refresh".to_string();
+            let first = begin(key()).expect("la primera vez toca");
+            assert!(begin(key()).is_none(), "ya se está pidiendo");
+            end(first, false);
+            assert!(begin(key()).is_none(), "falló hace un momento: se espera");
+            let other = begin("prueba:otra".to_string()).expect("otra cosa sí");
+            end(other, true);
+            assert!(begin("prueba:otra".to_string()).is_some(), "lo que salió bien se puede volver a pedir");
+        }
+    }
 }
 
 /// Lee la clave de TMDB del keychain (si no hay ninguna configurada, falla rápido y sin
@@ -1205,35 +1285,62 @@ async fn get_series_detail(
     const SEVEN_DAYS_SECONDS: i64 = 7 * 24 * 3600;
 
     let db_path = state.db_path.clone();
+    let profile_id = query.profile_id;
+    let access = with_db(db_path.clone(), move |conn| reads::profile_access(conn, profile_id)).await?;
     let stale_source = with_db(db_path.clone(), move |conn| reads::oldest_series_source_needing_detail(conn, id, SEVEN_DAYS_SECONDS)).await?;
+    let mut series = with_db(db_path.clone(), move |conn| reads::get_series(conn, id)).await?.ok_or(ApiError::NotFound)?;
+    let mut pending_details = false;
 
+    // Episodios del proveedor: la primera vez hay que esperarlos (sin ellos no hay ficha);
+    // si ya hay una lista y solo está vieja (más de 7 días), se enseña la que hay y la nueva
+    // llega por detrás. Antes la ficha esperaba al proveedor también en ese caso.
     if let Some((series_source_id, provider_id)) = stale_source {
-        if let Err(err) = refresh_series_detail(db_path.clone(), series_source_id, provider_id).await {
-            // No es fatal: se devuelve lo que ya hay en caché aunque el refresco falle
-            // (proveedor caído, credenciales revocadas, etc.).
-            tracing::warn!(series_id = id, error = %err, "no se pudo refrescar el detalle de la serie");
+        if series.episodes.is_empty() {
+            if let Err(err) = refresh_series_detail(db_path.clone(), series_source_id, provider_id).await {
+                // No es fatal: se devuelve lo que ya hay en caché aunque el refresco falle.
+                tracing::warn!(series_id = id, error = %err, "no se pudo refrescar el detalle de la serie");
+            }
+            series = with_db(db_path.clone(), move |conn| reads::get_series(conn, id)).await?.ok_or(ApiError::NotFound)?;
+        } else if let Some(key) = detail_refresh::begin(format!("series-detail:{series_source_id}")) {
+            pending_details = true;
+            let db_path = db_path.clone();
+            tokio::spawn(async move {
+                let result = refresh_series_detail(db_path, series_source_id, provider_id).await;
+                if let Err(err) = &result {
+                    tracing::warn!(series_id = id, error = %err, "no se pudo refrescar el detalle de la serie");
+                }
+                detail_refresh::end(key, result.is_ok());
+            });
         }
     }
 
-    let series = with_db(db_path.clone(), move |conn| reads::get_series(conn, id)).await?;
-    let mut series = series.ok_or(ApiError::NotFound)?;
-
+    // Extras de TMDB: como en la película, por detrás salvo para un perfil con límite de edad.
     if series.trailer_checked_at.is_none() {
         if let Some(tmdb_id) = series.tmdb_id {
-            match fetch_and_store_series_extras(db_path.clone(), id, tmdb_id).await {
-                Ok(extras) => {
-                    series.youtube_trailer_key = extras.trailer_key;
-                    series.age_rating = extras.age_rating;
-                    series.similar_tmdb_ids = extras.similar_tmdb_ids;
+            if access.max_age.is_some() {
+                match fetch_and_store_series_extras(db_path.clone(), id, tmdb_id).await {
+                    Ok(extras) => {
+                        series.youtube_trailer_key = extras.trailer_key;
+                        series.age_rating = extras.age_rating;
+                        series.similar_tmdb_ids = extras.similar_tmdb_ids;
+                    }
+                    Err(err) => tracing::warn!(series_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
                 }
-                Err(err) => tracing::warn!(series_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación"),
+            } else if let Some(key) = detail_refresh::begin(format!("series-extras:{id}")) {
+                pending_details = true;
+                let db_path = db_path.clone();
+                tokio::spawn(async move {
+                    let result = fetch_and_store_series_extras(db_path, id, tmdb_id).await;
+                    if let Err(err) = &result {
+                        tracing::warn!(series_id = id, error = %err, "no se pudo comprobar el tráiler/clasificación");
+                    }
+                    detail_refresh::end(key, result.is_ok());
+                });
             }
         }
     }
 
-    // Igual que en la ficha de película (F14), después de pedir los extras.
-    let profile_id = query.profile_id;
-    let access = with_db(db_path.clone(), move |conn| reads::profile_access(conn, profile_id)).await?;
+    // Igual que en la ficha de película (F14).
     if !with_db(db_path.clone(), move |conn| reads::item_allowed(conn, "series", id, access)).await? {
         return Err(ApiError::NotForProfile);
     }
@@ -1285,6 +1392,7 @@ async fn get_series_detail(
         age_rating: series.age_rating,
         similar: similar.into_iter().map(Into::into).collect(),
         episodes,
+        pending_details,
         up_next_episode_id: up_next.map(|(id, _)| id),
         up_next_started: up_next.is_some_and(|(_, started)| started),
     }))

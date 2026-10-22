@@ -1824,6 +1824,14 @@ tests), recentrada en cada cambio de canal.
   la 2». También se cambia a mano: en el PC, selector «Fuente» abajo; en iPhone y iPad,
   menú «Más» → Fuente. Solo películas: en series cada fuente tiene su propia lista de
   episodios.
+- **Fichas al instante:** abrir una película esperaba a TMDB (tráiler, clasificación) la
+  primera vez y al proveedor (duración y códecs) en cada visita mientras fallara; una
+  serie esperaba al proveedor si sus episodios tenían más de 7 días. Ahora la ficha sale
+  con lo guardado y eso se pide por detrás (`server::api::detail_refresh`: nunca dos
+  veces a la vez, y lo que falla no se repite en una hora); la ficha avisa con
+  `pending_details` y la interfaz vuelve a preguntar unas veces. Se espera solo cuando
+  hace falta: episodios que nunca se pidieron, o la clasificación por edad para un perfil
+  con límite (F14).
 - **Descartado: elegir sola la fuente de directo con menos retraso.** Medido el
   2026-10-22 con el proveedor real (4 fuentes de un canal, una conexión cada vez, con
   `tools/medir-retraso-directo.py`): llegan bien, pero el panel reempaqueta los canales y
