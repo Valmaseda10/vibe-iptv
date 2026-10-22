@@ -112,6 +112,47 @@ private final class GradientView: UIView {
     required init?(coder: NSCoder) { fatalError("no se usa desde storyboard") }
 }
 
+/// Pruebas del simulador (`VIBE_QA_E2E`): el registro interno de VLC y los saltos que pide
+/// el reproductor, en `qa-vlc.log`, para ver qué hace VLC al saltar. En la app instalada
+/// esa variable no existe y no se escribe nada.
+private final class QaVlcLog: NSObject, VLCLibraryLogReceiverProtocol {
+    static let shared: QaVlcLog? = {
+        guard ProcessInfo.processInfo.environment["VIBE_QA_E2E"] != nil,
+              let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first else { return nil }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("qa-vlc.log")
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        guard let handle = try? FileHandle(forWritingTo: url) else { return nil }
+        return QaVlcLog(handle: handle)
+    }()
+
+    private let handle: FileHandle
+    private let queue = DispatchQueue(label: "vibe.qa-vlc-log")
+    private var written = 0
+
+    private init(handle: FileHandle) {
+        self.handle = handle
+    }
+
+    func handleMessage(_ message: String, debugLevel level: Int32) {
+        write("vlc[\(level)] \(message)")
+    }
+
+    /// Lo que hace el propio reproductor (saltos, cortes), entre las líneas de VLC.
+    func note(_ message: String) {
+        write("vibe \(message)")
+    }
+
+    private func write(_ message: String) {
+        let line = String(format: "%.3f ", Date().timeIntervalSince1970) + message + "\n"
+        queue.async {
+            guard self.written < 40_000_000, let data = line.data(using: .utf8) else { return }
+            self.handle.write(data)
+            self.written += data.count
+        }
+    }
+}
+
 final class VibePlayerController: UIViewController {
     private static weak var current: VibePlayerController?
 
@@ -159,7 +200,15 @@ final class VibePlayerController: UIViewController {
     // reabría por su cuenta la conexión que el proxy cortaba al saltar (regla R1: una sola
     // con el proveedor) y se quedaba donde estaba, sin hacer el salto; y al cerrar un
     // directo volvía a pedirlo. Visto en el simulador.
-    private static let sharedPlayer = VLCMediaPlayer()
+    private static let sharedPlayer: VLCMediaPlayer = {
+        if let log = QaVlcLog.shared {
+            let library = VLCLibrary.shared()
+            library.debugLogging = true
+            library.debugLoggingLevel = 4
+            library.debugLoggingTarget = log
+        }
+        return VLCMediaPlayer()
+    }()
     private let player = VibePlayerController.sharedPlayer
     /// Sube cada vez que el reproductor empieza algo: un aviso de cierre pendiente sabe así
     /// si entretanto se abrió otra cosa.
@@ -558,6 +607,7 @@ final class VibePlayerController: UIViewController {
                 let duration = durationSeconds ?? knownDuration
                 let nearEnd = duration.map { lastPosition >= $0 - 30 } ?? false
                 if !nearEnd {
+                    QaVlcLog.shared?.note("fin a mitad: última \(lastPosition), salto \(seekTarget.map { String($0) } ?? "-"), reaperturas \(vodReconnects)")
                     if vodReconnects < 5, let url = URL(string: current.url) {
                         vodReconnects += 1
                         startPlayback(url, startSeconds: seekTarget ?? lastPosition)
@@ -863,6 +913,7 @@ final class VibePlayerController: UIViewController {
     }
 
     private func applySeek(to target: Double) {
+        QaVlcLog.shared?.note("salto pedido: de \(positionSeconds) a \(target)")
         seekTarget = target
         lastPosition = target
         seekRequestedAt = Date()
@@ -876,9 +927,11 @@ final class VibePlayerController: UIViewController {
         let elapsed = Date().timeIntervalSince(seekRequestedAt)
         let position = positionSeconds
         if position >= target - 1, position <= target + elapsed + 2 {
+            QaVlcLog.shared?.note("salto alcanzado: \(position) (pedido \(target))")
             seekTarget = nil
         } else if elapsed > 1.5, !seekRetried, player.isPlaying {
             seekRetried = true
+            QaVlcLog.shared?.note("salto no alcanzado (\(position)), se repite: \(target)")
             player.time = VLCTime(int: Int32(target * 1000))
         } else if elapsed > 5 {
             seekTarget = nil

@@ -557,6 +557,9 @@ go Películas
 check "segundo plano: al volver, el catálogo sigue cargando" 'wait_visible "Toy Story" contiene 15'
 section "fin"
 shot fin
+# Registro de VLC (modo prueba): qué hizo al saltar, para diagnosticar.
+vlc_log=$(find "$(xcrun simctl get_app_container "$UDID" "$bundle" data 2>/dev/null)" -name qa-vlc.log 2>/dev/null | head -1)
+[ -n "$vlc_log" ] && cp "$vlc_log" "$OUT/vlc.log"
 
 xcrun simctl spawn "$UDID" log show --last 15m --predicate "process CONTAINS 'VIBE'" > "$OUT/log.txt" 2>/dev/null || true
 if grep -q "panicked at" "$OUT/log.txt"; then echo "MAL  el núcleo entró en pánico"; grep -A3 "panicked at" "$OUT/log.txt" | head; fail=1; fi
