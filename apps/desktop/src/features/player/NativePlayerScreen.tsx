@@ -186,6 +186,14 @@ export function NativePlayerScreen() {
   const ready = base != null && profileId !== null && startSeconds !== null && (title != null || titleWaitOver);
   const playedPathRef = useRef<string | null>(null);
   const lastRequestRef = useRef<NativePlayRequest | null>(null);
+  // El reproductor ya se cerró y esta pantalla se está yendo: no se vuelve a pedir nada.
+  // Sin esto, un repintado antes de salir (al refrescar la ficha) volvía a abrir el vídeo,
+  // a veces de forma invisible, con el directo abierto con el proveedor (visto en el
+  // simulador). Se rearma solo si cambia lo que hay que ver.
+  const closedRef = useRef(false);
+  useEffect(() => {
+    closedRef.current = false;
+  }, [kind, itemId]);
 
   const buildRequest = useCallback((): NativePlayRequest | null => {
     if (!base || startSeconds === null) return null;
@@ -217,7 +225,7 @@ export function NativePlayerScreen() {
   }, [buildRequest]);
 
   useEffect(() => {
-    if (!ready || playedPathRef.current === streamPath) return;
+    if (!ready || closedRef.current || playedPathRef.current === streamPath) return;
     playedPathRef.current = streamPath;
     play();
   }, [ready, streamPath, play]);
@@ -226,7 +234,7 @@ export function NativePlayerScreen() {
   // le pasan sin recargar el vídeo.
   const itemsKey = `${items.map((i) => `${i.id}:${i.subtitle ?? ""}`).join("|")}#${currentIndex}#${next?.id ?? ""}`;
   useEffect(() => {
-    if (!lastRequestRef.current || playedPathRef.current !== streamPath) return;
+    if (closedRef.current || !lastRequestRef.current || playedPathRef.current !== streamPath) return;
     const request = buildRequest();
     if (!request) return;
     invoke("native_player_play", { request: { ...request, update_only: true } }).catch(() => {});
@@ -270,7 +278,7 @@ export function NativePlayerScreen() {
         case "closed": {
           const position = payload.ended && payload.duration_s ? payload.duration_s : payload.position_s;
           const saved = saveProgress(position, payload.duration_s, payload.id);
-          playedPathRef.current = null;
+          closedRef.current = true;
           lastRequestRef.current = null;
           // La grabación del directo la suelta el propio reproductor (VibePlayer.swift) en
           // cuanto VLC ha parado: pedirlo desde aquí, antes, hacía que VLC reconectara.

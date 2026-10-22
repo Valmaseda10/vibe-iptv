@@ -118,6 +118,9 @@ final class VibePlayerController: UIViewController {
     /// Abre el reproductor, o cambia lo que reproduce si ya está abierto (zapping).
     fileprivate static func show(_ request: PlayRequest) {
         if let controller = current, controller.presentingViewController != nil {
+            // Ya cerrado y saliendo de la pantalla: no se le vuelve a dar nada que reproducir
+            // (se quedaba sonando sin verse, con el directo abierto con el proveedor).
+            if controller.closed { return }
             if let message = request.message {
                 controller.spinner.stopAnimating()
                 controller.showMessage(message)
@@ -163,7 +166,7 @@ final class VibePlayerController: UIViewController {
     private var items: [PlayItem] = []
     private var currentIndex: Int?
     private var nextItem: PlayItem?
-    private var closed = false
+    private(set) var closed = false
 
     private let videoView = UIView()
     /// Los controles van en una ventana propia por encima de la del vídeo. VLC pinta su
@@ -311,6 +314,7 @@ final class VibePlayerController: UIViewController {
     // MARK: - Reproducción
 
     private func load(_ request: PlayRequest) {
+        guard !closed else { return }
         self.request = request
         update(request)
         let item = Current(

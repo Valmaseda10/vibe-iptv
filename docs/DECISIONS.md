@@ -1701,6 +1701,12 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
     al cerrarlo, el reproductor nativo avisa con su sesión y canal, y el núcleo contesta
     `410` a esa sesión sin abrir nada con el proveedor. Test de ruta y prueba en el
     simulador: la conexión sigue cerrada 10 s después.
+    La causa principal resultó otra: al cerrar, la pantalla web borraba su marca de «ya
+    sonando» y, si se repintaba antes de salir (al refrescar la ficha), volvía a pedir la
+    reproducción. Si el reproductor ya se había ido, se abría otro (en el iPhone había que
+    cerrarlo varias veces); si aún se estaba yendo, la petición entraba en el reproductor
+    cerrado y sonaba sin verse. Ahora la pantalla no pide nada tras el cierre y el
+    reproductor nativo cerrado no acepta nada que reproducir.
   - *Zapping:* después del último canal viene el primero (y al revés), como en TiviMate.
   - *Directo:* sin la barra de cristal vacía abajo (no hay tiempos que enseñar).
 
