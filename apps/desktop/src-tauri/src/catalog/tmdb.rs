@@ -249,6 +249,32 @@ impl TmdbClient {
         Ok(response.results.into_iter().map(|r| r.id).collect())
     }
 
+    /// Lo más popular ahora en las plataformas de suscripción en España (Top 10, 2026-10-22).
+    /// No hay un dato público y gratuito de audiencias; esto es la popularidad de TMDB
+    /// entre lo disponible en streaming en España. `pages` páginas de 20, para que al
+    /// cruzarlo con el catálogo del proveedor queden al menos diez.
+    pub async fn popular_in_spain(&self, kind: &str, pages: u32) -> Result<Vec<i64>> {
+        let path = if kind == "series" { "/discover/tv" } else { "/discover/movie" };
+        let mut ids = Vec::new();
+        for page in 1..=pages {
+            let page = page.to_string();
+            let response: RecommendationsResponse = self
+                .get_json(
+                    path,
+                    &[
+                        ("language", "es-ES"),
+                        ("watch_region", "ES"),
+                        ("with_watch_monetization_types", "flatrate"),
+                        ("sort_by", "popularity.desc"),
+                        ("page", &page),
+                    ],
+                )
+                .await?;
+            ids.extend(response.results.into_iter().map(|r| r.id));
+        }
+        Ok(ids)
+    }
+
     /// Los ~19 géneros de película y ~16 de serie de TMDB, casi estáticos — se piden una
     /// vez por sincronización con clave de TMDB (`commands::spawn_tmdb_matching`), nunca
     /// por título: es la misma llamada sirva para 10 películas o para 100.000.

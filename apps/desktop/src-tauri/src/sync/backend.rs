@@ -49,16 +49,18 @@ pub enum Collection {
     Profiles,
     Favorites,
     Playback,
+    Ratings,
 }
 
 impl Collection {
-    pub const ALL: [Collection; 3] = [Collection::Profiles, Collection::Favorites, Collection::Playback];
+    pub const ALL: [Collection; 4] = [Collection::Profiles, Collection::Favorites, Collection::Playback, Collection::Ratings];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Collection::Profiles => "profiles",
             Collection::Favorites => "favorites",
             Collection::Playback => "playback",
+            Collection::Ratings => "ratings",
         }
     }
 }
@@ -100,6 +102,17 @@ pub struct RemotePlayback {
     pub deleted: bool,
 }
 
+/// Valoración de una película o serie: -1, 1 o 2 (ver `reads::RATING_VALUES`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteRating {
+    pub profile_id: String,
+    pub item_kind: String,
+    pub item_key: String,
+    pub rating: i64,
+    pub updated_at: i64,
+    pub deleted: bool,
+}
+
 /// Un documento de la nube. Los borrados viajan como documentos con `deleted = true`
 /// (borrado lógico): un borrado de verdad no aparecería en la bajada incremental y el
 /// otro dispositivo nunca se enteraría.
@@ -109,6 +122,7 @@ pub enum RemoteDoc {
     Profile(RemoteProfile),
     Favorite(RemoteFavorite),
     Playback(RemotePlayback),
+    Rating(RemoteRating),
 }
 
 impl RemoteDoc {
@@ -117,6 +131,7 @@ impl RemoteDoc {
             RemoteDoc::Profile(_) => Collection::Profiles,
             RemoteDoc::Favorite(_) => Collection::Favorites,
             RemoteDoc::Playback(_) => Collection::Playback,
+            RemoteDoc::Rating(_) => Collection::Ratings,
         }
     }
 
@@ -127,6 +142,7 @@ impl RemoteDoc {
             RemoteDoc::Profile(p) => Self::profile_target(&p.id),
             RemoteDoc::Favorite(f) => Self::favorite_target(&f.profile_id, &f.item_kind, &f.item_key),
             RemoteDoc::Playback(p) => Self::playback_target(&p.profile_id, &p.item_kind, &p.item_key),
+            RemoteDoc::Rating(r) => Self::rating_target(&r.profile_id, &r.item_kind, &r.item_key),
         }
     }
 
@@ -140,6 +156,10 @@ impl RemoteDoc {
 
     pub fn playback_target(profile_id: &str, item_kind: &str, item_key: &str) -> String {
         format!("playback:{profile_id}:{item_kind}:{item_key}")
+    }
+
+    pub fn rating_target(profile_id: &str, item_kind: &str, item_key: &str) -> String {
+        format!("rating:{profile_id}:{item_kind}:{item_key}")
     }
 
     /// Id del documento en la nube. Los perfiles usan su propio id; favoritos y progreso

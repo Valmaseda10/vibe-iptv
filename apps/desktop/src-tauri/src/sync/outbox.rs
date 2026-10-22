@@ -9,7 +9,7 @@
 use rand::RngExt;
 use rusqlite::Connection;
 
-use super::backend::{RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile};
+use super::backend::{RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating};
 use crate::db::{cloud, now_epoch, queries, reads, Result};
 
 /// El progreso se guarda cada 10 s mientras se reproduce; a la nube basta con mandarlo
@@ -93,6 +93,26 @@ pub fn enqueue_favorite(conn: &Connection, profile_id: i64, item_kind: &str, ite
         added_at: added_at.unwrap_or(now),
         updated_at: added_at.unwrap_or(now),
         deleted: added_at.is_none(),
+    });
+    put(conn, &doc, now)
+}
+
+/// Estado actual de una valoración (puesta, cambiada o quitada).
+pub fn enqueue_rating(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64) -> Result<()> {
+    if item_kind != "movie" && item_kind != "series" {
+        return Ok(());
+    }
+    let Some(item_key) = reads::item_key_for(conn, item_kind, item_id)? else { return Ok(()) };
+    let Some(profile_remote_id) = ensure_profile_remote_id(conn, profile_id)? else { return Ok(()) };
+    let now = now_epoch();
+    let state = cloud::rating_state(conn, profile_id, item_kind, item_id)?;
+    let doc = RemoteDoc::Rating(RemoteRating {
+        profile_id: profile_remote_id,
+        item_kind: item_kind.to_string(),
+        item_key,
+        rating: state.map_or(0, |(rating, _)| rating),
+        updated_at: state.map_or(now, |(_, rated_at)| rated_at),
+        deleted: state.is_none(),
     });
     put(conn, &doc, now)
 }

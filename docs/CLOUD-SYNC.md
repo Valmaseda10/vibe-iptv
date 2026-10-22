@@ -68,6 +68,7 @@ consultas de grupo de colecciones ni índices compuestos.
 users/{uid}/profiles/{profile_id}
 users/{uid}/favorites/{sha256(target)}
 users/{uid}/playback/{sha256(target)}
+users/{uid}/ratings/{sha256(target)}
 ```
 
 | Campo | Colecciones | Notas |
@@ -78,6 +79,7 @@ users/{uid}/playback/{sha256(target)}
 | `item_key` | favorites, playback | `match_key` de película o serie; `match_key:temporada:número` para episodios |
 | `added_at` | favorites | epoch en segundos |
 | `position_s`, `duration_s`, `finished`, `played_at` | playback | `finished` a partir del 90 % |
+| `rating` | ratings | -1 «No es para mí», 1 «Me gusta», 2 «Me encanta» (2026-10-22); solo películas y series. Gana la marca `updated_at` más nueva y quitar la valoración viaja como borrado lógico |
 | `updated_at` | todas | epoch del cliente que hizo el cambio: decide quién gana un conflicto |
 | `deleted` | todas | borrado lógico (ver abajo) |
 | `server_updated_at` | todas | marca de tiempo del servidor (`REQUEST_TIME`): ordena la bajada |

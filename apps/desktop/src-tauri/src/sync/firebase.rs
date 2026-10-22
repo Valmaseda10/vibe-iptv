@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use serde_json::{json, Map, Value};
 
 use super::backend::{
-    Changes, CloudBackend, CloudError, Collection, RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, Result, Session,
+    Changes, CloudBackend, CloudError, Collection, RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, Result, Session,
 };
 use crate::util::civil_time::{epoch_to_rfc3339, rfc3339_to_epoch};
 
@@ -390,6 +390,14 @@ fn encode_fields(doc: &RemoteDoc) -> Value {
             fields.insert("updated_at".into(), fs_int(p.updated_at));
             fields.insert("deleted".into(), fs_bool(p.deleted));
         }
+        RemoteDoc::Rating(r) => {
+            fields.insert("profile_id".into(), fs_string(&r.profile_id));
+            fields.insert("item_kind".into(), fs_string(&r.item_kind));
+            fields.insert("item_key".into(), fs_string(&r.item_key));
+            fields.insert("rating".into(), fs_int(r.rating));
+            fields.insert("updated_at".into(), fs_int(r.updated_at));
+            fields.insert("deleted".into(), fs_bool(r.deleted));
+        }
     }
     Value::Object(fields)
 }
@@ -451,6 +459,14 @@ fn decode_doc(collection: Collection, name: &str, document: &Value) -> Option<Re
             duration_s: fields.int("duration_s"),
             finished: fields.bool("finished").unwrap_or(false),
             played_at: fields.int("played_at").unwrap_or(updated_at),
+            updated_at,
+            deleted,
+        }),
+        Collection::Ratings => RemoteDoc::Rating(RemoteRating {
+            profile_id: fields.string("profile_id")?,
+            item_kind: fields.string("item_kind")?,
+            item_key: fields.string("item_key")?,
+            rating: fields.int("rating")?,
             updated_at,
             deleted,
         }),

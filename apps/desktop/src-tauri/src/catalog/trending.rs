@@ -22,6 +22,9 @@ use crate::util::keychain;
 
 const CACHE_TTL: Duration = Duration::from_secs(6 * 3600);
 const MAX_RESULTS: i64 = 20;
+/// «Top 10 en España»: diez, en el orden de TMDB, entre lo que el proveedor tiene.
+const TOP_SIZE: i64 = 10;
+const TOP_PAGES: u32 = 3;
 /// Ningún id real de la base de datos es 0 (`INTEGER PRIMARY KEY` empieza en 1): sirve
 /// para reutilizar `resolve_similar_movies`/`resolve_similar_series` sin tener que
 /// excluir ningún título de verdad, que es justo lo que hace falta aquí (no hay ningún
@@ -42,10 +45,18 @@ impl From<reads::SimilarTitleRow> for TrendingTitle {
     }
 }
 
+/// Listas que no dependen del perfil: «Tendencias ahora» y «Top 10 en España».
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Trending {
+    pub movies: Vec<TrendingTitle>,
+    pub series: Vec<TrendingTitle>,
+    pub top_movies_es: Vec<TrendingTitle>,
+    pub top_series_es: Vec<TrendingTitle>,
+}
+
 struct CacheEntry {
     computed_at: Instant,
-    movies: Vec<TrendingTitle>,
-    series: Vec<TrendingTitle>,
+    trending: Trending,
     refreshing: bool,
 }
 
@@ -53,36 +64,36 @@ static CACHE: LazyLock<AsyncMutex<Option<CacheEntry>>> = LazyLock::new(|| AsyncM
 
 /// Nunca bloquea: sirve lo que haya en caché (vacío la primerísima vez) y deja un
 /// refresco corriendo por detrás si hace falta.
-pub async fn get_cached_or_refresh(db_path: PathBuf) -> (Vec<TrendingTitle>, Vec<TrendingTitle>) {
+pub async fn get_cached_or_refresh(db_path: PathBuf) -> Trending {
     let mut cache = CACHE.lock().await;
-    let (movies, series, should_refresh) = match cache.as_mut() {
+    let (current, should_refresh) = match cache.as_mut() {
         Some(entry) => {
             let stale = entry.computed_at.elapsed() >= CACHE_TTL;
             let should_refresh = stale && !entry.refreshing;
             if should_refresh {
                 entry.refreshing = true;
             }
-            (entry.movies.clone(), entry.series.clone(), should_refresh)
+            (entry.trending.clone(), should_refresh)
         }
         None => {
-            *cache = Some(CacheEntry { computed_at: Instant::now(), movies: Vec::new(), series: Vec::new(), refreshing: true });
-            (Vec::new(), Vec::new(), true)
+            *cache = Some(CacheEntry { computed_at: Instant::now(), trending: Trending::default(), refreshing: true });
+            (Trending::default(), true)
         }
     };
     drop(cache);
 
     if should_refresh {
         tokio::spawn(async move {
-            let (movies, series) = compute(db_path).await.unwrap_or_default();
+            let trending = compute(db_path).await.unwrap_or_default();
             let mut cache = CACHE.lock().await;
-            *cache = Some(CacheEntry { computed_at: Instant::now(), movies, series, refreshing: false });
+            *cache = Some(CacheEntry { computed_at: Instant::now(), trending, refreshing: false });
         });
     }
 
-    (movies, series)
+    current
 }
 
-async fn compute(db_path: PathBuf) -> Option<(Vec<TrendingTitle>, Vec<TrendingTitle>)> {
+async fn compute(db_path: PathBuf) -> Option<Trending> {
     let api_key = keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).ok()?;
     let client = TmdbClient::new(api_key);
 
@@ -90,9 +101,23 @@ async fn compute(db_path: PathBuf) -> Option<(Vec<TrendingTitle>, Vec<TrendingTi
     // igual puede servir algo en vez de quedarse las dos a cero.
     let movie_ids = client.trending_movies().await.unwrap_or_default();
     let series_ids = client.trending_series().await.unwrap_or_default();
-    if movie_ids.is_empty() && series_ids.is_empty() {
+    let top_movie_ids = client.popular_in_spain("movie", TOP_PAGES).await.unwrap_or_default();
+    let top_series_ids = client.popular_in_spain("series", TOP_PAGES).await.unwrap_or_default();
+    if movie_ids.is_empty() && series_ids.is_empty() && top_movie_ids.is_empty() && top_series_ids.is_empty() {
         return None;
     }
+    let tops = {
+        let db_path = db_path.clone();
+        tokio::task::spawn_blocking(move || {
+            let conn = schema::open_readonly_at(&db_path).ok()?;
+            let movies = reads::resolve_similar_movies(&conn, &top_movie_ids, NOTHING_TO_EXCLUDE, TOP_SIZE).ok()?;
+            let series = reads::resolve_similar_series(&conn, &top_series_ids, NOTHING_TO_EXCLUDE, TOP_SIZE).ok()?;
+            Some((movies, series))
+        })
+        .await
+        .ok()?
+        .unwrap_or_default()
+    };
 
     let movies = {
         let db_path = db_path.clone();
@@ -112,5 +137,10 @@ async fn compute(db_path: PathBuf) -> Option<(Vec<TrendingTitle>, Vec<TrendingTi
     .ok()?
     .unwrap_or_default();
 
-    Some((movies.into_iter().map(Into::into).collect(), series.into_iter().map(Into::into).collect()))
+    Some(Trending {
+        movies: movies.into_iter().map(Into::into).collect(),
+        series: series.into_iter().map(Into::into).collect(),
+        top_movies_es: tops.0.into_iter().map(Into::into).collect(),
+        top_series_es: tops.1.into_iter().map(Into::into).collect(),
+    })
 }

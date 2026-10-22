@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { RatingControl } from "../../components/RatingControl";
 import { useCanGoBack, useNavigate, useParams, useRouter } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiGet, apiGetOrNull, apiPost, errorMessage, useApiBase, imagePath } from "../../lib/api-client";
@@ -152,7 +153,7 @@ export function MovieDetailScreen() {
               </div>
             )}
           </div>
-          <div className="grid grid-cols-3 gap-1 sm:flex sm:gap-3">
+          <div className="grid auto-cols-fr grid-flow-col gap-1 sm:flex sm:gap-3">
             <button
               type="button"
               onClick={() => toggleFavorite("movie", data.id, !isFavorite("movie", data.id))}
@@ -171,6 +172,7 @@ export function MovieDetailScreen() {
               <span className="text-xl leading-none sm:text-base">{data.watched ? "✓" : "○"}</span>
               {data.watched ? "Vista" : "Marcar vista"}
             </button>
+            <RatingControl kind="movie" id={data.id} title={data.clean_title} />
             {data.trailer_key && (
               <button type="button" onClick={() => setTrailerOpen(true)} className={DETAIL_ACTION}>
                 <span className="text-xl leading-none sm:text-base">🎬</span>

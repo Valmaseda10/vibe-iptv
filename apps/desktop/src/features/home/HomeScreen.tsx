@@ -135,6 +135,59 @@ export function HomeScreen() {
         </Row>
       )}
 
+      {/* «Top 10 en España» (2026-10-22): lo más popular en plataformas en España según
+          TMDB, entre lo que tiene el proveedor. Igual para todos los perfiles. */}
+      {!isPending && data && data.top_movies_es.length > 0 && (
+        <Row title="Top 10 películas en España hoy">
+          {data.top_movies_es.map((movie, index) => (
+            <PosterCard
+              key={`top-movie-${movie.id}`}
+              title={movie.clean_title}
+              posterPath={movie.poster_path}
+              rank={index + 1}
+              onOpen={() => navigate({ to: "/movies/$movieId", params: { movieId: String(movie.id) } })}
+              menuItem={{ kind: "movie", id: movie.id }}
+            />
+          ))}
+        </Row>
+      )}
+
+      {!isPending && data && data.top_series_es.length > 0 && (
+        <Row title="Top 10 series en España hoy">
+          {data.top_series_es.map((series, index) => (
+            <PosterCard
+              key={`top-series-${series.id}`}
+              title={series.clean_title}
+              posterPath={series.poster_path}
+              rank={index + 1}
+              onOpen={() => navigate({ to: "/series/$seriesId", params: { seriesId: String(series.id) } })}
+              menuItem={{ kind: "series", id: series.id }}
+            />
+          ))}
+        </Row>
+      )}
+
+      {/* «Porque viste X»: lo relacionado con lo que más le ha gustado al perfil. */}
+      {!isPending &&
+        data?.because_rows.map((row) => (
+          <Row key={`because-${row.kind}-${row.seed_title}`} title={`Porque viste ${row.seed_title}`}>
+            {row.items.map((item) => (
+              <PosterCard
+                key={`because-${row.kind}-${item.id}`}
+                title={item.clean_title}
+                posterPath={item.poster_path}
+                subtitle={item.year ? String(item.year) : undefined}
+                onOpen={() =>
+                  row.kind === "series"
+                    ? navigate({ to: "/series/$seriesId", params: { seriesId: String(item.id) } })
+                    : navigate({ to: "/movies/$movieId", params: { movieId: String(item.id) } })
+                }
+                menuItem={{ kind: row.kind === "series" ? "series" : "movie", id: item.id }}
+              />
+            ))}
+          </Row>
+        ))}
+
       {!isPending && data && data.recommended.length > 0 && (
         <Row title="Recomendado para ti">
           {data.recommended.map((movie) => (

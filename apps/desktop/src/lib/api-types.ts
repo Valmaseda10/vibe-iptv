@@ -13,6 +13,12 @@ export type AddProviderInput = { kind: ProviderKind, name: string, base_url: str
  */
 export type AudioTrackSummary = { index: number, language: string | null, codec_name: string | null, channels: number | null, };
 
+export type BecauseRowResponse = { 
+/**
+ * `movie` o `series`.
+ */
+kind: string, seed_title: string, items: Array<SimilarTitleSummary>, };
+
 export type BinariesStatus = { ffmpeg: boolean, ffprobe: boolean, mpv: boolean, };
 
 export type CategoryAdultSetting = { id: number, 
@@ -121,6 +127,16 @@ recommended_series: Array<RecommendedSeriesSummary>,
  * si ningún título de esa lista está todavía en el catálogo local.
  */
 trending_movies: Array<SimilarTitleSummary>, trending_series: Array<SimilarTitleSummary>, 
+/**
+ * «Porque viste X» (2026-10-22): lo relacionado con las semillas más fuertes del
+ * perfil (ver `catalog::recommendations`). Vacío sin clave de TMDB o sin gustos aún.
+ */
+because_rows: Array<BecauseRowResponse>, 
+/**
+ * «Top 10 en España»: lo más popular en plataformas en España según TMDB, entre lo
+ * que el proveedor tiene, en orden (ver `catalog::trending`).
+ */
+top_movies_es: Array<SimilarTitleSummary>, top_series_es: Array<SimilarTitleSummary>, 
 /**
  * Filas por género (F "premium"): los géneros con más películas en el catálogo de
  * verdad del usuario, no una lista fija. Vacío hasta la primera sincronización con
@@ -329,6 +345,14 @@ export type ProviderKind = "xtream" | "m3u";
 export type ProviderSummary = { id: number, name: string, kind: ProviderKind, base_url_display: string, username: string | null, max_connections: number, expires_at: number | null, enabled: boolean, last_sync_at: number | null, };
 
 export type RandomTitleResponse = { kind: string, id: number, };
+
+export type RatingInput = { profile_id: number, item_kind: string, item_id: number, rating: number, };
+
+/**
+ * Valoración de un perfil (2026-10-22): `rating` -1 «No es para mí», 1 «Me gusta», 2 «Me
+ * encanta». Solo películas y series.
+ */
+export type RatingItem = { item_kind: string, item_id: number, rating: number, };
 
 export type RecommendedMovieSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, rating: number | null, because_of: string, };
 

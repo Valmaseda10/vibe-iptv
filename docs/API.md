@@ -33,7 +33,11 @@ la pantalla de cuenta del escritorio.
 
 ### `GET /api/home`
 Filas de la pantalla de inicio: continuar viendo, siguiente episodio pendiente,
-películas recientes. Sin parámetros.
+películas recientes, recomendadas para el perfil (`recommended`, `recommended_series` y
+`because_rows`, las filas «Porque viste X»), tendencias, el Top 10 en España
+(`top_movies_es`, `top_series_es`: lo más popular en plataformas en España según TMDB,
+entre lo que tiene el proveedor) y filas por género. Lo que depende de TMDB sale vacío
+sin clave. `profile_id`.
 
 ### `GET /api/live/categories`
 Categorías de canales en directo. `[{ id, name }]`.
@@ -229,6 +233,16 @@ Mensajes en español, pensados para enseñarse tal cual (ver `server::stream::St
 - `GET /api/favorites` → `[{ item_kind, item_id, title, poster_path }]`.
 - `POST /api/favorites` con `{ item_kind, item_id }`.
 - `DELETE /api/favorites?item_kind=movie&item_id=5`.
+
+## Valoraciones
+
+Por perfil, como en Netflix: `rating` -1 «No es para mí», 1 «Me gusta», 2 «Me encanta».
+Solo películas y series. Viajan entre dispositivos por la nube y alimentan las
+recomendaciones de Inicio.
+
+- `GET /api/ratings?profile_id=` → `[{ item_kind, item_id, rating }]`, la más reciente primero.
+- `POST /api/ratings` con `{ profile_id, item_kind, item_id, rating }`. `400` con otro valor.
+- `DELETE /api/ratings?profile_id=&item_kind=movie&item_id=5`.
 
 ## Perfiles y control parental
 

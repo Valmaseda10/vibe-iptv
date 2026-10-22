@@ -1799,9 +1799,28 @@ tests), recentrada en cada cambio de canal.
 - **Botón de llenar la pantalla:** al volver a darle, VLC no quitaba el recorte (`nil` no
   siempre lo deshace); ahora se recorta a la proporción del propio vídeo, que es no
   recortar.
+- **Valoraciones y recomendaciones** (decidido con el usuario: 3 niveles como Netflix,
+  sincronizadas por la nube; Top de TMDB):
+  - Valorar en la ficha: 👎 No es para mí · 👍 Me gusta · 👍👍 Me encanta. Tabla
+    `ratings` (migración 021), API `/api/ratings`, colección `ratings` en Firestore (las
+    reglas ya cubrían cualquier colección del usuario). El test de sincronización pilló
+    que la cola de salida solo admitía las colecciones de F11: la migración la rehace.
+  - Recomendaciones reescritas (`catalog::recommendations`): cada señal pesa (Me encanta
+    3, Me gusta 2, favorito 1,5, vista 1,5, empezada 0,6; series por episodios
+    terminados), con vida media de 45 días; «No es para mí» resta. Las semillas piden a
+    TMDB sus recomendaciones, cada candidato suma según peso y puesto, y los géneros
+    preferidos dan hasta un 30 % más. Fuera lo ya visto, valorado o en la lista, y lo que
+    el proveedor no tiene. Nueva fila «Porque viste X» para la semilla más fuerte de
+    películas y de series. Lógica en funciones puras con tests.
+  - «Top 10 películas/series en España hoy»: no hay dato público y gratuito de
+    audiencias; se usa la popularidad de TMDB entre lo disponible en plataformas de
+    suscripción en España (`discover` con `watch_region=ES`), cruzada con el catálogo, en
+    orden, con el número grande sobre la portada. Se refresca cada 6 horas.
+  - Índices nuevos en `movies.tmdb_id` y `series.tmdb_id`: las recomendaciones y las
+    tendencias recorrían la tabla entera por cada candidato (R4).
 - **Pendiente:** la fuente de directo con menos retraso (medir si las fuentes del usuario
-  traen la hora de emisión, en la sesión con su proveedor real), y después
-  recomendaciones por perfil y los más vistos en España.
+  traen la hora de emisión, en la sesión con su proveedor real, con
+  `tools/medir-retraso-directo.py`).
 
 ## Deuda técnica conocida desde el diseño
 

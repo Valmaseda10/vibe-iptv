@@ -350,6 +350,17 @@ fn enqueue_local_missing_from_cloud(conn: &Connection, remote: &[RemoteDoc]) -> 
             }
         }
 
+        for rating in reads::list_ratings(conn, profile.id)? {
+            let Some(item_key) = reads::item_key_for(conn, &rating.item_kind, rating.item_id)? else { continue };
+            let needs_upload = match by_target.get(&RemoteDoc::rating_target(&remote_id, &rating.item_kind, &item_key)) {
+                Some(RemoteDoc::Rating(r)) => r.deleted || r.updated_at < rating.rated_at,
+                _ => true,
+            };
+            if needs_upload {
+                outbox::enqueue_rating(conn, profile.id, &rating.item_kind, rating.item_id)?;
+            }
+        }
+
         for progress in cloud::sync_playback(conn, profile.id)? {
             let Some(item_key) = reads::item_key_for(conn, &progress.item_kind, progress.item_id)? else { continue };
             let needs_upload = match by_target.get(&RemoteDoc::playback_target(&remote_id, &progress.item_kind, &item_key)) {
@@ -410,6 +421,18 @@ fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
                 cloud::put_playback_from_remote(conn, profile.id, &p.item_kind, item_id, p.position_s, p.duration_s, p.finished, p.played_at)?;
             }
         }
+        RemoteDoc::Rating(r) => {
+            let Some(profile) = cloud::profile_by_remote_id(conn, &r.profile_id)? else { return Ok(()) };
+            let Some(item_id) = reads::item_id_for_key(conn, &r.item_kind, &r.item_key)? else { return Ok(()) };
+            let local = cloud::rating_state(conn, profile.id, &r.item_kind, item_id)?;
+            if r.deleted {
+                if local.is_some_and(|(_, rated_at)| r.updated_at >= rated_at) {
+                    reads::remove_rating(conn, profile.id, &r.item_kind, item_id)?;
+                }
+            } else if reads::RATING_VALUES.contains(&r.rating) && local.is_none_or(|(_, rated_at)| r.updated_at > rated_at) {
+                cloud::put_rating_from_remote(conn, profile.id, &r.item_kind, item_id, r.rating, r.updated_at)?;
+            }
+        }
     }
     Ok(())
 }
@@ -417,6 +440,7 @@ fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rusqlite::OptionalExtension;
     use crate::sync::backend::{RemoteFavorite, RemotePlayback};
     use crate::sync::memory::MemoryBackend;
 
@@ -459,6 +483,21 @@ mod tests {
             let conn = self.conn();
             reads::remove_favorite(&conn, self.profile_id, "movie", 10).unwrap();
             outbox::enqueue_favorite(&conn, self.profile_id, "movie", 10).unwrap();
+        }
+
+        fn rate_movie(&self, rating: Option<i64>) {
+            let conn = self.conn();
+            match rating {
+                Some(rating) => reads::set_rating(&conn, self.profile_id, "movie", 10, rating).unwrap(),
+                None => reads::remove_rating(&conn, self.profile_id, "movie", 10).unwrap(),
+            }
+            outbox::enqueue_rating(&conn, self.profile_id, "movie", 10).unwrap();
+        }
+
+        /// Valoración de la película en cualquier perfil (tras bajar, cuelga del perfil
+        /// espejo del otro dispositivo).
+        fn movie_rating(&self) -> Option<i64> {
+            self.conn().query_row("SELECT rating FROM ratings WHERE item_kind = 'movie' AND item_id = 10", [], |r| r.get(0)).optional().unwrap()
         }
 
         fn watch_episode(&self, position_s: i64) {
@@ -616,6 +655,36 @@ mod tests {
         initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
         flush_everything(&pc, &cloud).await.unwrap();
         assert_eq!(cloud.write_calls(), writes);
+    }
+
+    #[tokio::test]
+    async fn ratings_travel_to_the_other_device_and_so_does_removing_them() {
+        let cloud = MemoryBackend::new();
+        let session = cloud.session();
+        let pc = Device::new("pc-valora");
+        initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+        let laptop = Device::new("laptop-valora");
+        initial_merge_if_needed(&laptop.db, &cloud, &session).await.unwrap();
+        flush_everything(&laptop, &cloud).await.unwrap();
+
+        pc.rate_movie(Some(2));
+        flush_everything(&pc, &cloud).await.unwrap();
+        pull_changes(&laptop.db, &cloud, &session).await.unwrap();
+        assert_eq!(laptop.movie_rating(), Some(2), "«Me encanta» llega al otro dispositivo");
+
+        // Cambiar de opinión: la marca más nueva gana.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        pc.rate_movie(Some(-1));
+        flush_everything(&pc, &cloud).await.unwrap();
+        pull_changes(&laptop.db, &cloud, &session).await.unwrap();
+        assert_eq!(laptop.movie_rating(), Some(-1));
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        pc.rate_movie(None);
+        flush_everything(&pc, &cloud).await.unwrap();
+        pull_changes(&laptop.db, &cloud, &session).await.unwrap();
+        assert_eq!(laptop.movie_rating(), None, "quitar la valoración también viaja");
     }
 
     #[tokio::test]

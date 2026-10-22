@@ -31,6 +31,8 @@ type PosterCardProps = {
   /** Película o serie: al mantenerla pulsada (pantallas táctiles) sale el menú con
    * "Mi lista" aunque la tarjeta no pinte el corazón. */
   menuItem?: { kind: "movie" | "series"; id: number };
+  /** Puesto en un «Top 10»: número grande sobre la portada, como en Netflix. */
+  rank?: number;
 };
 
 /** Lo que tarda una pulsación en convertirse en "mantener pulsado" (como iOS). */
@@ -38,7 +40,7 @@ const LONG_PRESS_MS = 450;
 
 /** Tarjeta de portada 2:3. Reserva el espacio siempre (aspect-ratio fijo) para no saltar
  * el layout mientras carga la imagen; accesible por teclado (Enter abre, foco visible). */
-export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew, onRemove, fluid, menuItem }: PosterCardProps) {
+export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew, onRemove, fluid, menuItem, rank }: PosterCardProps) {
   const { data: base } = useApiBase();
   const src = imagePath(base, posterPath, "w342");
   const [loaded, setLoaded] = useState(false);
@@ -115,6 +117,15 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
           {isNew && (
             <span className="absolute left-1.5 top-1.5 rounded bg-red-600 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-white">
               Nuevo
+            </span>
+          )}
+
+          {rank != null && (
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute bottom-0 left-1 text-[64px] font-black leading-none text-white [-webkit-text-stroke:3px_#000] [paint-order:stroke_fill] drop-shadow-[0_2px_6px_rgb(0_0_0/0.6)] ios:max-sm:text-[52px]"
+            >
+              {rank}
             </span>
           )}
 

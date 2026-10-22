@@ -491,6 +491,13 @@ pub struct HomeResponse {
     /// si ningún título de esa lista está todavía en el catálogo local.
     pub trending_movies: Vec<SimilarTitleSummary>,
     pub trending_series: Vec<SimilarTitleSummary>,
+    /// «Porque viste X» (2026-10-22): lo relacionado con las semillas más fuertes del
+    /// perfil (ver `catalog::recommendations`). Vacío sin clave de TMDB o sin gustos aún.
+    pub because_rows: Vec<BecauseRowResponse>,
+    /// «Top 10 en España»: lo más popular en plataformas en España según TMDB, entre lo
+    /// que el proveedor tiene, en orden (ver `catalog::trending`).
+    pub top_movies_es: Vec<SimilarTitleSummary>,
+    pub top_series_es: Vec<SimilarTitleSummary>,
     /// Filas por género (F "premium"): los géneros con más películas en el catálogo de
     /// verdad del usuario, no una lista fija. Vacío hasta la primera sincronización con
     /// TMDB (sin nombres de género que enseñar, ver `catalog::tmdb::sync_genre_names`).
@@ -546,6 +553,30 @@ pub struct PlaybackProgressInput {
     pub position_s: i64,
     #[ts(type = "number | null")]
     pub duration_s: Option<i64>,
+}
+
+/// Valoración de un perfil (2026-10-22): `rating` -1 «No es para mí», 1 «Me gusta», 2 «Me
+/// encanta». Solo películas y series.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct RatingItem {
+    pub item_kind: String,
+    #[ts(type = "number")]
+    pub item_id: i64,
+    #[ts(type = "number")]
+    pub rating: i64,
+}
+
+#[derive(Deserialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct RatingInput {
+    #[ts(type = "number")]
+    pub profile_id: i64,
+    pub item_kind: String,
+    #[ts(type = "number")]
+    pub item_id: i64,
+    #[ts(type = "number")]
+    pub rating: i64,
 }
 
 #[derive(Serialize, TS)]
@@ -649,9 +680,11 @@ async fn get_home(State(state): State<CatalogState>, Query(query): Query<Profile
     // Ninguna de las dos bloquea la respuesta (pueden implicar varias llamadas a TMDB la
     // primera vez): ver los comentarios de cabecera de `catalog::recommendations` y
     // `catalog::trending`.
-    let (recommended, recommended_series) = crate::catalog::recommendations::get_cached_or_refresh(db_path.clone(), profile_id).await;
-    let (trending_movies, trending_series) = crate::catalog::trending::get_cached_or_refresh(db_path.clone()).await;
-    let (recommended, recommended_series, trending_movies, trending_series) = with_db(db_path, move |conn| {
+    let recommendations = crate::catalog::recommendations::get_cached_or_refresh(db_path.clone(), profile_id).await;
+    let (recommended, recommended_series, because) = (recommendations.movies, recommendations.series, recommendations.because);
+    let trending = crate::catalog::trending::get_cached_or_refresh(db_path.clone()).await;
+    let (trending_movies, trending_series, top_movies_es, top_series_es) = (trending.movies, trending.series, trending.top_movies_es, trending.top_series_es);
+    let (recommended, recommended_series, trending_movies, trending_series, because_rows, top_movies_es, top_series_es) = with_db(db_path, move |conn| {
         let keep = |kind: &'static str, ids: Vec<i64>| -> crate::db::Result<Vec<i64>> {
             let mut kept = Vec::new();
             for id in ids {
@@ -665,11 +698,33 @@ async fn get_home(State(state): State<CatalogState>, Query(query): Query<Profile
         let recommended_series_ids = keep("series", recommended_series.iter().map(|s| s.id).collect())?;
         let trending_movie_ids = keep("movie", trending_movies.iter().map(|m| m.id).collect())?;
         let trending_series_ids = keep("series", trending_series.iter().map(|s| s.id).collect())?;
+        // Lo que el perfil no puede ver (F14) tampoco sale en «Porque viste X» ni en el Top.
+        let mut because_rows = Vec::new();
+        for row in because {
+            let ids = keep(row.kind, row.items.iter().map(|t| t.id).collect())?;
+            let items: Vec<SimilarTitleSummary> = row
+                .items
+                .into_iter()
+                .filter(|t| ids.contains(&t.id))
+                .map(|t| SimilarTitleSummary { id: t.id, clean_title: t.clean_title, year: t.year, poster_path: t.poster_path })
+                .collect();
+            if !items.is_empty() {
+                because_rows.push(BecauseRowResponse { kind: row.kind.to_string(), seed_title: row.seed_title, items });
+            }
+        }
+        let top_movie_ids = keep("movie", top_movies_es.iter().map(|m| m.id).collect())?;
+        let top_series_ids = keep("series", top_series_es.iter().map(|s| s.id).collect())?;
+        let as_summary = |t: crate::catalog::trending::TrendingTitle| SimilarTitleSummary { id: t.id, clean_title: t.clean_title, year: t.year, poster_path: t.poster_path };
+        let top_movies_es: Vec<SimilarTitleSummary> = top_movies_es.into_iter().filter(|m| top_movie_ids.contains(&m.id)).map(as_summary).collect();
+        let top_series_es: Vec<SimilarTitleSummary> = top_series_es.into_iter().filter(|s| top_series_ids.contains(&s.id)).map(as_summary).collect();
         Ok((
             recommended.into_iter().filter(|m| recommended_ids.contains(&m.id)).collect::<Vec<_>>(),
             recommended_series.into_iter().filter(|s| recommended_series_ids.contains(&s.id)).collect::<Vec<_>>(),
             trending_movies.into_iter().filter(|m| trending_movie_ids.contains(&m.id)).collect::<Vec<_>>(),
             trending_series.into_iter().filter(|s| trending_series_ids.contains(&s.id)).collect::<Vec<_>>(),
+            because_rows,
+            top_movies_es,
+            top_series_es,
         ))
     })
     .await?;
@@ -683,6 +738,9 @@ async fn get_home(State(state): State<CatalogState>, Query(query): Query<Profile
         recommended_series: recommended_series.into_iter().map(Into::into).collect(),
         trending_movies: trending_movies.into_iter().map(Into::into).collect(),
         trending_series: trending_series.into_iter().map(Into::into).collect(),
+        because_rows,
+        top_movies_es,
+        top_series_es,
         genre_rows: genre_rows
             .into_iter()
             // Sin nombre todavía (no ha corrido nunca el emparejamiento con TMDB): mejor
@@ -693,6 +751,15 @@ async fn get_home(State(state): State<CatalogState>, Query(query): Query<Profile
             })
             .collect(),
     }))
+}
+
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct BecauseRowResponse {
+    /// `movie` o `series`.
+    pub kind: String,
+    pub seed_title: String,
+    pub items: Vec<SimilarTitleSummary>,
 }
 
 #[derive(Serialize, TS)]
@@ -1449,6 +1516,40 @@ struct DeleteFavoriteQuery {
     item_id: i64,
 }
 
+async fn get_ratings(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<Vec<RatingItem>>, ApiError> {
+    let rows = with_db(state.db_path, move |conn| reads::list_ratings(conn, query.profile_id)).await?;
+    Ok(Json(rows.into_iter().map(|r| RatingItem { item_kind: r.item_kind, item_id: r.item_id, rating: r.rating }).collect()))
+}
+
+async fn post_rating(State(state): State<CatalogState>, Json(input): Json<RatingInput>) -> Result<StatusCode, ApiError> {
+    if input.item_kind != "movie" && input.item_kind != "series" {
+        return Err(ApiError::BadRequest("Solo se valoran películas y series.".into()));
+    }
+    if !reads::RATING_VALUES.contains(&input.rating) {
+        return Err(ApiError::BadRequest("Valoración no válida.".into()));
+    }
+    with_db(state.db_path.clone(), move |conn| {
+        reads::set_rating(conn, input.profile_id, &input.item_kind, input.item_id, input.rating)?;
+        outbox::enqueue_rating(conn, input.profile_id, &input.item_kind, input.item_id)
+    })
+    .await?;
+    crate::catalog::recommendations::invalidate(input.profile_id).await;
+    engine::wake();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn delete_rating(State(state): State<CatalogState>, Query(query): Query<DeleteFavoriteQuery>) -> Result<StatusCode, ApiError> {
+    let profile_id = query.profile_id;
+    with_db(state.db_path.clone(), move |conn| {
+        reads::remove_rating(conn, query.profile_id, &query.item_kind, query.item_id)?;
+        outbox::enqueue_rating(conn, query.profile_id, &query.item_kind, query.item_id)
+    })
+    .await?;
+    crate::catalog::recommendations::invalidate(profile_id).await;
+    engine::wake();
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn delete_favorite(State(state): State<CatalogState>, Query(query): Query<DeleteFavoriteQuery>) -> Result<StatusCode, ApiError> {
     with_db(state.db_path.clone(), move |conn| {
         reads::remove_favorite(conn, query.profile_id, &query.item_kind, query.item_id)?;
@@ -1578,6 +1679,7 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/playback/movie-watched", post(post_movie_watched))
         .route("/api/playback/season-watched", post(post_season_watched))
         .route("/api/favorites", get(get_favorites).post(post_favorite).delete(delete_favorite))
+        .route("/api/ratings", get(get_ratings).post(post_rating).delete(delete_rating))
         .with_state(CatalogState { db_path })
 }
 

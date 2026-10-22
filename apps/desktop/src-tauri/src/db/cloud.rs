@@ -218,6 +218,29 @@ pub fn put_favorite_from_remote(conn: &Connection, profile_id: i64, item_kind: &
     Ok(())
 }
 
+// ─────────────── Valoraciones ───────────────
+
+/// Valoración actual de un ítem: (valor, cuándo). `None` si no tiene.
+pub fn rating_state(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64) -> Result<Option<(i64, i64)>> {
+    conn.query_row(
+        "SELECT rating, rated_at FROM ratings WHERE profile_id = ?1 AND item_kind = ?2 AND item_id = ?3",
+        params![profile_id, item_kind, item_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Igual que `reads::set_rating`, pero con la fecha de la nube.
+pub fn put_rating_from_remote(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64, rating: i64, rated_at: i64) -> Result<()> {
+    conn.execute(
+        "INSERT INTO ratings (profile_id, item_kind, item_id, rating, rated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+         ON CONFLICT(profile_id, item_kind, item_id) DO UPDATE SET rating = excluded.rating, rated_at = excluded.rated_at",
+        params![profile_id, item_kind, item_id, rating, rated_at],
+    )?;
+    Ok(())
+}
+
 // ─────────────── Progreso de reproducción ───────────────
 
 /// Progreso sincronizable de un perfil (sin canales: el directo no se "continúa").
