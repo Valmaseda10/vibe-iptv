@@ -1713,6 +1713,12 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
     cortes de verdad ya los reabre el propio reproductor (directo y VOD). Además, los
     saltos seguidos se suman sobre el destino pendiente y se repiten una vez si VLC no
     llega.
+  - *Películas marcadas como vistas sin terminarlas* (visto en el iPad tras +30 s y
+    −10 s): cada corte de un salto se tomaba por un «fin»; al tercero, o si llegaba antes
+    de que VLC supiera la duración, la película quedaba vista y el reproductor se
+    cerraba. Ahora un corte a mitad nunca la da por vista: se reabre en el punto (o en el
+    del salto) hasta cinco veces y, si no puede, avisa y guarda por dónde iba. Se recuerda
+    la última duración conocida.
   - *Zapping:* después del último canal viene el primero (y al revés), como en TiviMate.
   - *Directo:* sin la barra de cristal vacía abajo (no hay tiempos que enseñar).
 

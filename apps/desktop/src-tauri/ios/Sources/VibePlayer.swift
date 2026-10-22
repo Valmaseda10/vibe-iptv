@@ -229,6 +229,10 @@ final class VibePlayerController: UIViewController {
     private var liveReconnects = 0
     /// Última posición conocida en VOD y reaperturas tras un corte a mitad.
     private var lastPosition: Double = 0
+    /// Última duración conocida del vídeo en curso: justo después de reabrirlo (tras un corte
+    /// o un salto), VLC aún no la sabe, y un «fin» en ese momento se tomaba por el final de
+    /// verdad: la película quedaba vista y el reproductor se cerraba (visto en el iPad).
+    private var knownDuration: Double?
     /// Salto pedido y aún no alcanzado: VLC tarda en llegar y, si le llega otro mientras,
     /// lo puede ignorar. Los saltos seguidos (+30, +30, −10) se suman sobre este destino, y
     /// si VLC no llega, se le vuelve a pedir una vez (visto en el simulador: un −10 s justo
@@ -364,6 +368,7 @@ final class VibePlayerController: UIViewController {
         hideNextCard()
         skipIntroButton.isHidden = true
         lastPosition = startSeconds
+        knownDuration = nil
         titleLabel.text = item.title
         subtitleLabel.text = item.subtitle
         subtitleLabel.isHidden = (item.subtitle ?? "").isEmpty
@@ -465,6 +470,12 @@ final class VibePlayerController: UIViewController {
 
     private var positionSeconds: Double { Double(player.time.intValue) / 1000 }
 
+    /// Posición para guardar el progreso: la de VLC, o la última buena si ya no la sabe.
+    private var progressSeconds: Double {
+        let position = positionSeconds
+        return position > 0 ? position : lastPosition
+    }
+
     private var durationSeconds: Double? {
         guard let length = player.media?.length.intValue, length > 0 else { return nil }
         return Double(length) / 1000
@@ -540,11 +551,22 @@ final class VibePlayerController: UIViewController {
             return
         case .ended:
             if !current.live {
-                // Solo es el final de verdad cerca del final: un corte a mitad (red, o el
-                // proveedor) se reabre en el mismo punto en vez de salir y darla por vista.
-                if let duration = durationSeconds, lastPosition < duration - 30, vodReconnects < 3, let url = URL(string: current.url) {
-                    vodReconnects += 1
-                    startPlayback(url, startSeconds: lastPosition)
+                // Solo es el final de verdad cerca del final: un corte a mitad (red, el
+                // proveedor, o el proxy al saltar) se reabre en el mismo punto, o en el del
+                // salto pedido, y nunca da la película por vista. Sin duración conocida
+                // tampoco se da por terminada.
+                let duration = durationSeconds ?? knownDuration
+                let nearEnd = duration.map { lastPosition >= $0 - 30 } ?? false
+                if !nearEnd {
+                    if vodReconnects < 5, let url = URL(string: current.url) {
+                        vodReconnects += 1
+                        startPlayback(url, startSeconds: seekTarget ?? lastPosition)
+                        return
+                    }
+                    spinner.stopAnimating()
+                    sendProgress(final: false)
+                    showMessage("Se cortó la reproducción. Ciérrala y vuelve a abrirla para seguir donde ibas.")
+                    self.current = nil
                     return
                 }
                 sendProgress(final: true)
@@ -577,6 +599,7 @@ final class VibePlayerController: UIViewController {
             if player.isPlaying, position > 0 { lastPosition = position; vodReconnects = 0 }
             if !scrubbing { timeLabel.text = formatTime(position) }
             if let duration = durationSeconds {
+                knownDuration = duration
                 durationLabel.text = "-" + formatTime(max(0, duration - position))
                 slider.maximumValue = Float(duration)
                 if !scrubbing { slider.value = Float(position) }
@@ -591,7 +614,7 @@ final class VibePlayerController: UIViewController {
 
     private func sendProgress(final: Bool) {
         lastProgressSent = Date()
-        let position = final ? (durationSeconds ?? positionSeconds) : positionSeconds
+        let position = final ? (durationSeconds ?? knownDuration ?? progressSeconds) : progressSeconds
         sendEvent(["type": "progress", "position_s": position, "duration_s": durationSeconds ?? NSNull(), "id": current?.id ?? NSNull()])
     }
 
@@ -599,8 +622,8 @@ final class VibePlayerController: UIViewController {
         guard !closed else { return }
         closed = true
         writeQaState(open: false)
-        let position = isLive ? 0 : positionSeconds
-        let duration: Any = durationSeconds ?? NSNull()
+        let position = isLive ? 0 : progressSeconds
+        let duration: Any = durationSeconds ?? knownDuration ?? NSNull()
         tickTimer?.invalidate()
         hideTimer?.invalidate()
         sleepTimer?.invalidate()
@@ -841,6 +864,7 @@ final class VibePlayerController: UIViewController {
 
     private func applySeek(to target: Double) {
         seekTarget = target
+        lastPosition = target
         seekRequestedAt = Date()
         seekRetried = false
         player.time = VLCTime(int: Int32(target * 1000))
