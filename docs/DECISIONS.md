@@ -1707,6 +1707,12 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
     cerrarlo varias veces); si aún se estaba yendo, la petición entraba en el reproductor
     cerrado y sonaba sin verse. Ahora la pantalla no pide nada tras el cierre y el
     reproductor nativo cerrado no acepta nada que reproducir.
+  - *Saltos que no se hacían* (−10 s justo después de +30 s): VLC tenía
+    `--http-reconnect`; al saltar pide otro trozo, el proxy corta la conexión anterior
+    (R1) y VLC la reabría por su cuenta, quedándose donde estaba. Fuera esa opción: los
+    cortes de verdad ya los reabre el propio reproductor (directo y VOD). Además, los
+    saltos seguidos se suman sobre el destino pendiente y se repiten una vez si VLC no
+    llega.
   - *Zapping:* después del último canal viene el primero (y al revés), como en TiviMate.
   - *Directo:* sin la barra de cristal vacía abajo (no hay tiempos que enseñar).
 

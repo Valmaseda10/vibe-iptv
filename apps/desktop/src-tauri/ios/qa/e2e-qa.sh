@@ -72,6 +72,23 @@ PY
 # idb da los marcos en las coordenadas de la interfaz, pero toca en las de la pantalla en
 # vertical: con el reproductor del iPhone en horizontal no coinciden (el borde de arriba de
 # la interfaz queda a la derecha de la pantalla). Esto pasa de unas a otras.
+# Tamaño de la interfaz según idb: el elemento de la app (o el mayor), nunca uno vacío.
+# Coger el primero de la lista dio 0x0 en el iPad una vez y la prueba lo trató como iPhone.
+root_size() {
+  python3 - "$OUT/a11y-nativo.json" <<'PY'
+import json, sys
+try:
+    items = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+apps = [it.get("frame") or {} for it in items if it.get("type") == "Application"]
+frames = [f for f in (apps or [it.get("frame") or {} for it in items]) if f.get("width", 0) > 0 and f.get("height", 0) > 0]
+if not frames:
+    sys.exit(1)
+f = max(frames, key=lambda f: f["width"] * f["height"])
+print(int(f["width"]), int(f["height"]))
+PY
+}
 ui_is_landscape() {
   [ "$W" -lt "$H" ] || return 1
   if player_open; then
@@ -79,7 +96,9 @@ ui_is_landscape() {
     uw=$(player_field uiWidth); uh=$(player_field uiHeight)
     if [ -n "$uw" ] && [ -n "$uh" ]; then [ "$uw" -gt "$uh" ]; return; fi
   fi
-  python3 -c "import json,sys; f=json.load(open('$OUT/a11y-nativo.json'))[0]['frame']; sys.exit(0 if f['width'] > f['height'] else 1)" 2>/dev/null
+  local rw rh
+  read -r rw rh < <(root_size) || return 1
+  [ "$rw" -gt "$rh" ]
 }
 tap_point() {
   local x=${1%.*} y=${2%.*}
@@ -96,7 +115,7 @@ ui_swipe() {
 # Tamaño de la interfaz ahora mismo (en horizontal, ancho y alto cambian).
 ui_size() {
   if player_open && [ -n "$(player_field uiWidth)" ]; then echo "$(player_field uiWidth) $(player_field uiHeight)"; return; fi
-  python3 -c "import json; f=json.load(open('$OUT/a11y-nativo.json'))[0]['frame']; print(int(f['width']), int(f['height']))" 2>/dev/null || echo "$W $H"
+  root_size || echo "$W $H"
 }
 tap_label() {
   local xy
@@ -116,16 +135,18 @@ tap_label() {
 # Toca la etiqueta $1 bajando por la página hasta encontrarla. Solo vale si queda por encima
 # de la barra de pestañas (si no, el toque caería en ella).
 scroll_tap_label() {
-  local xy
-  for _ in $(seq 1 "${3:-8}"); do
-    a11y; xy=$(find_label "$1" "${2:-exacta}")
+  # La etiqueta se guarda aparte: `set --` de abajo pisa $1 y, en la vuelta siguiente, se
+  # buscaba la coordenada x en vez del texto.
+  local xy x y label="$1" mode="${2:-exacta}" tries="${3:-8}"
+  for _ in $(seq 1 "$tries"); do
+    a11y; xy=$(find_label "$label" "$mode")
     if [ -n "$xy" ]; then
-      set -- $xy
-      if [ "${2%.*}" -lt $((H - 130)) ]; then tap_point "$1" "$2"; return 0; fi
+      read -r x y _ <<< "$xy"
+      if [ "${y%.*}" -lt $((H - 100)) ]; then tap_point "$x" "$y"; return 0; fi
     fi
     idb ui swipe --udid "$UDID" $((W / 2)) $((H * 7 / 10)) $((W / 2)) $((H * 4 / 10)) 2>/dev/null; sleep 1.5
   done
-  echo "  (no encontré «${1}» ni bajando por la página)"
+  echo "  (no encontré «${label}» ni bajando por la página)"
   return 1
 }
 # Mantener pulsado (menú de una portada).
@@ -282,7 +303,7 @@ sleep 15
 W=""; H=""
 for _ in $(seq 1 20); do
   a11y
-  read -r W H < <(python3 -c "import json;d=json.load(open('$OUT/a11y-nativo.json'));f=d[0]['frame'];print(int(f['width']),int(f['height']))" 2>/dev/null || true)
+  read -r W H < <(root_size || true)
   [ -n "$W" ] && break
   sleep 3
 done
@@ -367,13 +388,13 @@ t1=$(player_time)
 echo "  tiempo: antes ${t0}s, tras +30 s ${t1}s"
 check "película: +30 s avanza de verdad" '[ "$t1" -ge $((t0 + 25)) ]'
 player_tap "Atrás 10 segundos"; sleep 0.5
-echo "  salto pedido hasta: $(player_field seekTarget)s"
+echo "  salto pedido hasta: $(player_field seekTarget) (último botón: $(player_field lastAction))"
 sleep 2.5
 t2=$(player_time)
 if [ "$t2" -ge "$t1" ]; then
   echo "  (−10 s: el toque no llegó, se repite)"
   t1=$(player_time); player_tap "Atrás 10 segundos"; sleep 0.5
-  echo "  salto pedido hasta: $(player_field seekTarget)s"
+  echo "  salto pedido hasta: $(player_field seekTarget) (último botón: $(player_field lastAction))"
   sleep 2.5; t2=$(player_time)
 fi
 echo "  tiempo: tras −10 s ${t2}s"

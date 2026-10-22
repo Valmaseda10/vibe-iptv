@@ -149,14 +149,17 @@ final class VibePlayerController: UIViewController {
         return top
     }
 
-    // `--http-reconnect`: un directo IPTV se corta a menudo un instante; VLC reabre solo.
+    // Uno solo para toda la vida de la app, nunca liberado, sobre la biblioteca compartida
+    // de VLC: creado con opciones, VLC le daba su propia instancia de libVLC y la liberaba
+    // al cerrar el reproductor; si uno de sus hilos de red seguía vivo, escribía en el
+    // registro de esa instancia ya liberada y la app se cerraba (EXC_BAD_ACCESS en
+    // `vlc_http_dbg`, visto en el simulador al cerrar un directo).
     //
-    // Uno solo para toda la vida de la app, nunca liberado: creado con opciones, VLC le da
-    // su propia instancia de libVLC y la liberaba al cerrar el reproductor; si uno de sus
-    // hilos de red seguía vivo, escribía en el registro de esa instancia ya liberada y la
-    // app se cerraba (EXC_BAD_ACCESS en `vlc_http_dbg`, visto en el simulador al cerrar un
-    // directo).
-    private static let sharedPlayer = VLCMediaPlayer(options: ["--http-reconnect"])
+    // Sin `--http-reconnect`: los cortes ya los reabre `tick()` (directo y VOD). Con él, VLC
+    // reabría por su cuenta la conexión que el proxy cortaba al saltar (regla R1: una sola
+    // con el proveedor) y se quedaba donde estaba, sin hacer el salto; y al cerrar un
+    // directo volvía a pedirlo. Visto en el simulador.
+    private static let sharedPlayer = VLCMediaPlayer()
     private let player = VibePlayerController.sharedPlayer
     /// Sube cada vez que el reproductor empieza algo: un aviso de cierre pendiente sabe así
     /// si entretanto se abrió otra cosa.
@@ -233,6 +236,8 @@ final class VibePlayerController: UIViewController {
     private var seekTarget: Double?
     private var seekRequestedAt = Date.distantPast
     private var seekRetried = false
+    /// Último botón tocado, para la prueba del simulador (¿llegó el toque?).
+    private var lastAction = ""
     private var vodReconnects = 0
     private var errorRetries = 0
     private var lastRetryAt = Date.distantPast
@@ -489,6 +494,7 @@ final class VibePlayerController: UIViewController {
             state["controls"] = overlayVisible
             state["list"] = !listPanel.isHidden
             state["seekTarget"] = seekTarget ?? NSNull()
+            state["lastAction"] = lastAction
             // Tamaño de la interfaz (en horizontal, el ancho es el lado largo): la prueba
             // lo necesita para girar sus toques y no depender de que idb devuelva la pantalla.
             state["uiWidth"] = Int(controlsRoot.bounds.width)
@@ -781,6 +787,7 @@ final class VibePlayerController: UIViewController {
     @objc private func closeTapped() { close(ended: false) }
 
     @objc private func playTapped() {
+        lastAction = "pausa"
         togglePlay()
         showOverlay()
     }
@@ -801,8 +808,15 @@ final class VibePlayerController: UIViewController {
         updateNowPlaying()
     }
 
-    @objc private func backTapped() { seek(by: isLiveBuffer ? -30 : -10) }
-    @objc private func forwardTapped() { seek(by: isLiveBuffer ? 30 : 30) }
+    @objc private func backTapped() {
+        lastAction = "atrás"
+        seek(by: isLiveBuffer ? -30 : -10)
+    }
+
+    @objc private func forwardTapped() {
+        lastAction = "adelante"
+        seek(by: 30)
+    }
 
     @objc private func goLiveTapped() {
         behindLive = 0
