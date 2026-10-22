@@ -46,6 +46,9 @@ Categorías de canales en directo. `[{ id, name }]`.
 Página de canales, por número del proveedor y luego id. Parámetros: `category_id`, `q`
 (búsqueda por nombre), `limit` (máx. 100, por defecto 40) y, para la página siguiente,
 `after` + `after_key` (los `next_cursor` y `next_cursor_key` de la anterior, tal cual).
+Con `around=<id de canal>` (el reproductor) no se pagina: devuelve la lista entera si cabe
+en `limit` y, si no, una ventana con ese canal en medio que da la vuelta por los extremos
+(tras el último, el primero), como el zapping; `next_cursor` va vacío.
 Devuelve `{ items: ChannelSummary[], next_cursor, next_cursor_key }`, con
 `ChannelSummary = { id, display_name, logo_url, category_id, has_catchup, number }`
 (`number` es el número del canal en el proveedor, o `null`).

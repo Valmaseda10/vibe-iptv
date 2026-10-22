@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiGetOrNull, apiPost, useApiBase } from "../../lib/api-client";
 import { AUDIO_PASSTHROUGH } from "../../lib/codecSupport";
 import { useActiveProfile } from "../../lib/activeProfile";
@@ -136,12 +136,16 @@ export function PlayerScreen() {
     queryFn: () => apiGetOrNull<EpgNowNextResponse[]>(`/api/epg/now?channel_ids=${itemId}`),
     enabled: kind === "channel",
   });
+  // Los canales de alrededor del que se ve (nombre, lista y zapping), no la primera página:
+  // en listas de miles el canal podía no estar en ella. La ventana da la vuelta por los
+  // extremos y se recentra en cada cambio de canal; mientras llega la nueva, sigue la vieja.
   const channelsQuery = useQuery({
-    queryKey: ["player-channels", profileId, search.categoryId],
+    queryKey: ["player-channels", profileId, search.categoryId, itemId],
     queryFn: () =>
       apiGetOrNull<ChannelsPage>(
-        `/api/live/channels?profile_id=${profileId}&limit=200${search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
+        `/api/live/channels?profile_id=${profileId}&limit=100&around=${itemId}${search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
       ),
+    placeholderData: keepPreviousData,
     enabled: kind === "channel" && profileId !== null,
   });
   // Se pide siempre (no solo con el panel de estadísticas abierto) en VOD: es la fuente

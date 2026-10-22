@@ -340,6 +340,90 @@ pub fn list_channels_page(
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+/// Filtros comunes de las listas de canales (categoría y adultos) sobre `channels c`.
+fn push_channel_filters(sql: &mut String, args: &mut Vec<Box<dyn ToSql>>, category_id: Option<i64>, include_adult: bool) {
+    if !include_adult {
+        sql.push_str(NOT_ADULT_CHANNEL);
+    }
+    if let Some(cat) = category_id {
+        sql.push_str(" AND c.category_id = ?");
+        args.push(Box::new(cat));
+    }
+}
+
+/// Hasta `limit` canales justo antes de `anchor` en el orden de la lista, del más cercano
+/// al más lejano; sin `anchor`, los últimos de la lista.
+fn list_channels_before(conn: &Connection, category_id: Option<i64>, anchor: Option<ChannelCursor>, limit: i64, include_adult: bool) -> Result<Vec<ChannelListItem>> {
+    let mut sql = format!("SELECT {CHANNEL_LIST_COLUMNS} FROM channels c WHERE 1=1");
+    let mut args: Vec<Box<dyn ToSql>> = Vec::new();
+    push_channel_filters(&mut sql, &mut args, category_id, include_adult);
+    match anchor {
+        Some((Some(number), id)) => {
+            sql.push_str(" AND c.sort_order IS NOT NULL AND (c.sort_order < ? OR (c.sort_order = ? AND c.id < ?))");
+            args.push(Box::new(number));
+            args.push(Box::new(number));
+            args.push(Box::new(id));
+        }
+        Some((None, id)) => {
+            sql.push_str(" AND (c.sort_order IS NOT NULL OR c.id < ?)");
+            args.push(Box::new(id));
+        }
+        None => {}
+    }
+    sql.push_str(" ORDER BY c.sort_order IS NULL DESC, c.sort_order DESC, c.id DESC LIMIT ?");
+    args.push(Box::new(limit));
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter().map(|b| b.as_ref())), channel_list_item)?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Canales alrededor de `channel_id` para el reproductor (nombre, lista y zapping): si la
+/// lista cabe en `limit`, entera y en orden; si no, una ventana con el canal en medio que
+/// da la vuelta por los extremos (tras el último viene el primero), igual que el zapping.
+/// Antes el reproductor pedía la primera página y, en listas de miles, el canal que se
+/// veía podía no estar: se quedaba sin nombre y sin zapping.
+pub fn list_channels_around(conn: &Connection, category_id: Option<i64>, channel_id: i64, limit: i64, include_adult: bool) -> Result<Vec<ChannelListItem>> {
+    let mut count_sql = String::from("SELECT COUNT(*) FROM channels c WHERE 1=1");
+    let mut count_args: Vec<Box<dyn ToSql>> = Vec::new();
+    push_channel_filters(&mut count_sql, &mut count_args, category_id, include_adult);
+    let total: i64 = conn.query_row(&count_sql, params_from_iter(count_args.iter().map(|b| b.as_ref())), |r| r.get(0))?;
+    if total <= limit {
+        return list_channels_page(conn, category_id, None, None, limit, include_adult);
+    }
+
+    let mut anchor_sql = format!("SELECT {CHANNEL_LIST_COLUMNS} FROM channels c WHERE c.id = ?");
+    let mut anchor_args: Vec<Box<dyn ToSql>> = vec![Box::new(channel_id)];
+    push_channel_filters(&mut anchor_sql, &mut anchor_args, category_id, include_adult);
+    let anchor = conn
+        .query_row(&anchor_sql, params_from_iter(anchor_args.iter().map(|b| b.as_ref())), channel_list_item)
+        .optional()?;
+    let Some(anchor) = anchor else {
+        return list_channels_page(conn, category_id, None, None, limit, include_adult);
+    };
+    let cursor: ChannelCursor = (anchor.number, anchor.id);
+
+    let want_before = (limit - 1) / 2;
+    let want_after = limit - 1 - want_before;
+    let mut before = list_channels_before(conn, category_id, Some(cursor), want_before, include_adult)?;
+    let mut after = list_channels_page(conn, category_id, None, Some(cursor), want_after, include_adult)?;
+    // Cerca de un extremo, lo que falta se toma del otro: la ventana da la vuelta. Como la
+    // lista es mayor que la ventana, no se repite ningún canal.
+    let short_before = want_before - before.len() as i64;
+    let short_after = want_after - after.len() as i64;
+    if short_before > 0 {
+        let tail = list_channels_before(conn, category_id, None, short_before, include_adult)?;
+        before.extend(tail);
+    }
+    if short_after > 0 {
+        let head = list_channels_page(conn, category_id, None, None, short_after, include_adult)?;
+        after.extend(head);
+    }
+    before.reverse();
+    before.push(anchor);
+    before.extend(after);
+    Ok(before)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MovieSort {
     AddedDesc,
@@ -3135,6 +3219,61 @@ mod tests {
         let logo = channels[0].logo_url.as_deref().unwrap();
         assert!(!logo.contains("juan"));
         assert!(!logo.contains("hunter2"));
+    }
+
+    /// Canales numerados del 1 al `numbered` y uno sin número (va al final de la lista).
+    fn seed_numbered_channels(conn: &Connection, numbered: i64) -> HashMap<String, i64> {
+        use crate::sources::model::RawChannel;
+        let provider_id = queries::insert_provider(conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let mut ids = HashMap::new();
+        for n in (1..=numbered).map(Some).chain([None]) {
+            let remote_id = n.map(|n| n.to_string()).unwrap_or_else(|| "sin".into());
+            let channel = RawChannel {
+                remote_id: remote_id.clone(),
+                category_remote_id: None,
+                raw_name: format!("Canal {remote_id}"),
+                logo_url: None,
+                epg_channel_id: None,
+                has_catchup: false,
+                catchup_days: 0,
+                sort_order: n,
+            };
+            let fields = TitleFields { clean_title: "Canal", year: None, match_key: "n/a", quality: None, language: None };
+            queries::upsert_channel(conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+            let id: i64 = conn.query_row("SELECT id FROM channels WHERE provider_id = ?1 AND remote_id = ?2", params![provider_id, remote_id], |r| r.get(0)).unwrap();
+            ids.insert(remote_id, id);
+        }
+        ids
+    }
+
+    fn numbers(items: &[ChannelListItem]) -> Vec<String> {
+        items.iter().map(|c| c.number.map(|n| n.to_string()).unwrap_or_else(|| "sin".into())).collect()
+    }
+
+    #[test]
+    fn channels_around_put_the_watched_one_in_the_middle_of_a_long_list() {
+        let conn = memory_conn();
+        let ids = seed_numbered_channels(&conn, 10);
+        let window = list_channels_around(&conn, None, ids["5"], 5, true).unwrap();
+        assert_eq!(numbers(&window), ["3", "4", "5", "6", "7"]);
+    }
+
+    #[test]
+    fn channels_around_wrap_past_both_ends_like_zapping() {
+        let conn = memory_conn();
+        let ids = seed_numbered_channels(&conn, 10);
+        // Antes del 1 vienen el último (sin número) y el 10.
+        assert_eq!(numbers(&list_channels_around(&conn, None, ids["1"], 5, true).unwrap()), ["10", "sin", "1", "2", "3"]);
+        // Tras el último vuelven el 1 y el 2.
+        assert_eq!(numbers(&list_channels_around(&conn, None, ids["sin"], 5, true).unwrap()), ["9", "10", "sin", "1", "2"]);
+    }
+
+    #[test]
+    fn channels_around_return_the_whole_list_when_it_fits() {
+        let conn = memory_conn();
+        let ids = seed_numbered_channels(&conn, 3);
+        let window = list_channels_around(&conn, None, ids["2"], 10, true).unwrap();
+        assert_eq!(numbers(&window), ["1", "2", "3", "sin"]);
     }
 
     fn seed_channel_with_epg_id(conn: &Connection, provider_id: i64, remote_id: &str, epg_channel_id: Option<&str>) -> i64 {

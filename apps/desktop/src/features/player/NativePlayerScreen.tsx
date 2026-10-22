@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { apiGetOrNull, apiPost, errorMessage, useApiBase } from "../../lib/api-client";
@@ -82,12 +82,16 @@ export function NativePlayerScreen() {
     queryFn: () => apiGetOrNull<SeriesDetailResponse>(`/api/series/${search.seriesId}?profile_id=${profileId}`),
     enabled: kind === "episode" && Boolean(search.seriesId) && profileId !== null,
   });
+  // Los canales de alrededor del que se ve (nombre, lista y zapping), no la primera página:
+  // en listas de miles el canal podía no estar en ella. La ventana da la vuelta por los
+  // extremos y se recentra en cada cambio de canal; mientras llega la nueva, sigue la vieja.
   const channelsQuery = useQuery({
-    queryKey: ["player-channels", profileId, search.categoryId],
+    queryKey: ["player-channels", profileId, search.categoryId, itemId],
     queryFn: () =>
       apiGetOrNull<ChannelsPage>(
-        `/api/live/channels?profile_id=${profileId}&limit=200${search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
+        `/api/live/channels?profile_id=${profileId}&limit=100&around=${itemId}${search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
       ),
+    placeholderData: keepPreviousData,
     enabled: kind === "channel" && profileId !== null,
   });
   const channelIds = useMemo(() => (channelsQuery.data?.items ?? []).map((c) => c.id).join(","), [channelsQuery.data]);
@@ -96,6 +100,9 @@ export function NativePlayerScreen() {
     queryFn: () => apiGetOrNull<EpgNowNextResponse[]>(`/api/epg/now?channel_ids=${channelIds}`),
     enabled: kind === "channel" && !isCatchup && channelIds.length > 0,
     staleTime: 60_000,
+    // La ventana de canales se recentra al cambiar de canal: lo que emiten los de antes
+    // sigue a la vista hasta que llega lo nuevo.
+    placeholderData: keepPreviousData,
   });
 
   const nowByChannel = useMemo(() => {

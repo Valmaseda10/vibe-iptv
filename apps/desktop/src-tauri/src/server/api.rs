@@ -787,17 +787,25 @@ struct ChannelsQuery {
     /// canales sin número.
     after_key: Option<String>,
     limit: Option<i64>,
+    /// Canal que se está viendo: en vez de una página, los canales de su alrededor
+    /// (`reads::list_channels_around`), para el reproductor.
+    around: Option<i64>,
 }
 
 async fn get_live_channels(State(state): State<CatalogState>, Query(query): Query<ChannelsQuery>) -> Result<Json<ChannelsPage>, ApiError> {
     let limit = clamp_limit(query.limit);
     let after = query.after.map(|id| (query.after_key.as_deref().and_then(|k| k.parse::<i64>().ok()), id));
+    let around = query.around;
     let items = with_db(state.db_path, move |conn| {
         let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
-        reads::list_channels_page(conn, query.category_id, query.q.as_deref(), after, limit, include_adult)
+        match around {
+            Some(channel_id) => reads::list_channels_around(conn, query.category_id, channel_id, limit, include_adult),
+            None => reads::list_channels_page(conn, query.category_id, query.q.as_deref(), after, limit, include_adult),
+        }
     })
     .await?;
-    let last = if items.len() as i64 == limit { items.last() } else { None };
+    // La ventana alrededor de un canal no se pagina.
+    let last = if around.is_none() && items.len() as i64 == limit { items.last() } else { None };
     let next_cursor = last.map(|c| c.id);
     let next_cursor_key = last.map(|c| c.number.map(|n| n.to_string()).unwrap_or_default());
     Ok(Json(ChannelsPage { items: items.into_iter().map(Into::into).collect(), next_cursor, next_cursor_key }))

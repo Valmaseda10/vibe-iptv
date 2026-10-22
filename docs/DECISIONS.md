@@ -1758,12 +1758,14 @@ real del usuario). Arreglado, elegido con el usuario:
   flechas cambian de canal) y volumen recordado entre sesiones (preferencia del equipo,
   en el almacenamiento local).
 
-**Pendiente, decidido con el usuario para después del .ipa final:** los reproductores de
-PC e iPhone piden la lista de canales con `limit=200`, pero el núcleo corta en 100. Un
-canal que no esté entre esos 100 (abierto desde Buscar, Favoritos o «Todas las
-categorías») sale sin nombre y sin zapping. Con el proveedor falso (17 canales) no se ve;
-con uno real de miles, casi siempre. Arreglo previsto: que el núcleo devuelva una ventana
-de canales alrededor del que se ve, en el mismo orden que la lista.
+**Hecho después (rama `despues-del-ipa`, para no retrasar el .ipa final):** los
+reproductores de PC e iPhone pedían la lista de canales con `limit=200`, pero el núcleo
+corta en 100. Un canal que no estuviera entre esos 100 (abierto desde Buscar, Favoritos o
+«Todas las categorías») salía sin nombre y sin zapping; con el proveedor falso (17
+canales) no se veía, con uno real de miles casi siempre. Ahora piden
+`/api/live/channels?around=<canal>`: la lista entera si cabe y, si no, una ventana con el
+canal en medio que da la vuelta por los extremos (`reads::list_channels_around`, con
+tests), recentrada en cada cambio de canal.
 
 ## Deuda técnica conocida desde el diseño
 
