@@ -56,7 +56,7 @@ pub fn browse_router(state: BrowseState) -> Router {
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "api-types.ts")]
 pub struct BrowseItem {
-    /// `movie`, `series` o `episode` (solo en «Seguir viendo» de Series).
+    /// `movie`, `series` o `episode` (solo en «Continuar viendo» de Series).
     pub kind: String,
     #[ts(type = "number")]
     pub id: i64,
@@ -68,7 +68,7 @@ pub struct BrowseItem {
     pub poster_path: Option<String>,
     /// Segunda línea: por qué está ahí, el episodio, o lo que falta.
     pub subtitle: Option<String>,
-    /// Cuánto se ha visto (0–1), en «Seguir viendo».
+    /// Cuánto se ha visto (0–1), en «Continuar viendo».
     pub progress: Option<f64>,
     pub is_new: bool,
 }
@@ -206,7 +206,7 @@ fn gather(conn: &rusqlite::Connection, kind: &'static str, profile_id: i64, reco
     })
 }
 
-/// «Seguir viendo» de Películas (películas a medias) o de Series (episodios a medias y el
+/// «Continuar viendo» de Películas (películas a medias) o de Series (episodios a medias y el
 /// siguiente de cada serie empezada).
 fn continue_row(conn: &rusqlite::Connection, kind: &str, profile_id: i64, access: reads::ProfileAccess) -> crate::db::Result<Option<BrowseRowResponse>> {
     let mut items = Vec::new();
@@ -243,7 +243,7 @@ fn continue_row(conn: &rusqlite::Connection, kind: &str, profile_id: i64, access
         }
     }
     items.truncate(20);
-    Ok((!items.is_empty()).then(|| BrowseRowResponse { key: "continue".into(), title: "Seguir viendo".into(), style: "continue".into(), items }))
+    Ok((!items.is_empty()).then(|| BrowseRowResponse { key: "continue".into(), title: "Continuar viendo".into(), style: "continue".into(), items }))
 }
 
 /// Rellena el plan con títulos y portadas, quitando lo que el perfil no puede ver y las

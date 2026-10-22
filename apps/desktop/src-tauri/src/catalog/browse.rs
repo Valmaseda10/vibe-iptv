@@ -534,7 +534,7 @@ fn interleave(a: Vec<Card>, b: Vec<Card>, take: usize) -> Vec<Card> {
 
 /// Inicio: una portada de cualquiera de los dos tipos y una mezcla corta de lo mejor de
 /// cada uno (recomendado, «Porque viste X», tendencias, novedades y un par de filas de
-/// descubrimiento). Seguir viendo, Mi lista y los canales los pone la interfaz.
+/// descubrimiento). Continuar viendo, Mi lista y los canales los pone la interfaz.
 pub fn plan_home(movies: &KindInputs, series: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i64)>) -> Plan {
     let mut rng = Rng::new(seed ^ 0x40DE);
     let mut candidates = featured_candidates(movies);

@@ -385,6 +385,15 @@ export function NativePlayerScreen() {
         case "closed": {
           const position = payload.ended && payload.duration_s ? payload.duration_s : payload.position_s;
           const saved = saveProgress(position, payload.duration_s, payload.id);
+          // La ficha enseña «Continuar» al instante, sin esperar a que el núcleo lo guarde y
+          // a volver a pedirlo (luego se confirma con la respuesta real).
+          if (latest.kind === "movie" && latest.profileId !== null && position > 0) {
+            queryClient.setQueryData<PlaybackProgressResponse>(["progress", "movie", String(payload.id ?? latest.itemId), latest.profileId], {
+              position_s: Math.floor(position),
+              duration_s: payload.duration_s ? Math.floor(payload.duration_s) : null,
+              finished: payload.ended,
+            });
+          }
           closedRef.current = true;
           lastRequestRef.current = null;
           // La grabación del directo la suelta el propio reproductor (VibePlayer.swift) en

@@ -78,7 +78,7 @@ España hoy»...) o `null`; `rows` con `key` estable, `title`, `style` (`poster`
 `continue`) e `items` (`BrowseItem`: `kind` movie/series/episode, `id`, `series_id`,
 `clean_title`, `year`, `poster_path`, `subtitle`, `progress`, `is_new`). `pending` es
 `true` mientras se calculan por primera vez las recomendaciones del perfil. En Películas y
-Series la primera fila es «Seguir viendo» si hay algo a medias.
+Series la primera fila es «Continuar viendo» si hay algo a medias.
 
 ### `GET /api/movies`
 Página de películas. Parámetros: `genre`, `year`, `quality`, `sort`

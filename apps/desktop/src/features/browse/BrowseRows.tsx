@@ -3,7 +3,7 @@ import type { BrowseItem, BrowseRowResponse } from "../../lib/api-types";
 import { Row } from "../../components/Row";
 import { PosterCard } from "../../components/PosterCard";
 
-/** Las filas de `GET /api/browse`: pósters, el Top 10 con su número y «Seguir viendo»
+/** Las filas de `GET /api/browse`: pósters, el Top 10 con su número y «Continuar viendo»
  * (pinchar reproduce directamente, con la barra de lo visto). */
 export function BrowseRows({ rows }: { rows: BrowseRowResponse[] }) {
   const navigate = useNavigate();

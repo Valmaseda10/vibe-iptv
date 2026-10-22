@@ -31,5 +31,8 @@ function snapshot() {
   }
   // La ruta actual, para que la prueba sepa en qué pantalla está de verdad.
   items.push({ AXLabel: `ruta:${window.location.pathname}`, frame: { x: 0, y: 0, width: 0, height: 0 } });
+  // Latido: cambia cada segundo, así el mapa se reescribe aunque la pantalla no cambie y la
+  // prueba sabe si la página sigue viva (p. ej. debajo del reproductor).
+  items.push({ AXLabel: `latido:${Math.floor(Date.now() / 1000)}`, frame: { x: 0, y: 0, width: 0, height: 0 } });
   return items;
 }

@@ -39,7 +39,7 @@ reason: string, };
  */
 export type BrowseItem = { 
 /**
- * `movie`, `series` o `episode` (solo en «Seguir viendo» de Series).
+ * `movie`, `series` o `episode` (solo en «Continuar viendo» de Series).
  */
 kind: string, id: number, 
 /**
@@ -51,7 +51,7 @@ series_id: number | null, clean_title: string, year: number | null, poster_path:
  */
 subtitle: string | null, 
 /**
- * Cuánto se ha visto (0–1), en «Seguir viendo».
+ * Cuánto se ha visto (0–1), en «Continuar viendo».
  */
 progress: number | null, is_new: boolean, };
 

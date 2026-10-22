@@ -247,6 +247,12 @@ player_tap() {
   tap_point "$1" "$2"
 }
 
+# Películas y Series empiezan con portada y filas (2026-10-22): para buscar un título
+# concreto se entra en «Catálogo completo».
+go_catalog() {
+  go "$1"
+  tap_label "Catálogo completo" contiene 8; sleep 2
+}
 close_player() {
   local n
   for n in 1 2 3; do
@@ -355,6 +361,9 @@ check "favoritos: vacío al principio" 'wait_visible "Todavía no has marcado na
 # ───────── 3. Mi lista desde el menú de una portada ─────────
 section "mi lista"
 go Películas
+check "películas: portada y filas" 'wait_visible "Catálogo completo" contiene 20'
+shot peliculas-filas
+tap_label "Catálogo completo" contiene 8; sleep 2
 check "películas: la rejilla carga" 'wait_visible "Toy Story" contiene 20'
 long_press "Toy Story" contiene; sleep 1; shot menu-mantener
 check "portada: mantener pulsado abre el menú" 'wait_visible "Añadir a Mi lista" exacta 5'
@@ -369,7 +378,7 @@ check "inicio: aparece la fila «Mi lista»" 'wait_visible "Mi lista" exacta 10'
 
 # ───────── 4. Ficha y reproducción de una película ─────────
 section "película"
-go Películas
+go_catalog Películas
 tap_label "Toy Story" contiene 10; sleep 3; shot ficha-pelicula
 check "ficha: sabe que está en Mi lista" 'wait_visible "En mi lista" contiene 8'
 tap_label "Marcar vista" contiene 5; sleep 2
@@ -418,13 +427,20 @@ check "película: reanudar sigue avanzando" '[ "$(player_field playing)" = "True
 shot reproductor-pelicula
 # Fluidez al salir: ¿la interfaz web siguió viva debajo del reproductor (su mapa se escribe
 # cada medio segundo)? ¿y cuánto tarda la ficha en volver tras cerrar?
+# El mapa lleva un latido por segundo (qaSnapshot.ts): si tiene más de unos segundos, la
+# página no está ejecutando nada debajo del reproductor.
 web_age=$(python3 -c "import os,sys,time; print(int(time.time() - os.path.getmtime(sys.argv[1])))" "${WEB_MAP:-/nonexistent}" 2>/dev/null || echo "?")
-echo "  interfaz web debajo del reproductor: último repintado hace ${web_age}s"
-close_started=$(python3 -c "import time; print(time.time())")
+echo "  interfaz web debajo del reproductor: último latido hace ${web_age}s"
+now_s() { python3 -c "import time; print(time.time())"; }
+since() { python3 -c "import sys; print(round(float(sys.argv[2]) - float(sys.argv[1]), 1))" "$1" "$2"; }
+close_started=$(now_s)
 close_player
+t_closed=$(now_s)
 check "película: cerrar sale del reproductor" 'wait_player_closed 10'
-check "película: vuelve a la ficha con «Continuar»" 'wait_visible "Continuar" contiene 8'
-echo "  vuelta a la ficha: $(python3 -c "import time,sys; print(round(time.time() - float(sys.argv[1]), 1))" "$close_started") s desde el toque en cerrar"
+wait_visible "ruta:/movies/" contiene 30 >/dev/null; t_route=$(now_s)
+check "película: vuelve a la ficha con «Continuar»" 'wait_visible "Continuar" contiene 30'
+t_cont=$(now_s)
+echo "  vuelta a la ficha: $(since "$close_started" "$t_cont") s desde el toque en cerrar (cerrar: $(since "$close_started" "$t_closed") s; ficha a la vista: +$(since "$t_closed" "$t_route") s; «Continuar»: +$(since "$t_route" "$t_cont") s)"
 check "ficha: enseña cuánto queda" 'visible "Quedan" contiene'
 tap_label "Continuar" contiene 5
 check "película: «Continuar» retoma donde se dejó" 'wait_player_open 25 && sleep 4 && [ "$(player_time)" -ge $((p3 - 10)) ]'
@@ -445,7 +461,7 @@ check "mi lista: quitarla vacía la fila" 'wait_gone "Mi lista" exacta 8'
 
 # ───────── 6. Serie: temporadas, episodios y lista dentro del reproductor ─────────
 section "serie"
-go Series
+go_catalog Series
 tap_label "Breaking Bad" contiene 10; sleep 3; shot ficha-serie
 check "serie: la ficha ofrece «Ver T1 · E1»" 'wait_visible "Ver T1 · E1" contiene 10'
 tap_label "Temporada 2" exacta 5; sleep 1
@@ -568,7 +584,7 @@ fi
 section "segundo plano"
 idb ui button --udid "$UDID" HOME 2>/dev/null; sleep 25
 xcrun simctl launch "$UDID" "$bundle" >/dev/null; sleep 4
-go Películas
+go_catalog Películas
 check "segundo plano: al volver, el catálogo sigue cargando" 'wait_visible "Toy Story" contiene 15'
 section "fin"
 shot fin

@@ -83,9 +83,9 @@ export function HomeScreen() {
           {isError && <p className="px-4 text-red-400 sm:px-10">No se pudo cargar el inicio. ¿Hay algún proveedor sincronizado?</p>}
 
           {isPending ? (
-            <SkeletonRow title="Seguir viendo" />
+            <SkeletonRow title="Continuar viendo" />
           ) : data && data.continue_watching.length > 0 ? (
-            <Row title="Seguir viendo">
+            <Row title="Continuar viendo">
               {data.continue_watching.map((item) => (
                 <PosterCard
                   key={`${item.item_kind}-${item.item_id}`}
