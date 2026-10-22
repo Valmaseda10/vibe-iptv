@@ -217,9 +217,17 @@ final class VibePlayerController: UIViewController {
         if request.message != nil || request.update_only == true { return }
         guard let presenter = topViewController() else { return }
         let controller = VibePlayerController()
-        controller.modalPresentationStyle = .fullScreen
+        // Encima de la app, sin quitarla de la pantalla. Con `.fullScreen`, iOS retiraba la
+        // vista web mientras se veía algo y la congelaba: al cerrar el reproductor tardaba
+        // 40–60 s en volver a responder (medido en el simulador: la interfaz no repintaba
+        // nada desde que se abría el reproductor).
+        controller.modalPresentationStyle = .overFullScreen
+        controller.modalPresentationCapturesStatusBarAppearance = true
         current = controller
-        presenter.present(controller, animated: true) { controller.load(request) }
+        presenter.present(controller, animated: true) {
+            VibePlayerController.forceLandscape()
+            controller.load(request)
+        }
     }
 
     private static func topViewController() -> UIViewController? {
@@ -745,6 +753,16 @@ final class VibePlayerController: UIViewController {
     /// En el iPhone el reproductor va en horizontal; al cerrarlo, la app vuelve a como se
     /// sujeta el teléfono (en vertical si no se sabe). Sin esto, toda la app se quedaba
     /// tumbada después de ver algo (visto en el simulador).
+    /// En el iPhone el vídeo va en horizontal. Presentado encima de la app (no a pantalla
+    /// completa), el giro se pide a la escena en vez de dejarlo en manos de UIKit.
+    static func forceLandscape() {
+        guard UIDevice.current.userInterfaceIdiom == .phone,
+              let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
+        current?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        scene.windows.forEach { $0.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations() }
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeRight)) { _ in }
+    }
+
     static func restoreOrientation() {
         guard UIDevice.current.userInterfaceIdiom == .phone,
               let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first else { return }
