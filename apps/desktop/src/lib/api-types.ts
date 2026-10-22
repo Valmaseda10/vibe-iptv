@@ -21,6 +21,57 @@ kind: string, seed_title: string, items: Array<SimilarTitleSummary>, };
 
 export type BinariesStatus = { ffmpeg: boolean, ffprobe: boolean, mpv: boolean, };
 
+/**
+ * La portada de la pantalla.
+ */
+export type BrowseFeatured = { 
+/**
+ * `movie` o `series`.
+ */
+kind: string, id: number, clean_title: string, year: number | null, overview: string | null, backdrop_path: string | null, poster_path: string | null, rating: number | null, 
+/**
+ * «N.º 2 en España hoy», «Recomendada para ti»...
+ */
+reason: string, };
+
+/**
+ * Un título en una fila.
+ */
+export type BrowseItem = { 
+/**
+ * `movie`, `series` o `episode` (solo en «Seguir viendo» de Series).
+ */
+kind: string, id: number, 
+/**
+ * Serie del episodio, para abrir el reproductor con su lista de episodios.
+ */
+series_id: number | null, clean_title: string, year: number | null, poster_path: string | null, 
+/**
+ * Segunda línea: por qué está ahí, el episodio, o lo que falta.
+ */
+subtitle: string | null, 
+/**
+ * Cuánto se ha visto (0–1), en «Seguir viendo».
+ */
+progress: number | null, is_new: boolean, };
+
+export type BrowseResponse = { featured: BrowseFeatured | null, rows: Array<BrowseRowResponse>, 
+/**
+ * Las recomendaciones del perfil se están calculando por primera vez: conviene volver a
+ * pedir la pantalla en unos segundos.
+ */
+pending: boolean, };
+
+export type BrowseRowResponse = { 
+/**
+ * Estable entre visitas («top», «genre-28»...).
+ */
+key: string, title: string, 
+/**
+ * `poster`, `top10` (con el número grande) o `continue` (abrir es reproducir).
+ */
+style: string, items: Array<BrowseItem>, };
+
 export type CategoryAdultSetting = { id: number, 
 /**
  * `live`, `movie` o `series`.

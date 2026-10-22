@@ -1,4 +1,5 @@
 pub mod age;
+pub mod browse;
 pub mod epg;
 pub mod normalize;
 pub mod recommendations;

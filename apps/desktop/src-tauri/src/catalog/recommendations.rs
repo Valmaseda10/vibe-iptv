@@ -2,19 +2,25 @@
 //!
 //! Cada cosa que el perfil ha hecho con un título es una señal con un peso
 //! ([`seed_weight`]): «Me encanta» y «Me gusta» (valoraciones, 2026-10-22), favorito, vista
-//! entera o empezada; lo reciente pesa más (vida media de 45 días) y «No es para mí»
-//! resta. Las semillas con más peso piden a TMDB sus recomendaciones, y cada candidato
-//! suma lo que le aporta cada semilla según su peso y el puesto que TMDB le da
-//! ([`score_candidates`]); luego sube un poco si es de los géneros que más gustan al perfil
-//! ([`genre_boost`]). Se descarta lo que el perfil ya ha visto, valorado o tiene en su
-//! lista, y todo lo que el proveedor no tiene (se cruza con el catálogo local).
+//! entera o empezada; lo reciente pesa más (vida media de 45 días). «No es para mí» resta,
+//! y algo empezado y dejado enseguida resta un poco (abandonado). Las semillas con más peso
+//! piden a TMDB sus recomendaciones, y cada candidato suma lo que le aporta cada semilla
+//! según su peso y el puesto que TMDB le da ([`score_candidates`]). Después:
+//! - sube si es de los géneros que más gustan al perfil y baja si es de los que no
+//!   ([`genre_boost`]);
+//! - sube un poco cuanto mejor valorado está en TMDB ([`quality_factor`]);
+//! - se reparte entre semillas, para que una sola no llene la fila ([`diversify`]);
+//! - si TMDB da pocas que el proveedor tenga, se completa con lo mejor valorado de los
+//!   géneros favoritos del perfil.
 //!
-//! Sin clave de TMDB, o sin ninguna señal todavía, sale vacío: no es un error.
+//! Se descarta lo que el perfil ya ha visto, valorado o tiene en su lista, y todo lo que el
+//! proveedor no tiene (se cruza con el catálogo local). Sin clave de TMDB, o sin ninguna
+//! señal todavía, sale vacío: no es un error.
 //!
-//! Cacheado en memoria por perfil. `GET /api/home` nunca espera a un cálculo nuevo: si no
+//! Cacheado en memoria por perfil. Las pantallas nunca esperan a un cálculo nuevo: si no
 //! hay nada en caché se calcula en segundo plano y esa visita sale sin las filas; si lo
 //! hay aunque esté caducado, se sirve mientras se refresca (stale-while-revalidate).
-//! Valorar algo marca la caché como caducada ([`invalidate`]).
+//! Valorar, cambiar la lista o terminar algo marca la caché como caducada ([`invalidate`]).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -28,12 +34,22 @@ use crate::db::{now_epoch, reads, schema};
 use crate::util::keychain;
 
 const CACHE_TTL: Duration = Duration::from_secs(3600);
-const MAX_POSITIVE_SEEDS: usize = 6;
+/// Tras un cambio de gustos, como mucho un recálculo por minuto (cada uno son unas cuantas
+/// llamadas a TMDB).
+const MIN_RECOMPUTE: Duration = Duration::from_secs(60);
+const MAX_POSITIVE_SEEDS: usize = 8;
 const MAX_NEGATIVE_SEEDS: usize = 3;
-const MAX_RESULTS: usize = 20;
+/// Recomendadas que se guardan: las pantallas eligen de aquí unas pocas cada visita.
+const MAX_RESULTS: usize = 40;
 /// Una fila «Porque viste X» con menos de esto no se enseña.
 const MIN_BECAUSE_ROW: usize = 4;
-const BECAUSE_ROW_SIZE: usize = 12;
+const BECAUSE_ROW_SIZE: usize = 16;
+/// Filas «Porque viste X» por tipo, de las semillas más fuertes.
+const MAX_BECAUSE_ROWS: usize = 4;
+/// Algo empezado y dejado antes de esta fracción, hace más de unos días, cuenta como
+/// abandonado.
+const ABANDONED_FRACTION: f64 = 0.1;
+const ABANDONED_AFTER_DAYS: f64 = 3.0;
 const RECENCY_HALF_LIFE_DAYS: f64 = 45.0;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -88,6 +104,8 @@ struct CacheEntry {
     recommendations: Recommendations,
     /// Evita dos cálculos a la vez para el mismo perfil.
     refreshing: bool,
+    /// El perfil cambió de gustos desde el último cálculo.
+    stale: bool,
 }
 
 static CACHE: LazyLock<AsyncMutex<HashMap<i64, CacheEntry>>> = LazyLock::new(|| AsyncMutex::new(HashMap::new()));
@@ -98,14 +116,15 @@ pub async fn get_cached_or_refresh(db_path: PathBuf, profile_id: i64) -> Recomme
     let mut cache = CACHE.lock().await;
     let (current, should_refresh) = match cache.get_mut(&profile_id) {
         Some(entry) => {
-            let should_refresh = entry.computed_at.elapsed() >= CACHE_TTL && !entry.refreshing;
+            let age = entry.computed_at.elapsed();
+            let should_refresh = !entry.refreshing && (age >= CACHE_TTL || (entry.stale && age >= MIN_RECOMPUTE));
             if should_refresh {
                 entry.refreshing = true;
             }
             (entry.recommendations.clone(), should_refresh)
         }
         None => {
-            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), recommendations: Recommendations::default(), refreshing: true });
+            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), recommendations: Recommendations::default(), refreshing: true, stale: false });
             (Recommendations::default(), true)
         }
     };
@@ -115,18 +134,24 @@ pub async fn get_cached_or_refresh(db_path: PathBuf, profile_id: i64) -> Recomme
         tokio::spawn(async move {
             let recommendations = compute(db_path, profile_id).await;
             let mut cache = CACHE.lock().await;
-            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), recommendations, refreshing: false });
+            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), recommendations, refreshing: false, stale: false });
         });
     }
     current
 }
 
-/// El perfil cambió de gusto (valoró algo): la próxima visita a Inicio recalcula, sin
-/// dejar de enseñar mientras tanto lo que había.
+/// Se está calculando la primera vez para este perfil (todavía no hay nada que enseñar).
+pub async fn first_computation_pending(profile_id: i64) -> bool {
+    let cache = CACHE.lock().await;
+    cache.get(&profile_id).is_some_and(|entry| entry.refreshing && entry.recommendations == Recommendations::default())
+}
+
+/// El perfil cambió de gusto (valoró algo, cambió su lista o terminó algo): la próxima
+/// visita recalcula, sin dejar de enseñar mientras tanto lo que había.
 pub async fn invalidate(profile_id: i64) {
     let mut cache = CACHE.lock().await;
     if let Some(entry) = cache.get_mut(&profile_id) {
-        entry.computed_at = Instant::now().checked_sub(CACHE_TTL).unwrap_or_else(Instant::now);
+        entry.stale = true;
     }
 }
 
@@ -135,6 +160,11 @@ pub async fn invalidate(profile_id: i64) {
 pub fn seed_weight(signal: &reads::TasteSignal, kind: &str, now: i64) -> f64 {
     if signal.rating == Some(-1) {
         return -2.0;
+    }
+    let age_days = (now - signal.last_at).max(0) as f64 / 86_400.0;
+    // Empezada y dejada enseguida, sin valorar ni guardar: no le convenció.
+    if kind != "series" && signal.rating.is_none() && !signal.favorite && signal.watched > 0.0 && signal.watched < ABANDONED_FRACTION && age_days >= ABANDONED_AFTER_DAYS {
+        return -0.6;
     }
     let mut weight = match signal.rating {
         Some(2) => 3.0,
@@ -153,7 +183,6 @@ pub fn seed_weight(signal: &reads::TasteSignal, kind: &str, now: i64) -> f64 {
     } else if signal.watched >= 0.15 {
         weight += 0.6;
     }
-    let age_days = (now - signal.last_at).max(0) as f64 / 86_400.0;
     weight * 0.5f64.powf(age_days / RECENCY_HALF_LIFE_DAYS).max(0.2)
 }
 
@@ -214,16 +243,50 @@ pub fn genre_affinity(seeds: &[(f64, &[i64])]) -> HashMap<i64, f64> {
     affinity
 }
 
-/// Multiplicador de un candidato por sus géneros: entre 1 y 1,3.
-pub fn genre_boost(affinity: &HashMap<i64, f64>, genres: &[i64]) -> f64 {
+/// Cuánto disgusta cada género al perfil, de 0 a 1, a partir de sus semillas negativas.
+pub fn genre_aversion(seeds: &[(f64, &[i64])]) -> HashMap<i64, f64> {
+    let negated: Vec<(f64, &[i64])> = seeds.iter().filter(|(w, _)| *w < 0.0).map(|(w, g)| (-w, *g)).collect();
+    genre_affinity(&negated)
+}
+
+/// Multiplicador de un candidato por sus géneros: hasta 1,3 si es de los que gustan, y
+/// hasta 0,65 si es de los que no.
+pub fn genre_boost(affinity: &HashMap<i64, f64>, aversion: &HashMap<i64, f64>, genres: &[i64]) -> f64 {
     let best = genres.iter().filter_map(|g| affinity.get(g)).cloned().fold(0.0, f64::max);
-    1.0 + 0.3 * best
+    let worst = genres.iter().filter_map(|g| aversion.get(g)).cloned().fold(0.0, f64::max);
+    (1.0 + 0.3 * best) * (1.0 - 0.35 * worst)
+}
+
+/// Multiplicador por la nota de TMDB: 1 con un 6,5, hasta 1,15 (excelente) y como poco
+/// 0,8 (floja); sin nota, 0,95.
+pub fn quality_factor(rating: Option<f64>) -> f64 {
+    rating.map(|r| (1.0 + 0.075 * (r - 6.5)).clamp(0.8, 1.15)).unwrap_or(0.95)
+}
+
+/// Reordena para que no salgan muchas seguidas por la misma semilla: cada vez que una
+/// semilla ya ha puesto una, la siguiente suya vale un 15 % menos.
+pub fn diversify<T: Clone>(ranked: Vec<(f64, T, String)>) -> Vec<(f64, T, String)> {
+    let mut pending = ranked;
+    let mut out = Vec::with_capacity(pending.len());
+    let mut used: HashMap<String, i32> = HashMap::new();
+    while !pending.is_empty() {
+        let best = pending
+            .iter()
+            .enumerate()
+            .map(|(i, (score, _, because))| (i, score * 0.85f64.powi(*used.get(because).unwrap_or(&0))))
+            .fold((0, f64::MIN), |acc, item| if item.1 > acc.1 { item } else { acc })
+            .0;
+        let item = pending.remove(best);
+        *used.entry(item.2.clone()).or_default() += 1;
+        out.push(item);
+    }
+    out
 }
 
 struct KindResult {
     ranked: Vec<(reads::LocalTitle, String)>,
-    /// Semilla positiva más fuerte con su fila, si salió bastante.
-    because: Option<(f64, BecauseRow)>,
+    /// Filas «Porque viste X» de las semillas positivas más fuertes, con su peso.
+    because: Vec<(f64, BecauseRow)>,
 }
 
 async fn compute(db_path: PathBuf, profile_id: i64) -> Recommendations {
@@ -232,7 +295,8 @@ async fn compute(db_path: PathBuf, profile_id: i64) -> Recommendations {
     let movies = compute_kind(&client, &db_path, profile_id, "movie").await;
     let series = compute_kind(&client, &db_path, profile_id, "series").await;
 
-    let mut because: Vec<(f64, BecauseRow)> = movies.as_ref().and_then(|r| r.because.clone()).into_iter().chain(series.as_ref().and_then(|r| r.because.clone())).collect();
+    let mut because: Vec<(f64, BecauseRow)> =
+        movies.as_ref().map(|r| r.because.clone()).unwrap_or_default().into_iter().chain(series.as_ref().map(|r| r.because.clone()).unwrap_or_default()).collect();
     because.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
 
     Recommendations {
@@ -292,22 +356,62 @@ async fn compute_kind(client: &TmdbClient, db_path: &PathBuf, profile_id: i64, k
 
     // Lo que ya conoce (visto, empezado, valorado o en su lista) no se le recomienda.
     let known: HashSet<i64> = signals.iter().map(|s| s.id).collect();
-    let seed_genres: Vec<(f64, &[i64])> = positives.iter().map(|(w, s)| (*w, s.genres.as_slice())).collect();
-    let affinity = genre_affinity(&seed_genres);
+    let all_genres: Vec<(f64, &[i64])> = weighted.iter().map(|(w, s)| (*w, s.genres.as_slice())).collect();
+    let affinity = genre_affinity(&all_genres);
+    let aversion = genre_aversion(&all_genres);
     let mut ranked: Vec<(f64, reads::LocalTitle, String)> = scored
         .iter()
         .filter_map(|c| {
             let title = local.get(&c.tmdb_id)?;
-            (!known.contains(&title.id)).then(|| (c.score * genre_boost(&affinity, &title.genres), title.clone(), c.because.clone()))
+            (!known.contains(&title.id)).then(|| (c.score * genre_boost(&affinity, &aversion, &title.genres) * quality_factor(title.rating), title.clone(), c.because.clone()))
         })
         .collect();
     ranked.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
     let mut seen = HashSet::new();
     ranked.retain(|(_, title, _)| seen.insert(title.id));
 
-    // «Porque viste X»: lo de la semilla positiva más fuerte, en el orden de TMDB.
-    let because = positives.first().and_then(|(weight, signal)| {
-        let (_, _, recommendations) = seeds.iter().find(|(_, title, _)| *title == signal.clean_title)?;
+    // TMDB recomienda mucho que el proveedor no tiene: si quedan pocas, se completa con lo
+    // mejor valorado de los géneros favoritos, atribuido a la semilla de ese género.
+    if ranked.len() < MAX_RESULTS {
+        let mut favourite_genres: Vec<(i64, f64)> = affinity.iter().map(|(g, a)| (*g, *a)).collect();
+        favourite_genres.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+        let genres: Vec<i64> = favourite_genres.iter().take(3).map(|(g, _)| *g).collect();
+        let fallback = {
+            let db_path = db_path.clone();
+            let genres = genres.clone();
+            tokio::task::spawn_blocking(move || {
+                let conn = schema::open_readonly_at(&db_path)?;
+                reads::top_rated_in_genres(&conn, kind, &genres, 6.8, 200)
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default()
+        };
+        let lowest = ranked.last().map(|(score, _, _)| *score).unwrap_or(1.0);
+        for title in fallback {
+            if ranked.len() >= MAX_RESULTS {
+                break;
+            }
+            if known.contains(&title.id) || !seen.insert(title.id) || aversion.keys().any(|g| title.genres.contains(g) && aversion[g] > 0.5) {
+                continue;
+            }
+            let because = positives
+                .iter()
+                .find(|(_, s)| s.genres.iter().any(|g| title.genres.contains(g)))
+                .or(positives.first())
+                .map(|(_, s)| s.clean_title.clone())
+                .unwrap_or_default();
+            let score = lowest * 0.9 * genre_boost(&affinity, &aversion, &title.genres) * quality_factor(title.rating);
+            ranked.push((score, title, because));
+        }
+    }
+    let ranked = diversify(ranked);
+
+    // «Porque viste X»: lo de cada una de las semillas positivas más fuertes, en el orden de TMDB.
+    let mut because = Vec::new();
+    for (weight, signal) in positives.iter().take(MAX_BECAUSE_ROWS) {
+        let Some((_, _, recommendations)) = seeds.iter().find(|(_, title, _)| *title == signal.clean_title) else { continue };
         let mut used = HashSet::new();
         let items: Vec<RowTitle> = recommendations
             .iter()
@@ -316,8 +420,10 @@ async fn compute_kind(client: &TmdbClient, db_path: &PathBuf, profile_id: i64, k
             .take(BECAUSE_ROW_SIZE)
             .map(|t| RowTitle { id: t.id, clean_title: t.clean_title.clone(), year: t.year, poster_path: t.poster_path.clone() })
             .collect();
-        (items.len() >= MIN_BECAUSE_ROW).then(|| (*weight, BecauseRow { kind, seed_title: signal.clean_title.clone(), items }))
-    });
+        if items.len() >= MIN_BECAUSE_ROW {
+            because.push((*weight, BecauseRow { kind, seed_title: signal.clean_title.clone(), items }));
+        }
+    }
 
     Some(KindResult { ranked: ranked.into_iter().take(MAX_RESULTS).map(|(_, t, because)| (t, because)).collect(), because })
 }
@@ -377,12 +483,39 @@ mod tests {
     }
 
     #[test]
-    fn favourite_genres_give_a_small_boost() {
+    fn favourite_genres_give_a_small_boost_and_disliked_ones_sink() {
         let action: &[i64] = &[28];
         let drama: &[i64] = &[18];
-        let affinity = genre_affinity(&[(3.0, action), (1.0, drama), (-2.0, &[99])]);
-        assert_eq!(genre_boost(&affinity, &[28]), 1.3);
-        assert!(genre_boost(&affinity, &[18]) > 1.0 && genre_boost(&affinity, &[18]) < 1.3);
-        assert_eq!(genre_boost(&affinity, &[99]), 1.0, "lo que no gusta no suma");
+        let horror: &[i64] = &[27];
+        let seeds = [(3.0, action), (1.0, drama), (-2.0, horror)];
+        let affinity = genre_affinity(&seeds);
+        let aversion = genre_aversion(&seeds);
+        assert_eq!(genre_boost(&affinity, &aversion, &[28]), 1.3);
+        assert!(genre_boost(&affinity, &aversion, &[18]) > 1.0 && genre_boost(&affinity, &aversion, &[18]) < 1.3);
+        assert_eq!(genre_boost(&affinity, &aversion, &[27]), 0.65, "lo que no gusta resta");
+        assert_eq!(genre_boost(&affinity, &aversion, &[99]), 1.0);
+    }
+
+    #[test]
+    fn something_started_and_dropped_days_ago_counts_slightly_against() {
+        let now = 100 * DAY;
+        assert!(seed_weight(&signal(None, false, 0.05, now - 5 * DAY), "movie", now) < 0.0);
+        assert_eq!(seed_weight(&signal(None, false, 0.05, now - DAY), "movie", now), 0.0, "de ayer: aún puede volver a ella");
+        assert!(seed_weight(&signal(Some(1), false, 0.05, now - 5 * DAY), "movie", now) > 0.0, "si la valoró, manda la valoración");
+    }
+
+    #[test]
+    fn better_rated_titles_rank_a_little_higher() {
+        assert!(quality_factor(Some(8.5)) > quality_factor(Some(6.0)));
+        assert!(quality_factor(Some(6.0)) > quality_factor(Some(4.0)));
+        assert_eq!(quality_factor(Some(10.0)), 1.15);
+        assert_eq!(quality_factor(Some(1.0)), 0.8);
+    }
+
+    #[test]
+    fn one_seed_does_not_fill_the_whole_row() {
+        let ranked = vec![(1.0, 1, "A".to_string()), (0.99, 2, "A".to_string()), (0.98, 3, "A".to_string()), (0.9, 4, "B".to_string())];
+        let order: Vec<i32> = diversify(ranked).into_iter().map(|(_, id, _)| id).collect();
+        assert_eq!(order, vec![1, 4, 2, 3], "la de B sube por delante de la segunda de A");
     }
 }

@@ -70,7 +70,7 @@ function episodeLabel(episode: EpisodeSummary): string {
  * contenedor); el directo, desde la grabación del núcleo para poder pausarlo. */
 /** Datos que cambian al ver algo: fichas («Continuar», «Quedan»), Inicio («Continuar
  * viendo»), el progreso y los canales recientes. */
-const WATCH_DEPENDENT_QUERY_KEYS = ["movie", "series", "home", "progress", "live-recent", "player-series", "player-movie"];
+const WATCH_DEPENDENT_QUERY_KEYS = ["movie", "series", "home", "browse", "progress", "live-recent", "player-series", "player-movie"];
 
 export function NativePlayerScreen() {
   const { kind, id } = useParams({ from: "/player/$kind/$id" }) as { kind: Kind; id: string };

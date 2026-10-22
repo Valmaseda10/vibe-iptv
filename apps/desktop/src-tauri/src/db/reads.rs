@@ -1576,6 +1576,17 @@ pub fn list_continue_watching(conn: &Connection, profile_id: i64, limit: i64) ->
     Ok(items)
 }
 
+/// Serie a la que pertenece un episodio.
+pub fn series_id_of_episode(conn: &Connection, episode_id: i64) -> Result<Option<i64>> {
+    conn.query_row(
+        "SELECT ss.series_id FROM episodes e JOIN series_sources ss ON ss.id = e.series_source_id WHERE e.id = ?1",
+        params![episode_id],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
 pub struct NextEpisodeRow {
     pub series_id: i64,
     pub series_title: String,
@@ -1731,6 +1742,119 @@ pub fn list_recent_movies(conn: &Connection, limit: i64) -> Result<Vec<MovieList
             tmdb_state: row.get(5)?,
             added_at: row.get(6)?,
         })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Lo mínimo de cada título para armar las filas de Películas, Series e Inicio
+/// (`catalog::browse`): solo los emparejados con TMDB (tienen géneros y nota) y con portada.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrowseIndexRow {
+    pub id: i64,
+    pub rating: Option<f64>,
+    pub year: Option<i32>,
+    pub genres: Vec<i64>,
+    /// Tiene fondo y sinopsis: puede ir en la portada.
+    pub hero_ready: bool,
+}
+
+fn title_table(kind: &str) -> &'static str {
+    if kind == "series" {
+        "series"
+    } else {
+        "movies"
+    }
+}
+
+/// Índice compacto del catálogo de un tipo para `catalog::browse` (sin textos: unos pocos
+/// números por título, también con 100.000).
+pub fn browse_index(conn: &Connection, kind: &str) -> Result<Vec<BrowseIndexRow>> {
+    let table = title_table(kind);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, rating, year, genres, backdrop_path IS NOT NULL AND overview IS NOT NULL FROM {table}
+         WHERE tmdb_state = 'matched' AND COALESCE(poster_path, provider_poster_url) IS NOT NULL"
+    ))?;
+    let rows = stmt.query_map([], |row| {
+        Ok(BrowseIndexRow { id: row.get(0)?, rating: row.get(1)?, year: row.get(2)?, genres: parse_genres(row.get(3)?), hero_ready: row.get::<_, i64>(4)? != 0 })
+    })?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Lo último que añadió el proveedor (ids), de lo más nuevo a lo más viejo.
+pub fn recent_title_ids(conn: &Connection, kind: &str, limit: i64) -> Result<Vec<i64>> {
+    let table = title_table(kind);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id FROM {table} WHERE COALESCE(poster_path, provider_poster_url) IS NOT NULL ORDER BY added_at DESC, id DESC LIMIT ?1"
+    ))?;
+    let rows = stmt.query_map(params![limit], |row| row.get(0))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
+/// Lo que se pinta de un título en una fila o en la portada.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BrowseCardRow {
+    pub id: i64,
+    pub clean_title: String,
+    pub year: Option<i32>,
+    pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
+    pub overview: Option<String>,
+    pub rating: Option<f64>,
+    pub added_at: Option<i64>,
+}
+
+/// Títulos por id, para rellenar las filas que `catalog::browse` ya decidió.
+pub fn browse_cards(conn: &Connection, kind: &str, ids: &[i64]) -> Result<HashMap<i64, BrowseCardRow>> {
+    let table = title_table(kind);
+    let mut stmt = conn.prepare(&format!(
+        "SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url), backdrop_path, overview, rating, added_at FROM {table} WHERE id = ?1"
+    ))?;
+    let mut found = HashMap::new();
+    for id in ids {
+        if found.contains_key(id) {
+            continue;
+        }
+        let row = stmt
+            .query_row(params![id], |r| {
+                Ok(BrowseCardRow {
+                    id: r.get(0)?,
+                    clean_title: r.get(1)?,
+                    year: r.get(2)?,
+                    poster_path: r.get(3)?,
+                    backdrop_path: r.get(4)?,
+                    overview: r.get(5)?,
+                    rating: r.get(6)?,
+                    added_at: r.get(7)?,
+                })
+            })
+            .optional()?;
+        if let Some(row) = row {
+            found.insert(*id, row);
+        }
+    }
+    Ok(found)
+}
+
+/// Los mejor valorados de unos géneros (para completar las recomendaciones cuando TMDB da
+/// pocas que el proveedor tenga). De mejor a peor nota.
+pub fn top_rated_in_genres(conn: &Connection, kind: &str, genres: &[i64], min_rating: f64, limit: i64) -> Result<Vec<LocalTitle>> {
+    if genres.is_empty() {
+        return Ok(Vec::new());
+    }
+    let table = title_table(kind);
+    let placeholders = genres.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url), rating, genres FROM {table}
+         WHERE tmdb_state = 'matched' AND rating >= ? AND COALESCE(poster_path, provider_poster_url) IS NOT NULL
+           AND EXISTS (SELECT 1 FROM json_each({table}.genres) WHERE value IN ({placeholders}))
+         ORDER BY rating DESC, id LIMIT ?"
+    );
+    let mut args: Vec<Box<dyn ToSql>> = vec![Box::new(min_rating)];
+    args.extend(genres.iter().map(|g| Box::new(*g) as Box<dyn ToSql>));
+    args.push(Box::new(limit));
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(args.iter().map(|b| b.as_ref())), |r| {
+        Ok(LocalTitle { id: r.get(0)?, clean_title: r.get(1)?, year: r.get(2)?, poster_path: r.get(3)?, rating: r.get(4)?, genres: parse_genres(r.get(5)?) })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }

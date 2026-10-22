@@ -1,79 +1,26 @@
-import { useState } from "react";
-import { useInfiniteQuery } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
-import { apiGet } from "../../lib/api-client";
-import { useActiveProfile } from "../../lib/activeProfile";
-import { CatalogFilterBar, EMPTY_FILTERS, type CatalogFilters, type SortValue } from "../../components/CatalogFilterBar";
-import type { MoviesPage } from "../../lib/api-types";
-import { VirtualPosterGrid } from "../../components/VirtualPosterGrid";
-import { recallScreenState, rememberScreenState } from "../../lib/screenMemory";
-import { LargeTitle } from "../../components/LargeTitle";
+import { useNavigate, useSearch } from "@tanstack/react-router";
+import { BrowseScreen } from "../browse/BrowseScreen";
+import { MoviesCatalog } from "./MoviesCatalog";
 
-type PageParam = { after?: number; afterKey?: string };
-
-const FILTERS_MEMORY_KEY = "movies:filters";
-
-function sortParam(sort: SortValue): string | null {
-  return sort === "recent" ? null : sort;
-}
-
+/** Películas: portada y filas como en Netflix y, con «Catálogo completo», todo en cuadrícula
+ * con filtros (`?view=all`). */
 export function MoviesScreen() {
   const navigate = useNavigate();
-  const { profileId } = useActiveProfile();
-  // Recuerda los filtros elegidos al volver de una ficha (la pantalla se desmonta al
-  // navegar fuera) — junto con VirtualPosterGrid.restoreKey, evita que "atrás" mande
-  // siempre al principio del catálogo sin filtrar.
-  const [filters, setFilters] = useState<CatalogFilters>(() => recallScreenState(FILTERS_MEMORY_KEY) ?? EMPTY_FILTERS);
-  function updateFilters(next: CatalogFilters) {
-    setFilters(next);
-    rememberScreenState(FILTERS_MEMORY_KEY, next);
-  }
-
-  const query = useInfiniteQuery({
-    queryKey: ["movies", profileId, filters],
-    queryFn: ({ pageParam }: { pageParam: PageParam }) => {
-      const params = new URLSearchParams({ profile_id: String(profileId) });
-      if (filters.genre != null) params.set("genre", String(filters.genre));
-      if (filters.year != null) params.set("year", String(filters.year));
-      if (filters.quality) params.set("quality", filters.quality);
-      const sort = sortParam(filters.sort);
-      if (sort) params.set("sort", sort);
-      if (pageParam.after != null) params.set("after", String(pageParam.after));
-      if (pageParam.afterKey != null) params.set("after_key", pageParam.afterKey);
-      return apiGet<MoviesPage>(`/api/movies?${params.toString()}`);
-    },
-    initialPageParam: {} as PageParam,
-    getNextPageParam: (lastPage) => (lastPage.next_cursor != null ? { after: lastPage.next_cursor, afterKey: lastPage.next_cursor_key ?? undefined } : undefined),
-    enabled: profileId !== null,
-  });
-
-  const items = (query.data?.pages ?? []).flatMap((page) =>
-    page.items.map((movie) => ({
-      id: movie.id,
-      title: movie.clean_title,
-      posterPath: movie.poster_path,
-      subtitle: movie.year ? String(movie.year) : undefined,
-      isNew: movie.is_new,
-    })),
-  );
-
+  const { view } = useSearch({ from: "/movies" });
+  if (view === "all") return <MoviesCatalog />;
   return (
-    <div className="flex h-full flex-col gap-4 py-5 sm:gap-6 sm:py-8">
-      <LargeTitle className="px-4 sm:px-10">Películas</LargeTitle>
-      <CatalogFilterBar kind="movie" filters={filters} onChange={updateFilters} showQuality />
-      <div className="min-h-0 flex-1">
-        <VirtualPosterGrid
-          items={items}
-          hasMore={query.hasNextPage ?? false}
-          isLoadingMore={query.isFetchingNextPage}
-          isInitialLoading={query.isPending}
-          onLoadMore={() => query.fetchNextPage()}
-          onOpen={(id) => navigate({ to: "/movies/$movieId", params: { movieId: String(id) } })}
-          emptyMessage="Nada con estos filtros. Prueba a quitar alguno, o añade un proveedor en Ajustes si el catálogo está vacío."
-          favoriteKind="movie"
-          restoreKey={JSON.stringify(filters)}
-        />
-      </div>
-    </div>
+    <BrowseScreen
+      page="movies"
+      title="Películas"
+      actions={
+        <button
+          type="button"
+          onClick={() => navigate({ to: "/movies", search: { view: "all" } })}
+          className="rounded-full border border-white/40 bg-black/40 px-4 py-1.5 text-sm font-medium text-white outline-none backdrop-blur-sm transition hover:bg-white/15 focus-visible:ring-2 focus-visible:ring-red-600"
+        >
+          Catálogo completo ›
+        </button>
+      }
+    />
   );
 }

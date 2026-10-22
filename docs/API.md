@@ -68,6 +68,18 @@ hay ninguno o el perfil no puede verlo.
 ### `GET /api/live/recent?profile_id=&limit=`
 Últimos canales que abrió el perfil, el más reciente primero (12 por defecto).
 
+### `GET /api/browse/:page?profile_id=&seed=&avoid=`
+Portada y filas de Películas (`movies`), Series (`series`) o la mezcla de Inicio (`home`),
+como en Netflix (`catalog::browse`). `seed` es la semilla de la visita: la misma da la misma
+pantalla y otra la cambia (portada, títulos de cada fila y orden de las filas de
+descubrimiento). `avoid` son portadas recientes que no repetir (`movie:12,series:4`).
+Devuelve `{ featured, rows, pending }`: `featured` (`BrowseFeatured`, con `reason`: «N.º 2 en
+España hoy»...) o `null`; `rows` con `key` estable, `title`, `style` (`poster`, `top10` o
+`continue`) e `items` (`BrowseItem`: `kind` movie/series/episode, `id`, `series_id`,
+`clean_title`, `year`, `poster_path`, `subtitle`, `progress`, `is_new`). `pending` es
+`true` mientras se calculan por primera vez las recomendaciones del perfil. En Películas y
+Series la primera fila es «Seguir viendo» si hay algo a medias.
+
 ### `GET /api/movies`
 Página de películas. Parámetros: `genre`, `year`, `quality`, `sort`
 (`title`|`year`|`rating`, por defecto lo más reciente), `after`, `limit`.

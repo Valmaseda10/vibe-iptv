@@ -1858,6 +1858,29 @@ tests), recentrada en cada cambio de canal.
   (`reads::quality_rank`). Índice nuevo en la migración 022. El reproductor las ofrece en
   «Fuente» con su calidad («4K», «FHD · ES»...), y cambiar de fuente no mueve la lista ni
   el zapping, aunque la otra fuente esté en otra categoría.
+- **Películas, Series e Inicio como Netflix (2026-10-22):** portada y filas que cambian en
+  cada visita (`catalog::browse`, `GET /api/browse/:page`). La interfaz manda una semilla por
+  visita (`lib/feedSeed`: nueva al abrir la app, tras 20 min sin pasar por estas pantallas o
+  cada 2 h); con ella se elige la portada (entre recomendadas, Top 10, tendencias y estrenos
+  bien valorados, sin repetir las últimas), los títulos de cada fila (muestra ponderada entre
+  las mejores candidatas) y el orden de las filas de descubrimiento (géneros, aclamadas,
+  clásicos, joyas, estrenos), con más probabilidad arriba para los géneros que gustan. Lo
+  personal va arriba en orden fijo; un título no se repite entre filas de descubrimiento; lo
+  ya conocido no se «descubre» y lo marcado «No es para mí» no sale. Las notas de TMDB con
+  pocos votos se filtran a ojo (sin el número de votos guardado): fondo y sinopsis, nota
+  entre 7 y 9,3, y fuera documentales, música, reality y telefilmes. Los géneros de series
+  que TMDB da en inglés se traducen. El catálogo con filtros sigue en «Catálogo completo»
+  (`?view=all`). Inicio: seguir viendo, siguiente episodio, canales favoritos y Mi lista
+  arriba; el Top 10 pasa a Películas y Series. Para elegir rápido sin leer textos, se guarda
+  en memoria un índice compacto por tipo (id, nota, año, géneros), releído cada 10 minutos.
+- **Recomendaciones más finas:** 8 semillas en vez de 6 y hasta 40 recomendadas guardadas
+  (cada visita enseña 20 distintas); hasta 4 filas «Porque viste X» por tipo; lo empezado y
+  dejado al momento hace más de 3 días resta un poco; los géneros de lo que no gusta restan;
+  la nota de TMDB pesa algo (0,8–1,15); una misma semilla no llena la fila (cada repetición
+  vale un 15 % menos); si TMDB da pocas que el proveedor tenga, se completa con lo mejor
+  valorado de los géneros favoritos. Sin ningún gusto todavía, «Populares ahora» (Top 10,
+  tendencias y lo mejor valorado reciente) en vez de una fila vacía. Se recalcula también al
+  cambiar la lista, marcar como visto o terminar algo (como mucho una vez por minuto).
 
 ## Deuda técnica conocida desde el diseño
 

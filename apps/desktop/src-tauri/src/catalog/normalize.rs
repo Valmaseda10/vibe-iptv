@@ -292,7 +292,8 @@ pub fn clean_category_name(raw: &str) -> String {
     trimmed.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn current_year() -> i32 {
+/// Año en curso (UTC, aproximado: basta para «estrenos» y «clásicos»).
+pub fn current_year() -> i32 {
     const SECONDS_PER_JULIAN_YEAR: u64 = 31_557_600; // 365.25 días
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     1970 + (secs / SECONDS_PER_JULIAN_YEAR) as i32

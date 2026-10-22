@@ -43,6 +43,8 @@ export function useFavorites() {
     },
     onSettled: (_data, _err, { itemKind }) => {
       queryClient.invalidateQueries({ queryKey });
+      // «Mi lista» de Inicio, Películas y Series.
+      if (itemKind !== "channel") queryClient.invalidateQueries({ queryKey: ["browse"] });
       if (itemKind === "channel") {
         queryClient.invalidateQueries({ queryKey: ["live-favorites"] });
         queryClient.invalidateQueries({ queryKey: ["live-channels"] });

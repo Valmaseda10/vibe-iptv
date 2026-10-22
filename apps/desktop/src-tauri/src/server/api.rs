@@ -1603,12 +1603,17 @@ async fn post_playback_progress(State(state): State<CatalogState>, Json(input): 
     if !matches!(input.item_kind.as_str(), "movie" | "episode" | "channel") {
         return Err(ApiError::BadRequest("item_kind debe ser movie, episode o channel".to_string()));
     }
+    let (profile_id, is_channel) = (input.profile_id, input.item_kind == "channel");
     with_db(state.db_path.clone(), move |conn| {
         reads::upsert_playback_progress(conn, input.profile_id, &input.item_kind, input.item_id, input.position_s, input.duration_s)?;
         // Se guarda cada 10 s mientras se reproduce: a la nube va agrupado (ver sync::outbox).
         outbox::enqueue_playback(conn, input.profile_id, &input.item_kind, input.item_id, true)
     })
     .await?;
+    // Lo visto cambia las recomendaciones (se recalculan como mucho una vez por minuto).
+    if !is_channel {
+        crate::catalog::recommendations::invalidate(profile_id).await;
+    }
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1634,6 +1639,7 @@ async fn post_favorite(State(state): State<CatalogState>, Json(input): Json<Favo
         outbox::enqueue_favorite(conn, input.profile_id, &input.item_kind, input.item_id)
     })
     .await?;
+    crate::catalog::recommendations::invalidate(input.profile_id).await;
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1685,6 +1691,7 @@ async fn delete_favorite(State(state): State<CatalogState>, Query(query): Query<
         outbox::enqueue_favorite(conn, query.profile_id, &query.item_kind, query.item_id)
     })
     .await?;
+    crate::catalog::recommendations::invalidate(query.profile_id).await;
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1698,6 +1705,7 @@ async fn delete_playback_progress(State(state): State<CatalogState>, Query(query
         outbox::enqueue_playback(conn, query.profile_id, &query.item_kind, query.item_id, false)
     })
     .await?;
+    crate::catalog::recommendations::invalidate(query.profile_id).await;
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1717,6 +1725,7 @@ async fn post_episode_watched(State(state): State<CatalogState>, Json(input): Js
         outbox::enqueue_playback(conn, input.profile_id, "episode", input.episode_id, false)
     })
     .await?;
+    crate::catalog::recommendations::invalidate(input.profile_id).await;
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1736,6 +1745,7 @@ async fn post_movie_watched(State(state): State<CatalogState>, Json(input): Json
         outbox::enqueue_playback(conn, input.profile_id, "movie", input.movie_id, false)
     })
     .await?;
+    crate::catalog::recommendations::invalidate(input.profile_id).await;
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1759,6 +1769,7 @@ async fn post_season_watched(State(state): State<CatalogState>, Json(input): Jso
         Ok(())
     })
     .await?;
+    crate::catalog::recommendations::invalidate(profile_id).await;
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
