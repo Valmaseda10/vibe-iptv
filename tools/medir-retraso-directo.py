@@ -99,6 +99,8 @@ def main():
     profile_id = profiles[0]["id"] if profiles else 1
     page = api(base, f"/api/live/channels?profile_id={profile_id}&limit=50&q={urllib.parse.quote(name)}")
     sources = page["items"] if page else []
+    # Solo las fuentes de ese canal, no las de nombre parecido («DAZN LaLiga 2»).
+    sources = [x for x in sources if x["display_name"].strip().lower() == name.strip().lower()] or sources
     if not sources:
         print(f"No hay ningún canal que se llame «{name}».")
         return

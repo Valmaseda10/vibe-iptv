@@ -1818,9 +1818,13 @@ tests), recentrada en cada cambio de canal.
     orden, con el número grande sobre la portada. Se refresca cada 6 horas.
   - Índices nuevos en `movies.tmdb_id` y `series.tmdb_id`: las recomendaciones y las
     tendencias recorrían la tabla entera por cada candidato (R4).
-- **Pendiente:** la fuente de directo con menos retraso (medir si las fuentes del usuario
-  traen la hora de emisión, en la sesión con su proveedor real, con
-  `tools/medir-retraso-directo.py`).
+- **Descartado: elegir sola la fuente de directo con menos retraso.** Medido el
+  2026-10-22 con el proveedor real (4 fuentes de un canal, una conexión cada vez, con
+  `tools/medir-retraso-directo.py`): llegan bien, pero el panel reempaqueta los canales y
+  quita la tabla con la hora de emisión (TDT/TOT, PID 0x14); solo quedan PAT, PMT y SDT.
+  Sin esa hora no hay forma de saber el retraso real de cada fuente. Recordar la fuente
+  elegida tampoco sirve: según el usuario, el retraso de cada fuente cambia de un día a
+  otro. Se deja como está.
 
 ## Deuda técnica conocida desde el diseño
 
