@@ -1730,6 +1730,35 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
 - **Instalación en el iPhone: SideStore** (renovación diaria con un Atajo), ver
   `docs/IOS.md`.
 
+## 2026-10-22 — Revisión de la app de PC (pedida por el usuario)
+
+Revisión del código del PC sin arrancarla (arrancarla tocaría los datos y el proveedor
+real del usuario). Arreglado, elegido con el usuario:
+
+- **Procesos hijos que mueren con la app.** Al cerrar la ventana no se soltaba ningún
+  `Child`, así que `kill_on_drop` no actuaba, y en Windows un hijo no muere con su padre:
+  el ffmpeg que graba el directo para la pausa (escribe en disco) podía quedarse vivo con
+  la única conexión de la cuenta (R1). Ahora la app entra al arrancar en un *job* de
+  Windows con `KILL_ON_JOB_CLOSE` (`util::child_processes`): ffmpeg, ffprobe y mpv se
+  cierran con ella aunque se cierre de golpe o se cuelgue. Dependencia nueva directa:
+  `windows-sys` 0.59, solo en Windows; ya venía con Tauri, no añade nada que compilar.
+  Test: un hijo lanzado después queda dentro del job.
+- **Saltos en el nivel 2.** Arrastrar la barra relanzaba el remux (ffmpeg y una petición
+  al proveedor) por cada píxel, y una flecha mantenida igual. Ahora el salto espera a que
+  se pare 450 ms, la barra y el reloj enseñan el destino, y los saltos seguidos se suman.
+- **Reproductor:** zapping que da la vuelta al final de la lista (como en el iPhone),
+  ratón oculto con los controles, controles quietos en pausa, doble clic para pantalla
+  completa, rueda del ratón y `+`/`−` para el volumen (también en directo, donde las
+  flechas cambian de canal) y volumen recordado entre sesiones (preferencia del equipo,
+  en el almacenamiento local).
+
+**Pendiente, decidido con el usuario para después del .ipa final:** los reproductores de
+PC e iPhone piden la lista de canales con `limit=200`, pero el núcleo corta en 100. Un
+canal que no esté entre esos 100 (abierto desde Buscar, Favoritos o «Todas las
+categorías») sale sin nombre y sin zapping. Con el proveedor falso (17 canales) no se ve;
+con uno real de miles, casi siempre. Arreglo previsto: que el núcleo devuelva una ventana
+de canales alrededor del que se ve, en el mismo orden que la lista.
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

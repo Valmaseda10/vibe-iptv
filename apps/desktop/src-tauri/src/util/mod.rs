@@ -1,3 +1,4 @@
+pub mod child_processes;
 pub mod civil_time;
 pub mod diag_log;
 pub mod keychain;

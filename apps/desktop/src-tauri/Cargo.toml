@@ -43,6 +43,11 @@ flate2 = "1"
 sha2 = "0.10"
 rand = "0.10"
 
+# Que ffmpeg y mpv mueran con la app aunque se cierre de golpe (`util::child_processes`).
+# Ya venía con Tauri: no añade nada que descargar ni compilar de nuevo.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading"] }
+
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"

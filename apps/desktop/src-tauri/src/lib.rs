@@ -44,6 +44,9 @@ pub fn run() {
         .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(diagnostics_log.clone()))
         .init();
 
+    // Antes de lanzar nada: ffmpeg, ffprobe y mpv se cierran con la app (regla R1).
+    util::child_processes::tie_to_app_lifetime();
+
     let listener =
         StdTcpListener::bind("127.0.0.1:0").expect("no se pudo reservar un puerto local");
     listener

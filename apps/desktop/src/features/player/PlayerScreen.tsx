@@ -27,6 +27,24 @@ const NEXT_EPISODE_TRIGGER_SECONDS = 15;
 const NEXT_EPISODE_COUNTDOWN_SECONDS = 10;
 const RESUME_MIN_SECONDS = 5;
 const SEEK_STEP_SECONDS = 10;
+/** En el nivel 2 cada salto reabre el remux (ffmpeg y una petición al proveedor): se
+ * espera a que el usuario pare de arrastrar la barra o de pulsar antes de saltar, y los
+ * saltos seguidos se suman. */
+const SEEK_SETTLE_MS = 450;
+/** Paso de volumen con la rueda del ratón y con + / −. */
+const VOLUME_STEP = 0.05;
+const VOLUME_STORAGE_KEY = "vibe.player.volume";
+
+/** Volumen de la última vez (preferencia de este equipo); 1 si no hay o no se puede leer. */
+function readSavedVolume(): number {
+  try {
+    const saved = window.localStorage.getItem(VOLUME_STORAGE_KEY);
+    const value = saved == null ? NaN : Number(saved);
+    return Number.isFinite(value) && value >= 0 && value <= 1 ? value : 1;
+  } catch {
+    return 1;
+  }
+}
 /** Velocidades de reproducción del VOD (F14). */
 const PLAYBACK_RATES = [0.5, 0.75, 1, 1.25, 1.5, 2];
 /** Un directo IPTV se corta con normalidad (el proveedor tiene un mal minuto, un salto
@@ -79,7 +97,7 @@ export function PlayerScreen() {
 
   const [playing, setPlaying] = useState(true);
   const [muted, setMuted] = useState(false);
-  const [volume, setVolume] = useState(1);
+  const [volume, setVolume] = useState(readSavedVolume);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [statsVisible, setStatsVisible] = useState(false);
   const [videoCurrentTime, setVideoCurrentTime] = useState(0);
@@ -425,7 +443,11 @@ export function PlayerScreen() {
   const resetHideTimer = useCallback(() => {
     setControlsVisible(true);
     if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
-    hideTimerRef.current = window.setTimeout(() => setControlsVisible(false), CONTROLS_HIDE_DELAY_MS);
+    hideTimerRef.current = window.setTimeout(() => {
+      // En pausa se quedan a la vista, como en Netflix.
+      if (videoRef.current?.paused) return;
+      setControlsVisible(false);
+    }, CONTROLS_HIDE_DELAY_MS);
   }, []);
 
   useEffect(() => {
@@ -446,7 +468,8 @@ export function PlayerScreen() {
     (direction: 1 | -1) => {
       const items = channelsQuery.data?.items ?? [];
       const idx = items.findIndex((c) => c.id === itemId);
-      const next = idx === -1 ? undefined : items[idx + direction];
+      // Tras el último canal viene el primero (y al revés), como en TiviMate y el iPhone.
+      const next = idx === -1 || items.length < 2 ? undefined : items[(idx + direction + items.length) % items.length];
       if (!next) return;
       navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(next.id) }, search: { categoryId: search.categoryId } });
     },
@@ -524,14 +547,26 @@ export function PlayerScreen() {
     }
   }, [controlsVisible]);
 
+  // Salto pendiente en el nivel 2 (ver `SEEK_SETTLE_MS`): mientras tanto, la barra y el
+  // reloj enseñan a dónde se va, y los saltos relativos cuentan desde ahí.
+  const [pendingSeek, setPendingSeek] = useState<number | null>(null);
+  const pendingSeekTimerRef = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(pendingSeekTimerRef.current), []);
+  const seekBase = pendingSeek ?? displayCurrentTime;
   const seekTo = useCallback(
     (targetSeconds: number) => {
       const clamped = Math.max(0, displayDuration ? Math.min(targetSeconds, displayDuration - 1) : targetSeconds);
       if (nativeSeekable && videoRef.current) {
         videoRef.current.currentTime = clamped;
-      } else {
-        setAppliedStart(Math.floor(clamped));
+        return;
       }
+      setPendingSeek(clamped);
+      window.clearTimeout(pendingSeekTimerRef.current);
+      pendingSeekTimerRef.current = window.setTimeout(() => {
+        setAppliedStart(Math.floor(clamped));
+        setVideoCurrentTime(0);
+        setPendingSeek(null);
+      }, SEEK_SETTLE_MS);
     },
     [displayDuration, nativeSeekable],
   );
@@ -558,6 +593,15 @@ export function PlayerScreen() {
     if (!video) return;
     video.muted = !video.muted;
     setMuted(video.muted);
+  }, []);
+
+  const changeVolume = useCallback((delta: number) => {
+    setVolume((v) => Math.round(Math.min(1, Math.max(0, v + delta)) * 100) / 100);
+    const video = videoRef.current;
+    if (delta > 0 && video?.muted) {
+      video.muted = false;
+      setMuted(false);
+    }
   }, []);
 
   const togglePictureInPicture = useCallback(() => {
@@ -620,6 +664,13 @@ export function PlayerScreen() {
         case "f":
           toggleFullscreen();
           break;
+        case "+":
+        case "=":
+          changeVolume(VOLUME_STEP * 2);
+          break;
+        case "-":
+          changeVolume(-VOLUME_STEP * 2);
+          break;
         case "ArrowUp":
           e.preventDefault();
           if (kind === "channel") zapChannel(-1);
@@ -631,11 +682,11 @@ export function PlayerScreen() {
           else setVolume((v) => Math.max(0, v - 0.1));
           break;
         case "ArrowLeft":
-          if (kind !== "channel") seekTo(displayCurrentTime - SEEK_STEP_SECONDS);
+          if (kind !== "channel") seekTo(seekBase - SEEK_STEP_SECONDS);
           else if (liveTimeshift) timeshift.seekBy(-SEEK_STEP_SECONDS);
           break;
         case "ArrowRight":
-          if (kind !== "channel") seekTo(displayCurrentTime + SEEK_STEP_SECONDS);
+          if (kind !== "channel") seekTo(seekBase + SEEK_STEP_SECONDS);
           else if (liveTimeshift) timeshift.seekBy(SEEK_STEP_SECONDS);
           break;
         default:
@@ -665,8 +716,9 @@ export function PlayerScreen() {
     toggleFullscreen,
     zapChannel,
     seekTo,
-    displayCurrentTime,
+    seekBase,
     resetHideTimer,
+    changeVolume,
     liveTimeshift,
     timeshift,
     togglePictureInPicture,
@@ -678,7 +730,14 @@ export function PlayerScreen() {
   useEffect(() => {
     const video = videoRef.current;
     if (video) video.volume = volume;
-  }, [volume, streamPath]);
+  }, [volume, streamPath, retryNonce, timeshift.bufferKey]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(VOLUME_STORAGE_KEY, String(volume));
+    } catch {
+      // Sin almacenamiento (modo privado del WebView): solo no se recuerda.
+    }
+  }, [volume]);
 
   // Velocidad (F14): solo en VOD. Cada búsqueda o cambio de pista monta otro `<video>`,
   // que empieza a 1×: se le vuelve a aplicar.
@@ -707,8 +766,13 @@ export function PlayerScreen() {
   return (
     <div
       ref={containerRef}
-      className="relative flex h-full w-full items-center justify-center bg-black outline-none"
+      className={`relative flex h-full w-full items-center justify-center bg-black outline-none ${controlsVisible ? "" : "cursor-none"}`}
       onMouseMove={resetHideTimer}
+      onWheel={(e) => {
+        if (e.deltaY === 0) return;
+        changeVolume(e.deltaY < 0 ? VOLUME_STEP : -VOLUME_STEP);
+        resetHideTimer();
+      }}
       tabIndex={-1}
     >
       {canRenderVideo ? (
@@ -745,8 +809,16 @@ export function PlayerScreen() {
             // vez que le toque un mal minuto.
             setReconnectAttempt(0);
           }}
-          onPlay={() => setPlaying(true)}
-          onPause={() => setPlaying(false)}
+          onDoubleClick={toggleFullscreen}
+          onPlay={() => {
+            setPlaying(true);
+            resetHideTimer();
+          }}
+          onPause={() => {
+            setPlaying(false);
+            if (hideTimerRef.current) window.clearTimeout(hideTimerRef.current);
+            setControlsVisible(true);
+          }}
           onWaiting={() => setBuffering(true)}
           onStalled={() => setBuffering(true)}
           onCanPlay={() => setBuffering(false)}
@@ -901,7 +973,7 @@ export function PlayerScreen() {
             type="range"
             min={0}
             max={Math.max(displayDuration, 1)}
-            value={Math.min(displayCurrentTime, displayDuration)}
+            value={Math.min(seekBase, displayDuration)}
             onChange={(e) => seekTo(Number(e.target.value))}
             className="w-full accent-red-600"
             aria-label="Progreso"
@@ -917,7 +989,7 @@ export function PlayerScreen() {
             <div className="flex items-center gap-2 text-sm">
               <button
                 type="button"
-                onClick={() => seekTo(displayCurrentTime - SEEK_STEP_SECONDS)}
+                onClick={() => seekTo(seekBase - SEEK_STEP_SECONDS)}
                 className="rounded px-2 py-1 outline-none hover:bg-white/10"
                 title="Retroceder 10 s (flecha izquierda)"
               >
@@ -925,7 +997,7 @@ export function PlayerScreen() {
               </button>
               <button
                 type="button"
-                onClick={() => seekTo(displayCurrentTime + SEEK_STEP_SECONDS)}
+                onClick={() => seekTo(seekBase + SEEK_STEP_SECONDS)}
                 className="rounded px-2 py-1 outline-none hover:bg-white/10"
                 title="Avanzar 10 s (flecha derecha)"
               >
@@ -955,7 +1027,7 @@ export function PlayerScreen() {
             </div>
           ) : (
             <span className="w-24 shrink-0 text-sm tabular-nums text-neutral-300">
-              {formatTime(displayCurrentTime)} {displayDuration ? `/ ${formatTime(displayDuration)}` : ""}
+              {formatTime(seekBase)} {displayDuration ? `/ ${formatTime(displayDuration)}` : ""}
             </span>
           )}
 
