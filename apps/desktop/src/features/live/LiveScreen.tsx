@@ -6,7 +6,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { apiGet } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type { CategorySummary, ChannelsPage, EpgNowNextResponse } from "../../lib/api-types";
-import { groupChannelsByName, type ChannelGroup } from "../../lib/channels";
+import { feedLabels, groupChannelsByName, type ChannelGroup } from "../../lib/channels";
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { LargeTitle } from "../../components/LargeTitle";
@@ -270,9 +270,9 @@ export function LiveScreen() {
                           aria-label={`Elegir fuente para ${group.displayName}`}
                           title={`${group.channels.length} fuentes disponibles para este canal`}
                         >
-                          {group.channels.map((c, i) => (
-                            <option key={c.id} value={c.id}>
-                              Fuente {i + 1}
+                          {feedLabels(group.channels).map((label, i) => (
+                            <option key={group.channels[i]!.id} value={group.channels[i]!.id}>
+                              {label}
                             </option>
                           ))}
                         </select>

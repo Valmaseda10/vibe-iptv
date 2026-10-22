@@ -109,6 +109,10 @@ pub struct ChannelSummary {
     /// Número del canal en el proveedor, para cambiar tecleándolo (F13).
     #[ts(type = "number | null")]
     pub number: Option<i64>,
+    /// Calidad que traía el nombre («HD», «FHD», «4K»...), para el selector de fuente.
+    pub quality: Option<String>,
+    /// Idioma que traía el nombre («ES», «EN»...).
+    pub language: Option<String>,
 }
 
 impl From<reads::ChannelListItem> for ChannelSummary {
@@ -120,6 +124,8 @@ impl From<reads::ChannelListItem> for ChannelSummary {
             category_id: row.category_id,
             has_catchup: row.has_catchup,
             number: row.number,
+            quality: row.quality,
+            language: row.language,
         }
     }
 }
@@ -889,6 +895,21 @@ async fn get_live_channels(State(state): State<CatalogState>, Query(query): Quer
     let next_cursor = last.map(|c| c.id);
     let next_cursor_key = last.map(|c| c.number.map(|n| n.to_string()).unwrap_or_default());
     Ok(Json(ChannelsPage { items: items.into_iter().map(Into::into).collect(), next_cursor, next_cursor_key }))
+}
+
+/// Las otras versiones del mismo canal (otras calidades o feeds), para cambiar de fuente
+/// desde el reproductor. Incluye el propio canal; de mejor a peor calidad.
+async fn get_channel_variants(
+    State(state): State<CatalogState>,
+    AxumPath(channel_id): AxumPath<i64>,
+    Query(query): Query<ProfileQuery>,
+) -> Result<Json<Vec<ChannelSummary>>, ApiError> {
+    let items = with_db(state.db_path, move |conn| {
+        let include_adult = reads::profile_allows_adult(conn, query.profile_id)?;
+        reads::channel_variants(conn, channel_id, include_adult)
+    })
+    .await?;
+    Ok(Json(items.into_iter().map(Into::into).collect()))
 }
 
 #[derive(Deserialize)]
@@ -1773,6 +1794,7 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/categories/adult", get(get_category_adult_settings))
         .route("/api/categories/:id/adult", axum::routing::put(put_category_adult))
         .route("/api/live/channels", get(get_live_channels))
+        .route("/api/live/channels/:id/variants", get(get_channel_variants))
         .route("/api/movies", get(get_movies))
         .route("/api/movies/:id", get(get_movie_detail))
         .route("/api/series", get(get_series_list))

@@ -37,7 +37,15 @@ export type ChannelSummary = { id: number, display_name: string, logo_url: strin
 /**
  * Número del canal en el proveedor, para cambiar tecleándolo (F13).
  */
-number: number | null, };
+number: number | null, 
+/**
+ * Calidad que traía el nombre («HD», «FHD», «4K»...), para el selector de fuente.
+ */
+quality: string | null, 
+/**
+ * Idioma que traía el nombre («ES», «EN»...).
+ */
+language: string | null, };
 
 export type ChannelsPage = { items: Array<ChannelSummary>, next_cursor: number | null, 
 /**

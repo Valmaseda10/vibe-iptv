@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { failoverNotice, nextUntriedSource, sourceLabel } from "./movieSources";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiGetOrNull, apiPost, useApiBase } from "../../lib/api-client";
 import { AUDIO_PASSTHROUGH } from "../../lib/codecSupport";
@@ -16,12 +16,28 @@ import type {
   SeriesDetailResponse,
   SubtitleCuesResponse,
 } from "../../lib/api-types";
-import { ArrowDownIcon, ArrowUpIcon, BackIcon, FullscreenIcon, MuteIcon, PauseIcon, PictureInPictureIcon, PlayIcon, VolumeIcon } from "../../components/icons";
+import { ArrowDownIcon, ArrowUpIcon, BackIcon, FullscreenIcon, ListIcon, MuteIcon, PauseIcon, PictureInPictureIcon, PlayIcon, VolumeIcon } from "../../components/icons";
+import { feedLabels } from "../../lib/channels";
+import type { PlayerKind, PlayerSearch, PlayerSession } from "../../lib/playerSession";
+import { ChannelPanel } from "./ChannelPanel";
+import { MiniPlayerOverlay } from "./MiniPlayerOverlay";
 import { useLiveTimeshift } from "./useLiveTimeshift";
 import { SUBTITLE_SIZES, subtitleCueCss, useSubtitleStyle } from "../../lib/subtitleStyle";
 import { findNextEpisode } from "./episodes";
 
-type Kind = "channel" | "movie" | "episode";
+type Kind = PlayerKind;
+
+type PlayerScreenProps = {
+  kind: Kind;
+  id: string;
+  search: PlayerSearch;
+  /** En pequeño, abajo a la derecha, mientras se navega por la app (`PlayerHost`). */
+  mini: boolean;
+  /** Pasar a otro canal, fuente o episodio sin salir del reproductor. */
+  onNavigate: (next: PlayerSession, options?: { replace?: boolean }) => void;
+  onExpand: () => void;
+  onClose: () => void;
+};
 
 const CONTROLS_HIDE_DELAY_MS = 3_000;
 const PROGRESS_SAVE_INTERVAL_MS = 10_000;
@@ -82,10 +98,11 @@ const SUBTITLE_LINE_VISIBLE_CONTROLS = -4;
  * usuario — la barra de búsqueda mostraba "0:01" con la película en el segundo 7). El
  * nivel se pide al núcleo (`GET /api/playback/tier`, ya cacheado por la sonda que hizo
  * el propio `/stream/*` al arrancar) y es la única fuente de verdad de si se puede
- * buscar de forma nativa. */
-export function PlayerScreen() {
-  const { kind, id } = useParams({ from: "/player/$kind/$id" }) as { kind: Kind; id: string };
-  const search = useSearch({ from: "/player/$kind/$id" });
+ * buscar de forma nativa.
+ *
+ * Lo monta `PlayerHost`, no la ruta: el mismo reproductor sigue en pequeño (`mini`) al
+ * salir de la pantalla del reproductor. */
+export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onClose }: PlayerScreenProps) {
   const navigate = useNavigate();
   const { data: base } = useApiBase();
   const { profileId } = useActiveProfile();
@@ -143,15 +160,29 @@ export function PlayerScreen() {
   // Los canales de alrededor del que se ve (nombre, lista y zapping), no la primera página:
   // en listas de miles el canal podía no estar en ella. La ventana da la vuelta por los
   // extremos y se recentra en cada cambio de canal; mientras llega la nueva, sigue la vieja.
+  // Otra fuente del mismo canal puede no estar en la lista con la que se abrió (suele ir en
+  // otra categoría, «4K» por ejemplo): la lista y el zapping siguen anclados al de la lista.
+  const [feedAnchor, setFeedAnchor] = useState<{ feed: number; anchor: number } | null>(null);
+  const listChannelId = kind === "channel" && feedAnchor?.feed === itemId ? feedAnchor.anchor : itemId;
   const channelsQuery = useQuery({
-    queryKey: ["player-channels", profileId, search.categoryId, search.favorites, itemId],
+    queryKey: ["player-channels", profileId, search.categoryId, search.favorites, listChannelId],
     queryFn: () =>
       apiGetOrNull<ChannelsPage>(
-        `/api/live/channels?profile_id=${profileId}&limit=100&around=${itemId}${search.favorites ? "&favorites=1" : search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
+        `/api/live/channels?profile_id=${profileId}&limit=100&around=${listChannelId}${search.favorites ? "&favorites=1" : search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
       ),
     placeholderData: keepPreviousData,
     enabled: kind === "channel" && profileId !== null,
   });
+  // Las fuentes del canal (sus otras calidades), para cambiar desde abajo.
+  const variantsQuery = useQuery({
+    queryKey: ["player-channel-variants", listChannelId, profileId],
+    queryFn: () => apiGetOrNull<ChannelSummary[]>(`/api/live/channels/${listChannelId}/variants?profile_id=${profileId}`),
+    enabled: kind === "channel" && profileId !== null,
+    staleTime: 5 * 60_000,
+  });
+  const channelFeeds = useMemo(() => variantsQuery.data ?? [], [variantsQuery.data]);
+  const channelFeedNames = useMemo(() => feedLabels(channelFeeds), [channelFeeds]);
+  const [panelOpen, setPanelOpen] = useState(false);
   // Se pide siempre (no solo con el panel de estadísticas abierto) en VOD: es la fuente
   // más fiable de la duración real del fichero (ffprobe), mejor que `runtime_min` de
   // TMDB, que es un dato editorial y a menudo ni siquiera está. En directo no hace
@@ -176,7 +207,7 @@ export function PlayerScreen() {
     () => (currentEpisode ? findNextEpisode(seriesQuery.data?.episodes ?? [], currentEpisode) : undefined),
     [seriesQuery.data, currentEpisode],
   );
-  const currentChannel = channelsQuery.data?.items.find((c) => c.id === itemId);
+  const currentChannel = channelsQuery.data?.items.find((c) => c.id === listChannelId) ?? channelFeeds.find((c) => c.id === itemId);
 
   const title =
     kind === "movie"
@@ -267,15 +298,15 @@ export function PlayerScreen() {
       if (typed === "0") {
         const previous = previousChannelRef.current;
         if (previous == null) setNumberMessage("No hay canal anterior");
-        else navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(previous) }, search: {} });
+        else onNavigate({ kind: "channel", id: String(previous), search: {} });
         return;
       }
       const channel = await apiGetOrNull<ChannelSummary>(`/api/live/channels/by-number/${Number(typed)}?profile_id=${profileId}&near=${itemId}`).catch(() => null);
-      if (channel) navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(channel.id) }, search: {} });
+      if (channel) onNavigate({ kind: "channel", id: String(channel.id), search: {} });
       else setNumberMessage(`No hay canal ${Number(typed)}`);
     }, NUMBER_ENTRY_MS);
     return () => window.clearTimeout(timer);
-  }, [typedNumber, navigate, profileId, itemId]);
+  }, [typedNumber, onNavigate, profileId, itemId]);
   useEffect(() => {
     if (!numberMessage) return;
     const timer = window.setTimeout(() => setNumberMessage(null), 2_000);
@@ -351,9 +382,9 @@ export function PlayerScreen() {
       if (auto) setSourceNotice(failoverNotice(activeSourceIndex, index));
       setAppliedStart(Math.floor(latestRef.current.displayCurrentTime));
       setVideoCurrentTime(0);
-      navigate({ to: "/player/$kind/$id", params: { kind, id }, search: { ...search, source: target.id }, replace: true });
+      onNavigate({ kind, id, search: { ...search, source: target.id } }, { replace: true });
     },
-    [movieSources, activeSourceId, activeSourceIndex, navigate, kind, id, search],
+    [movieSources, activeSourceId, activeSourceIndex, onNavigate, kind, id, search],
   );
 
   const handleVideoError = useCallback(async () => {
@@ -477,7 +508,7 @@ export function PlayerScreen() {
     if (nextCountdown === null) return;
     if (nextCountdown <= 0) {
       saveProgress(true);
-      navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(nextEpisode!.id) }, search: { seriesId: search.seriesId } });
+      onNavigate({ kind: "episode", id: String(nextEpisode!.id), search: { seriesId: search.seriesId } });
       return;
     }
     const timeout = window.setTimeout(() => setNextCountdown((c) => (c ?? 1) - 1), 1000);
@@ -502,24 +533,50 @@ export function PlayerScreen() {
     };
   }, [resetHideTimer]);
 
+  // Volver deja lo que se ve sonando en pequeño (`PlayerHost`). Si no se estaba viendo nada
+  // (error, o se abrió en mpv), se cierra.
   const goBack = useCallback(() => {
     saveProgress();
     if (kind === "movie") navigate({ to: "/movies/$movieId", params: { movieId: id } });
     else if (kind === "episode" && search.seriesId) navigate({ to: "/series/$seriesId", params: { seriesId: search.seriesId } });
     else navigate({ to: "/live" });
-  }, [kind, id, search.seriesId, navigate, saveProgress]);
+    if (errorMessage || playingInMpv) onClose();
+  }, [kind, id, search.seriesId, navigate, saveProgress, errorMessage, playingInMpv, onClose]);
 
   const zapChannel = useCallback(
     (direction: 1 | -1) => {
       const items = channelsQuery.data?.items ?? [];
-      const idx = items.findIndex((c) => c.id === itemId);
+      const idx = items.findIndex((c) => c.id === listChannelId);
       // Tras el último canal viene el primero (y al revés), como en TiviMate y el iPhone.
       const next = idx === -1 || items.length < 2 ? undefined : items[(idx + direction + items.length) % items.length];
       if (!next) return;
-      navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(next.id) }, search: { categoryId: search.categoryId, favorites: search.favorites } });
+      onNavigate({ kind: "channel", id: String(next.id), search: { categoryId: search.categoryId, favorites: search.favorites } });
     },
-    [channelsQuery.data, itemId, navigate, search.categoryId, search.favorites],
+    [channelsQuery.data, listChannelId, onNavigate, search.categoryId, search.favorites],
   );
+
+  // Otra fuente del mismo canal, en el sitio: la lista y el zapping no cambian.
+  const switchChannelFeed = useCallback(
+    (feedId: number) => {
+      if (feedId === itemId) return;
+      setFeedAnchor({ feed: feedId, anchor: listChannelId });
+      onNavigate({ kind: "channel", id: String(feedId), search }, { replace: true });
+    },
+    [itemId, listChannelId, onNavigate, search],
+  );
+
+  const closePanel = useCallback(() => {
+    setPanelOpen(false);
+    containerRef.current?.focus();
+  }, []);
+
+  // En pequeño no hay panel, ni estadísticas, ni pantalla completa del sistema.
+  useEffect(() => {
+    if (!mini) return;
+    setPanelOpen(false);
+    setStatsVisible(false);
+    if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  }, [mini]);
 
   // Selector de pista de audio (F "premium", pendiente desde el plan original de F6).
   // Solo tiene efecto de verdad en nivel 2 (remux): cambiarlo reescribe `search`, lo que
@@ -527,9 +584,9 @@ export function PlayerScreen() {
   // que ya usa el selector de fuente/calidad de la ficha, no uno nuevo.
   const setAudioTrack = useCallback(
     (index: number) => {
-      navigate({ to: "/player/$kind/$id", params: { kind, id }, search: { ...search, audioTrack: index } });
+      onNavigate({ kind, id, search: { ...search, audioTrack: index } });
     },
-    [kind, id, search, navigate],
+    [kind, id, search, onNavigate],
   );
 
   // Activar o cambiar subtítulos reabre el remux (es él quien los extrae), así que se
@@ -669,7 +726,17 @@ export function PlayerScreen() {
   }, []);
 
   useEffect(() => {
+    // En pequeño el teclado es de la pantalla en la que se está, no del reproductor.
+    if (mini) return;
     function onKeyDown(e: KeyboardEvent) {
+      // Con la lista de canales abierta, el teclado es suyo; Esc la cierra.
+      if (panelOpen) {
+        if (e.key === "Escape") {
+          e.preventDefault();
+          closePanel();
+        }
+        return;
+      }
       // En un selector de pista, flechas y espacio son para elegir opción, no para
       // volumen/búsqueda/pausa; Escape sí sigue saliendo del reproductor.
       if (e.target instanceof HTMLSelectElement && e.key !== "Escape") {
@@ -708,6 +775,12 @@ export function PlayerScreen() {
           break;
         case "f":
           toggleFullscreen();
+          break;
+        case "c":
+          if (kind === "channel") {
+            e.preventDefault();
+            setPanelOpen(true);
+          }
           break;
         case "+":
         case "=":
@@ -754,6 +827,9 @@ export function PlayerScreen() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
+    mini,
+    panelOpen,
+    closePanel,
     kind,
     goBack,
     togglePlay,
@@ -812,10 +888,10 @@ export function PlayerScreen() {
     <div
       ref={containerRef}
       data-vibe-player=""
-      className={`relative flex h-full w-full items-center justify-center bg-black outline-none ${controlsVisible ? "" : "cursor-none"}`}
+      className={`relative flex h-full w-full items-center justify-center overflow-hidden bg-black outline-none ${controlsVisible || mini ? "" : "cursor-none"}`}
       onMouseMove={resetHideTimer}
       onWheel={(e) => {
-        if (e.deltaY === 0) return;
+        if (mini || e.deltaY === 0) return;
         changeVolume(e.deltaY < 0 ? VOLUME_STEP : -VOLUME_STEP);
         resetHideTimer();
       }}
@@ -856,7 +932,7 @@ export function PlayerScreen() {
             // vez que le toque un mal minuto.
             setReconnectAttempt(0);
           }}
-          onDoubleClick={toggleFullscreen}
+          onDoubleClick={mini ? undefined : toggleFullscreen}
           onPlay={() => {
             setPlaying(true);
             resetHideTimer();
@@ -876,6 +952,20 @@ export function PlayerScreen() {
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-700 border-t-red-600" aria-label="Cargando" />
       )}
 
+      {mini ? (
+        <MiniPlayerOverlay
+          title={title}
+          playing={playing}
+          muted={muted || volume === 0}
+          buffering={buffering || reconnectAttempt > 0}
+          error={playingInMpv ? "Se está reproduciendo en mpv (ventana aparte)." : errorMessage}
+          onTogglePlay={togglePlay}
+          onToggleMute={toggleMute}
+          onExpand={onExpand}
+          onClose={onClose}
+        />
+      ) : (
+        <>
       {!errorMessage && reconnectAttempt > 0 && (
         <div className="absolute left-1/2 top-6 flex -translate-x-1/2 items-center gap-2 rounded-lg bg-black/80 px-4 py-2 text-sm text-neutral-200">
           <span className="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-neutral-600 border-t-red-600" />
@@ -1077,6 +1167,17 @@ export function PlayerScreen() {
               <button type="button" onClick={() => zapChannel(1)} className="outline-none" aria-label="Canal siguiente">
                 <ArrowDownIcon className="h-5 w-5" />
               </button>
+              <button
+                type="button"
+                onClick={() => setPanelOpen((open) => !open)}
+                aria-expanded={panelOpen}
+                className="flex items-center gap-1.5 rounded px-2 py-1 text-xs text-neutral-300 outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/60"
+                aria-label="Lista de canales"
+                title="Canales (C)"
+              >
+                <ListIcon className="h-5 w-5" />
+                <span className="hidden xl:inline">Canales</span>
+              </button>
             </div>
           ) : (
             <span className="w-24 shrink-0 text-sm tabular-nums text-neutral-300">
@@ -1157,6 +1258,25 @@ export function PlayerScreen() {
             </label>
           )}
 
+          {kind === "channel" && !isCatchup && channelFeeds.length > 1 && (
+            <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+              <span className="hidden 2xl:inline">Fuente</span>
+              <select
+                value={itemId}
+                onChange={(e) => switchChannelFeed(Number(e.target.value))}
+                className="max-w-[9rem] truncate rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-2 focus:ring-white/60 2xl:max-w-[12rem]"
+                aria-label="Fuente del canal"
+                title="Otra calidad o fuente del mismo canal"
+              >
+                {channelFeeds.map((feed, index) => (
+                  <option key={feed.id} value={feed.id}>
+                    {channelFeedNames[index]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
           {movieSources.length > 1 && (
             <label className="flex items-center gap-1.5 text-xs text-neutral-400">
               <span className="hidden 2xl:inline">Fuente</span>
@@ -1223,6 +1343,22 @@ export function PlayerScreen() {
           </button>
         </div>
       </div>
+
+      {panelOpen && kind === "channel" && profileId !== null && (
+        <ChannelPanel
+          profileId={profileId}
+          currentChannelId={itemId}
+          currentName={currentChannel?.display_name}
+          initialScope={{ categoryId: search.categoryId, favorites: search.favorites }}
+          onPick={(channelId, nextSearch) => {
+            closePanel();
+            if (channelId !== itemId) onNavigate({ kind: "channel", id: String(channelId), search: nextSearch });
+          }}
+          onClose={closePanel}
+        />
+      )}
+        </>
+      )}
     </div>
   );
 }

@@ -1839,6 +1839,25 @@ tests), recentrada en cada cambio de canal.
   Sin esa hora no hay forma de saber el retraso real de cada fuente. Recordar la fuente
   elegida tampoco sirve: según el usuario, el retraso de cada fuente cambia de un día a
   otro. Se deja como está.
+- **Mini reproductor en el PC (2026-10-22):** el reproductor ya no lo monta la ruta
+  `/player/...` sino `PlayerHost`, por encima de toda la app, con lo que se ve guardado en
+  `lib/playerSession`. En `/player/...` ocupa la pantalla; al salir (Volver, Esc, el menú)
+  sigue en una ventana pequeña abajo a la derecha hasta que se cierra con ✕ o se abre otro
+  título o canal, que lo sustituye. Es el mismo `<video>` todo el rato: cambiar de tamaño
+  no vuelve a pedir el stream (R1). En pequeño el teclado es de la pantalla de debajo;
+  pinchar en el vídeo vuelve a pantalla completa. Si se vuelve con un error en pantalla o
+  con el contenido abierto en mpv, se cierra en vez de quedarse en pequeño. En iPhone y
+  iPad no aplica (VLC en pantalla nativa).
+- **Lista de canales dentro del reproductor del PC:** botón «Canales» o tecla C. Panel a
+  la derecha con selector de categoría (todas, «★ Favoritos» o cualquiera), el canal que se
+  ve marcado y la misma caché que la pantalla de Directo. Flechas, Enter y Esc.
+- **Fuente del directo por calidad:** al sincronizar, la calidad ya se separaba del nombre
+  («La 1 HD» → «La 1» + «HD»). Ahora la lista de canales la devuelve y
+  `GET /api/live/channels/:id/variants` da las versiones de un canal (mismo nombre, sin
+  distinguir mayúsculas, de cualquier proveedor), de mejor a peor calidad
+  (`reads::quality_rank`). Índice nuevo en la migración 022. El reproductor las ofrece en
+  «Fuente» con su calidad («4K», «FHD · ES»...), y cambiar de fuente no mueve la lista ni
+  el zapping, aunque la otra fuente esté en otra categoría.
 
 ## Deuda técnica conocida desde el diseño
 

@@ -33,3 +33,21 @@ export function groupChannelsByName(items: ChannelItem[]): ChannelGroup[] {
 export function uniqueChannelsByName(items: ChannelItem[]): ChannelItem[] {
   return groupChannelsByName(items).map((group) => group.channels[0]).filter((c): c is ChannelItem => c !== undefined);
 }
+
+/** Nombres de las fuentes de un mismo canal para el selector: su calidad e idioma («4K»,
+ * «HD · ES») o «Fuente N» si el nombre no traía ninguno. Si dos coinciden, se numeran. */
+export function feedLabels(channels: ChannelItem[]): string[] {
+  const base = channels.map((channel, index) => {
+    const details = [channel.quality, channel.language].filter((part): part is string => Boolean(part));
+    return details.length > 0 ? details.join(" · ") : `Fuente ${index + 1}`;
+  });
+  const seen = new Map<string, number>();
+  const total = new Map<string, number>();
+  for (const label of base) total.set(label, (total.get(label) ?? 0) + 1);
+  return base.map((label) => {
+    if ((total.get(label) ?? 0) < 2) return label;
+    const n = (seen.get(label) ?? 0) + 1;
+    seen.set(label, n);
+    return `${label} (${n})`;
+  });
+}

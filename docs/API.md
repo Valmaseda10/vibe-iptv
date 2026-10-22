@@ -51,8 +51,14 @@ el mismo orden. Con `around=<id de canal>` (el reproductor) no se pagina: devuel
 en `limit` y, si no, una ventana con ese canal en medio que da la vuelta por los extremos
 (tras el último, el primero), como el zapping; `next_cursor` va vacío.
 Devuelve `{ items: ChannelSummary[], next_cursor, next_cursor_key }`, con
-`ChannelSummary = { id, display_name, logo_url, category_id, has_catchup, number }`
-(`number` es el número del canal en el proveedor, o `null`).
+`ChannelSummary = { id, display_name, logo_url, category_id, has_catchup, number, quality, language }`
+(`number` es el número del canal en el proveedor, o `null`; `quality` e `language` son
+lo que traía el nombre, «HD» o «ES», o `null`).
+
+### `GET /api/live/channels/:id/variants?profile_id=`
+Las versiones de ese canal: los que tienen el mismo nombre una vez quitada la calidad
+(«La 1 HD», «La 1 4K»), de cualquier proveedor, él incluido, de mejor a peor calidad.
+Para el selector «Fuente» del reproductor. `ChannelSummary[]`, vacío si no existe.
 
 ### `GET /api/live/channels/by-number/:number?profile_id=&near=`
 El canal con ese número (para teclearlo en el directo). Con varios proveedores el número

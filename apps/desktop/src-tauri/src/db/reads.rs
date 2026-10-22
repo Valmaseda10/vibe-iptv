@@ -238,6 +238,10 @@ pub struct ChannelListItem {
     pub has_catchup: bool,
     /// Número del canal en el proveedor (`sort_order`, el `num` de Xtream).
     pub number: Option<i64>,
+    /// Calidad sacada del nombre al sincronizar («HD», «FHD», «4K»...), si la había.
+    pub quality: Option<String>,
+    /// Idioma sacado del nombre al sincronizar («ES», «EN»...), si lo había.
+    pub language: Option<String>,
 }
 
 /// Posición tras la que seguir en `list_channels_page`: el número del último canal visto
@@ -3179,6 +3183,35 @@ mod tests {
     }
 
     #[test]
+    fn channel_variants_are_the_same_name_best_quality_first() {
+        use crate::sources::model::RawChannel;
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let mut ids = HashMap::new();
+        for (n, name, quality) in [(1, "La 1", Some("HD")), (2, "La 1", None), (3, "LA 1", Some("4K")), (4, "La 2", Some("FHD")), (5, "La 1", Some("SD"))] {
+            let channel = RawChannel {
+                remote_id: n.to_string(),
+                category_remote_id: None,
+                raw_name: name.into(),
+                logo_url: None,
+                epg_channel_id: None,
+                has_catchup: false,
+                catchup_days: 0,
+                sort_order: Some(n),
+            };
+            let fields = TitleFields { clean_title: name, year: None, match_key: "n/a", quality, language: None };
+            queries::upsert_channel(&conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+            let id: i64 = conn.query_row("SELECT id FROM channels WHERE remote_id = ?1", params![n.to_string()], |r| r.get(0)).unwrap();
+            ids.insert(n, id);
+        }
+        let variants = channel_variants(&conn, ids[&1], true).unwrap();
+        let qualities: Vec<_> = variants.iter().map(|c| c.quality.as_deref().unwrap_or("—")).collect();
+        // Sin distinguir mayúsculas, sin colarse «La 2», y sin calidad conocida al final.
+        assert_eq!(qualities, ["4K", "HD", "SD", "—"]);
+        assert!(channel_variants(&conn, 9999, true).unwrap().is_empty());
+    }
+
+    #[test]
     fn channels_around_return_the_whole_list_when_it_fits() {
         let conn = memory_conn();
         let ids = seed_numbered_channels(&conn, 3);
@@ -3265,7 +3298,7 @@ mod tests {
 // ─────────────── Funciones de tele del directo (F13) ───────────────
 
 /// Columnas que espera `channel_list_item`, en este orden.
-const CHANNEL_LIST_COLUMNS: &str = "c.id, c.display_name, c.logo_url, c.category_id, c.has_catchup, c.sort_order";
+const CHANNEL_LIST_COLUMNS: &str = "c.id, c.display_name, c.logo_url, c.category_id, c.has_catchup, c.sort_order, c.quality, c.language";
 
 /// Filtro de adultos sobre `channels c`, igual que el de `list_channels_page`.
 const NOT_ADULT_CHANNEL: &str = " AND (c.category_id IS NULL OR c.category_id NOT IN (SELECT id FROM categories WHERE is_adult = 1))";
@@ -3279,7 +3312,43 @@ fn channel_list_item(row: &rusqlite::Row) -> rusqlite::Result<ChannelListItem> {
         category_id: row.get(3)?,
         has_catchup: row.get::<_, i64>(4)? != 0,
         number: row.get(5)?,
+        quality: row.get(6)?,
+        language: row.get(7)?,
     })
+}
+
+/// Las versiones de un mismo canal (mismo nombre una vez quitada la calidad al
+/// sincronizar: «LA 1 HD», «LA 1 FHD», «LA 1 4K»), incluido él mismo, de mejor a peor
+/// calidad. Vacío si el canal no existe o no se puede ver con este perfil.
+pub fn channel_variants(conn: &Connection, channel_id: i64, include_adult: bool) -> Result<Vec<ChannelListItem>> {
+    let mut sql = format!(
+        "SELECT {CHANNEL_LIST_COLUMNS} FROM channels c
+         WHERE c.display_name = (SELECT display_name FROM channels WHERE id = ?1) COLLATE NOCASE"
+    );
+    if !include_adult {
+        sql.push_str(NOT_ADULT_CHANNEL);
+    }
+    sql.push_str(" ORDER BY c.sort_order IS NULL, c.sort_order, c.id LIMIT 50");
+    let mut stmt = conn.prepare(&sql)?;
+    let mut variants = stmt.query_map(params![channel_id], channel_list_item)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    variants.sort_by_key(|c| quality_rank(c.quality.as_deref()));
+    Ok(variants)
+}
+
+/// Orden de calidad para las variantes de un canal: lo mejor primero, y sin calidad
+/// conocida al final (orden estable: a igual calidad, el número del proveedor).
+fn quality_rank(quality: Option<&str>) -> u8 {
+    let Some(q) = quality else { return 9 };
+    match q.to_ascii_uppercase().as_str() {
+        "8K" => 0,
+        "4K" | "UHD" | "2160P" => 1,
+        "FHD" | "1080P" | "1080I" => 2,
+        "HD" | "720P" => 3,
+        "HQ" => 4,
+        "SD" | "576P" | "480P" => 5,
+        "LQ" | "LOW" => 6,
+        _ => 7,
+    }
 }
 
 /// El canal con ese número del proveedor (`sort_order`, el `num` de Xtream). Con varios
@@ -3334,10 +3403,10 @@ pub fn epg_search(conn: &Connection, q: &str, now: i64, include_adult: bool, lim
     let rows = stmt.query_map(params![now, like_pattern(q), limit], |row| {
         Ok(EpgSearchRow {
             channel: channel_list_item(row)?,
-            title: row.get(6)?,
-            subtitle: row.get(7)?,
-            start_ts: row.get(8)?,
-            stop_ts: row.get(9)?,
+            title: row.get(8)?,
+            subtitle: row.get(9)?,
+            start_ts: row.get(10)?,
+            stop_ts: row.get(11)?,
         })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
@@ -3361,7 +3430,7 @@ pub fn list_reminders(conn: &Connection, profile_id: i64, now: i64) -> Result<Ve
     );
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![profile_id], |row| {
-        Ok(ReminderRow { channel: channel_list_item(row)?, title: row.get(6)?, start_ts: row.get(7)?, stop_ts: row.get(8)? })
+        Ok(ReminderRow { channel: channel_list_item(row)?, title: row.get(8)?, start_ts: row.get(9)?, stop_ts: row.get(10)? })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
