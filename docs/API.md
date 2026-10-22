@@ -158,11 +158,14 @@ Mientras se ve un canal en directo por `/stream/channel/:id`, el núcleo lo grab
 
 En iPhone/iPad (sin ffmpeg) la grabación es un anillo de MPEG-TS crudo:
 
-- `GET /stream/live-buffer/channel/:id?profile_id=&behind_s=<segundos>`: el directo desde
-  la grabación, `behind_s` segundos por detrás (0: en directo).
-- `DELETE /api/live-buffer?channel_id=<id>`: el reproductor se cerró; la grabación termina
-  y la conexión se libera ya. Con `channel_id`, solo si la grabación es de ese canal (un
-  aviso tardío no corta el canal abierto después); sin él, termina la que haya.
+- `GET /stream/live-buffer/channel/:id?profile_id=&behind_s=<segundos>&session=<id>`: el
+  directo desde la grabación, `behind_s` segundos por detrás (0: en directo). `session`
+  identifica al reproductor abierto (una por apertura); si esa sesión ya se cerró,
+  responde `410` sin abrir nada con el proveedor.
+- `DELETE /api/live-buffer?channel_id=<id>&session=<id>`: el reproductor se cerró; la
+  grabación termina, la conexión se libera ya y la sesión queda cerrada (VLC reconecta
+  solo y, sin esto, volvía a abrir el directo). Con `channel_id`, solo termina la
+  grabación si es de ese canal; sin él, la que haya.
 
 Mientras la lista empieza en su primer trozo (`#EXT-X-MEDIA-SEQUENCE:0`, los primeros
 30 min), sus segundos son los mismos que los del directo: pausar en el segundo 120 del

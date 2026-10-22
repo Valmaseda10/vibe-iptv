@@ -117,7 +117,13 @@ export function NativePlayerScreen() {
   const subtitle =
     kind === "episode" && currentEpisode ? episodeLabel(currentEpisode) : kind === "channel" ? (nowByChannel.get(itemId) ?? null) : null;
 
-  const channelPath = useCallback((channelId: number) => `/stream/live-buffer/channel/${channelId}?profile_id=${profileId}`, [profileId]);
+  // Una sesión por reproductor abierto: al cerrarlo, el núcleo deja de servir sus URLs y
+  // una reconexión tardía de VLC ya no vuelve a abrir el directo con el proveedor.
+  const [session] = useState(() => `${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`);
+  const channelPath = useCallback(
+    (channelId: number) => `/stream/live-buffer/channel/${channelId}?profile_id=${profileId}&session=${session}`,
+    [profileId, session],
+  );
   const episodePath = useCallback((episodeId: number) => `/stream/episode/${episodeId}?profile_id=${profileId}&passthrough=true`, [profileId]);
 
   // Continuar viendo: el VOD arranca donde se dejó.

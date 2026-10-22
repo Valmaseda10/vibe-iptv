@@ -533,12 +533,19 @@ struct LiveBufferQuery {
     /// Segundos por detrás del directo desde los que empezar (0: el directo).
     #[serde(default)]
     behind_s: f64,
+    /// Sesión del reproductor que pide: si ya se cerró, no se abre nada (`close_session`).
+    session: Option<String>,
 }
 
 /// Directo grabado para pausar y rebobinar sin ffmpeg (iPhone y iPad, F15). Si ya se
 /// graba ese canal, se lee de la grabación; si no, se abre la conexión con el proveedor
 /// (cerrando la anterior, R1) y se empieza a grabar.
 async fn get_live_buffer(State(state): State<StreamState>, AxumPath(channel_id): AxumPath<i64>, Query(query): Query<LiveBufferQuery>) -> Response {
+    // Un reproductor ya cerrado que vuelve a pedir (VLC reconecta solo): ni grabación ni
+    // conexión con el proveedor.
+    if query.session.as_deref().is_some_and(|session| state.live_buffer.session_closed(session)) {
+        return StatusCode::GONE.into_response();
+    }
     let log = Arc::clone(&state.last_errors);
     let result = handle_live_buffer(state, channel_id, query.profile_id, query.behind_s).await;
     remember_outcome(&log, format!("channel:{channel_id}"), result.as_ref());
@@ -602,9 +609,14 @@ async fn handle_live_buffer(state: StreamState, channel_id: i64, profile_id: i64
 struct DeleteLiveBufferQuery {
     /// Canal que se cerró: si la grabación en curso es de otro, se deja.
     channel_id: Option<i64>,
+    /// Sesión del reproductor que se cerró: sus peticiones posteriores no abren nada.
+    session: Option<String>,
 }
 
 async fn delete_live_buffer(State(state): State<StreamState>, Query(query): Query<DeleteLiveBufferQuery>) -> StatusCode {
+    if let Some(session) = query.session.as_deref() {
+        state.live_buffer.close_session(session);
+    }
     state.live_buffer.stop(query.channel_id);
     StatusCode::NO_CONTENT
 }
@@ -1605,6 +1617,34 @@ mod tests {
         assert_ne!(last_error.status(), StatusCode::OK, "un 416 no es un error de reproducción");
 
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_file(&db_path);
+    }
+
+    /// Al cerrar el reproductor del iPhone, su sesión se cierra: si VLC vuelve a pedir la
+    /// misma URL (reconecta solo), no se abre nada con el proveedor (R1). Otra sesión sí pasa.
+    #[tokio::test]
+    async fn a_closed_player_session_does_not_reopen_the_live_buffer() {
+        let db_path = temp_db_path("closed-session");
+        let router = stream_router(base_state(db_path.clone(), None, None));
+        let delete = router
+            .clone()
+            .oneshot(Request::builder().method("DELETE").uri("/api/live-buffer?channel_id=5&session=abc").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+
+        let again = router
+            .clone()
+            .oneshot(Request::builder().uri("/stream/live-buffer/channel/5?profile_id=1&session=abc").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::GONE);
+
+        let other = router
+            .oneshot(Request::builder().uri("/stream/live-buffer/channel/5?profile_id=1&session=xyz").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_ne!(other.status(), StatusCode::GONE);
         let _ = std::fs::remove_file(&db_path);
     }
 

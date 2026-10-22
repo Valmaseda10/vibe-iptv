@@ -53,11 +53,16 @@ impl Default for LiveBufferConfig {
     }
 }
 
+/// Sesiones cerradas que se recuerdan (las últimas): de sobra para las reconexiones tardías.
+const CLOSED_SESSIONS_KEPT: usize = 64;
+
 /// La grabación en curso (como mucho una), compartida por las rutas.
 #[derive(Clone, Default)]
 pub struct LiveBufferSlot {
     current: Arc<Mutex<Option<Arc<Recording>>>>,
     config: Arc<Mutex<Option<LiveBufferConfig>>>,
+    /// Sesiones de reproducción ya cerradas (`?session=` de la URL): ver `close_session`.
+    closed_sessions: Arc<Mutex<std::collections::VecDeque<String>>>,
 }
 
 impl LiveBufferSlot {
@@ -114,6 +119,25 @@ impl LiveBufferSlot {
         let token = guard.upstream_opened();
         tokio::spawn(record(Arc::clone(&recording), file, upstream, permit, guard, token));
         Ok(recording)
+    }
+
+    /// El reproductor que usaba esta sesión se cerró: sus peticiones ya no abren nada. VLC
+    /// (`--http-reconnect`) volvía a pedir la URL al cortarse la grabación aunque se
+    /// estuviera cerrando, y el directo quedaba abierto con el proveedor sin nadie mirando.
+    pub fn close_session(&self, session: &str) {
+        if let Ok(mut closed) = self.closed_sessions.lock() {
+            if !closed.iter().any(|s| s == session) {
+                closed.push_back(session.to_string());
+                while closed.len() > CLOSED_SESSIONS_KEPT {
+                    closed.pop_front();
+                }
+            }
+        }
+    }
+
+    /// `true` si esa sesión de reproducción ya se cerró.
+    pub fn session_closed(&self, session: &str) -> bool {
+        self.closed_sessions.lock().map(|closed| closed.iter().any(|s| s == session)).unwrap_or(false)
     }
 
     /// Termina la grabación en curso ya (el reproductor se cerró). Con `channel_id`, solo
@@ -463,6 +487,21 @@ mod tests {
         slot.stop(Some(7));
         assert!(rec.stop_requested.load(Ordering::SeqCst));
         assert!(slot.existing(7, &guard).is_none());
+    }
+
+    #[test]
+    fn a_closed_session_stays_closed_and_only_the_last_ones_are_kept() {
+        let slot = LiveBufferSlot::default();
+        assert!(!slot.session_closed("a"));
+        slot.close_session("a");
+        slot.close_session("a");
+        assert!(slot.session_closed("a"));
+        assert!(!slot.session_closed("b"));
+        for i in 0..CLOSED_SESSIONS_KEPT {
+            slot.close_session(&format!("s{i}"));
+        }
+        assert!(!slot.session_closed("a"), "la más vieja se olvida");
+        assert!(slot.session_closed(&format!("s{}", CLOSED_SESSIONS_KEPT - 1)));
     }
 
     #[tokio::test]

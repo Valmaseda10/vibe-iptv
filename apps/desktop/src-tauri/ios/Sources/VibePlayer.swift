@@ -621,7 +621,7 @@ final class VibePlayerController: UIViewController {
         guard generation == playGeneration else { return }
         let player = sharedPlayer
         let stopped = player.state == .stopped || player.state == .ended || player.state == .error
-        if !stopped, attempt < 50 {
+        if !stopped, attempt < 10 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 releaseLiveBufferWhenStopped(streamURL, generation: generation, attempt: attempt + 1)
             }
@@ -630,13 +630,18 @@ final class VibePlayerController: UIViewController {
         releaseLiveBuffer(from: streamURL)
     }
 
-    /// Dice de qué canal (`/stream/live-buffer/channel/<id>`): si llegara tarde, el núcleo
-    /// no corta el canal que se abrió después.
+    /// Dice de qué canal (`/stream/live-buffer/channel/<id>`), para que un aviso tardío no
+    /// corte el canal que se abrió después, y de qué sesión (`session` de la URL), para que
+    /// el núcleo no vuelva a abrir nada si VLC reconecta.
     private static func releaseLiveBuffer(from streamURL: String) {
         guard var components = URLComponents(string: streamURL) else { return }
         let channelId = components.path.split(separator: "/").last.flatMap { Int($0) }
+        let session = components.queryItems?.first { $0.name == "session" }?.value
         components.path = "/api/live-buffer"
-        components.queryItems = channelId.map { [URLQueryItem(name: "channel_id", value: String($0))] }
+        var query: [URLQueryItem] = []
+        if let channelId = channelId { query.append(URLQueryItem(name: "channel_id", value: String(channelId))) }
+        if let session = session { query.append(URLQueryItem(name: "session", value: session)) }
+        components.queryItems = query.isEmpty ? nil : query
         guard let url = components.url else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "DELETE"

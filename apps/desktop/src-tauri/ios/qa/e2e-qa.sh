@@ -359,6 +359,8 @@ tap_label "Reproducir" contiene 10
 check "película: se abre el reproductor" 'wait_player_open 25'
 sleep 8
 check "película: se reproduce sola" '[ "$(player_field playing)" = "True" ] && [ "$(player_time)" -gt 0 ]'
+# En marcha, los controles se esconden solos (en modo prueba a los 15 s, no a los 4).
+check "película: los controles se esconden solos" 'for _ in $(seq 1 25); do [ "$(player_field controls)" = "False" ] && break; sleep 1; done; [ "$(player_field controls)" = "False" ]'
 t0=$(player_time)
 player_tap "Adelante 30 segundos"; sleep 3
 t1=$(player_time)
@@ -366,12 +368,18 @@ echo "  tiempo: antes ${t0}s, tras +30 s ${t1}s"
 check "película: +30 s avanza de verdad" '[ "$t1" -ge $((t0 + 25)) ]'
 player_tap "Atrás 10 segundos"; sleep 2
 t2=$(player_time)
+if [ "$t2" -ge "$t1" ]; then
+  echo "  (−10 s: el toque no llegó, se repite)"
+  t1=$(player_time); player_tap "Atrás 10 segundos"; sleep 2; t2=$(player_time)
+fi
 echo "  tiempo: tras −10 s ${t2}s"
 check "película: −10 s retrocede" '[ "$t2" -lt "$t1" ] && [ "$t2" -ge $((t1 - 15)) ]'
 player_tap "Reproducir o pausar"; sleep 1
+if [ "$(player_field playing)" = "True" ]; then echo "  (pausa: el toque no llegó, se repite)"; player_tap "Reproducir o pausar"; sleep 1; fi
 p1=$(player_time); sleep 4; p2=$(player_time)
 check "película: la pausa para el vídeo" '[ "$(player_field playing)" = "False" ] && [ "$p2" -eq "$p1" ]'
 player_tap "Reproducir o pausar"; sleep 4
+if [ "$(player_field playing)" != "True" ]; then echo "  (reanudar: el toque no llegó, se repite)"; player_tap "Reproducir o pausar"; sleep 4; fi
 p3=$(player_time)
 check "película: reanudar sigue avanzando" '[ "$(player_field playing)" = "True" ] && [ "$p3" -gt "$p2" ]'
 shot reproductor-pelicula
@@ -453,7 +461,14 @@ for _ in 1 2 3; do
   tap_video; sleep 1.5
 done
 ui_swipe $((UW / 2)) $((UH * 7 / 10)) $((UW / 2)) $((UH * 3 / 10)); sleep 6
-after=$(player_titles); shot directo-tras-zapping
+after=$(player_titles)
+if [ "$before" = "$after" ]; then
+  echo "  (zapping: el deslizamiento no llegó, se repite)"
+  for _ in 1 2 3; do [ "$(player_field controls)" = "True" ] || break; tap_video; sleep 1.5; done
+  ui_swipe $((UW / 2)) $((UH * 7 / 10)) $((UW / 2)) $((UH * 3 / 10)); sleep 6
+  after=$(player_titles)
+fi
+shot directo-tras-zapping
 echo "  zapping: «${before}» → «${after}»"
 check "directo: deslizar hacia arriba cambia de canal" 'player_open && [ "$before" != "$after" ]'
 check "directo: una sola conexión tras el zapping" '[ "$(active_cons)" -le 1 ]'

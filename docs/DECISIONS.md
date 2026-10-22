@@ -1696,9 +1696,11 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
     app; bloqueaba además la sincronización). `stop()` de VLCKit vuelve antes de parar: el
     aviso de soltar la grabación llegaba con VLC aún leyendo, el núcleo cortaba y
     `--http-reconnect` volvía a pedir el canal. Con un reproductor que ya no se libera, esa
-    reconexión quedaba viva. Ahora lo pide solo el reproductor nativo, cuando VLC ha parado
-    de verdad (y no si entretanto se abrió otra cosa), y dice de qué canal es. La prueba
-    comprueba también que la conexión sigue cerrada 10 s después.
+    reconexión quedaba viva. Esperar a que VLC parase no bastó (seguía reconectando), así
+    que se cierra en el núcleo: cada apertura del reproductor lleva una sesión en la URL;
+    al cerrarlo, el reproductor nativo avisa con su sesión y canal, y el núcleo contesta
+    `410` a esa sesión sin abrir nada con el proveedor. Test de ruta y prueba en el
+    simulador: la conexión sigue cerrada 10 s después.
   - *Zapping:* después del último canal viene el primero (y al revés), como en TiviMate.
   - *Directo:* sin la barra de cristal vacía abajo (no hay tiempos que enseñar).
 
