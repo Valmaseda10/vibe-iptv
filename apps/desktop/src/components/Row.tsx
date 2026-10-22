@@ -1,4 +1,5 @@
 import { useRef, type ReactNode } from "react";
+import { HorizontalScroller } from "./HorizontalScroller";
 
 type RowProps = {
   title: string;
@@ -69,14 +70,14 @@ export function Row({ title, children }: RowProps) {
   return (
     <section className="flex flex-col gap-3">
       <h2 className="px-4 text-lg font-semibold text-neutral-200 sm:px-10 ios:text-[20px] ios:font-bold ios:tracking-tight ios:text-white">{title}</h2>
-      <div
-        ref={trackRef}
+      <HorizontalScroller
+        trackRef={trackRef}
         data-row-track
         onKeyDown={onKeyDown}
-        className="flex gap-3 overflow-x-auto px-4 pb-2 sm:gap-4 sm:px-10 [scrollbar-width:thin] ios:snap-x ios:snap-mandatory ios:scroll-px-4 ios:[scrollbar-width:none] sm:ios:scroll-px-10 [&>*]:ios:snap-start"
+        className="flex gap-3 overflow-x-auto px-4 pb-2 sm:gap-4 sm:px-10 ios:snap-x ios:snap-mandatory ios:scroll-px-4 sm:ios:scroll-px-10 [&>*]:ios:snap-start"
       >
         {children}
-      </div>
+      </HorizontalScroller>
     </section>
   );
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { HorizontalScroller } from "../../components/HorizontalScroller";
 import { useNavigate } from "@tanstack/react-router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -169,7 +170,7 @@ export function LiveScreen() {
       {scope === "" && (favoritesQuery.data?.items.length ?? 0) > 0 && (
         <section className="px-4 sm:px-10" aria-label="Canales favoritos">
           <h2 className="mb-2 text-sm font-medium text-neutral-400 ios:text-[20px] ios:font-bold ios:tracking-tight ios:text-white">★ Favoritos</h2>
-          <div className="flex gap-2 overflow-x-auto pb-1">
+          <HorizontalScroller className="flex gap-2 overflow-x-auto pb-1">
             {favoritesQuery.data!.items.map((channel) => (
               <button
                 key={channel.id}
@@ -183,14 +184,14 @@ export function LiveScreen() {
                 <span className="max-w-40 truncate">{channel.display_name}</span>
               </button>
             ))}
-          </div>
+          </HorizontalScroller>
         </section>
       )}
 
       {scope === "" && (recentQuery.data?.length ?? 0) > 0 && (
         <section className="px-4 sm:px-10" aria-label="Canales recientes">
           <h2 className="mb-2 text-sm font-medium text-neutral-400 ios:text-[20px] ios:font-bold ios:tracking-tight ios:text-white">Recientes</h2>
-          <div className="flex gap-2 overflow-x-auto pb-1">
+          <HorizontalScroller className="flex gap-2 overflow-x-auto pb-1">
             {recentQuery.data!.map((channel) => (
               <button
                 key={channel.id}
@@ -210,7 +211,7 @@ export function LiveScreen() {
                 <span className="max-w-40 truncate">{channel.display_name}</span>
               </button>
             ))}
-          </div>
+          </HorizontalScroller>
         </section>
       )}
 

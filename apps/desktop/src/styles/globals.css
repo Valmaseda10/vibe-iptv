@@ -110,6 +110,16 @@ body {
   padding: env(safe-area-inset-top) env(safe-area-inset-right) 0 env(safe-area-inset-left);
 }
 
+/* Sin barras de desplazamiento visibles en ninguna parte: todo sigue desplazándose con
+   la rueda, el trackpad, el teclado o el dedo, y las filas horizontales llevan flechas
+   al pasar el ratón (`HorizontalScroller`). */
+* {
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
+}
+
 body {
   @apply bg-neutral-950 text-neutral-100 antialiased;
   font-family:

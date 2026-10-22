@@ -11,6 +11,7 @@ import { DETAIL_ACTION, PRIMARY_ACTION } from "../../components/detailAction";
 import { FloatingBackButton } from "../../components/FloatingBackButton";
 import { BackdropTrailer } from "../../components/BackdropTrailer";
 import { Row } from "../../components/Row";
+import { HorizontalScroller } from "../../components/HorizontalScroller";
 import { PosterCard } from "../../components/PosterCard";
 import type { EpisodeSummary, SeriesDetailResponse } from "../../lib/api-types";
 
@@ -159,7 +160,7 @@ export function SeriesDetailScreen() {
         ) : (
           <div className="pt-6">
             <div className="mb-4">
-              <div className="flex gap-2 overflow-x-auto" role="tablist" aria-label="Temporadas">
+              <HorizontalScroller className="flex gap-2 overflow-x-auto" role="tablist" aria-label="Temporadas">
                 {seasons.map((s) => (
                   <button
                     key={s.season}
@@ -173,7 +174,7 @@ export function SeriesDetailScreen() {
                     Temporada {s.season}
                   </button>
                 ))}
-              </div>
+              </HorizontalScroller>
             </div>
 
             <ul className="flex flex-col gap-3">
