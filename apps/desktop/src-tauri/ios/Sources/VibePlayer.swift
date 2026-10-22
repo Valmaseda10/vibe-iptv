@@ -491,8 +491,15 @@ final class VibePlayerController: UIViewController {
     private func refreshCategoryButton() {
         let hidden = categories.isEmpty
         categoryButton.isHidden = hidden
-        listTopToCategory?.isActive = !hidden
-        listTopToGuide?.isActive = hidden
+        // Primero se suelta la que sobra: con las dos activas a la vez chocan, y UIKit rompe
+        // otra cualquiera para resolverlo (dejaba la lista de canales sin altura).
+        if hidden {
+            listTopToCategory?.isActive = false
+            listTopToGuide?.isActive = true
+        } else {
+            listTopToGuide?.isActive = false
+            listTopToCategory?.isActive = true
+        }
         guard !hidden else { return }
         let selected = categories.first { $0.id == (currentCategory ?? "") } ?? categories[0]
         var config = UIButton.Configuration.plain()

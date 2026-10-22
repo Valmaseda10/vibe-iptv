@@ -253,12 +253,16 @@ go_catalog() {
   go "$1"
   tap_label "Catálogo completo" contiene 8; sleep 2
 }
+# Momento del último toque en «Cerrar» (para medir desde el toque que de verdad cierra, no
+# desde el primer intento: en el simulador cargado cada intento tarda en encontrar el botón).
+LAST_CLOSE_TAP=""
 close_player() {
   local n
   for n in 1 2 3; do
     player_open || return 0
     [ "$n" -gt 1 ] && echo "  (cerrar: intento $n)"
     player_tap "Cerrar"
+    LAST_CLOSE_TAP=$(python3 -c "import time; print(time.time())")
     wait_player_closed 5 && return 0
   done
   return 1
@@ -440,7 +444,7 @@ check "película: cerrar sale del reproductor" 'wait_player_closed 10'
 wait_visible "ruta:/movies/" contiene 30 >/dev/null; t_route=$(now_s)
 check "película: vuelve a la ficha con «Continuar»" 'wait_visible "Continuar" contiene 30'
 t_cont=$(now_s)
-echo "  vuelta a la ficha: $(since "$close_started" "$t_cont") s desde el toque en cerrar (cerrar: $(since "$close_started" "$t_closed") s; ficha a la vista: +$(since "$t_closed" "$t_route") s; «Continuar»: +$(since "$t_route" "$t_cont") s)"
+echo "  vuelta a la ficha: $(since "${LAST_CLOSE_TAP:-$close_started}" "$t_cont") s desde el toque que cerró (cerrar: $(since "${LAST_CLOSE_TAP:-$close_started}" "$t_closed") s; ficha a la vista: +$(since "$t_closed" "$t_route") s; «Continuar»: +$(since "$t_route" "$t_cont") s; con los intentos de la prueba: $(since "$close_started" "$t_cont") s)"
 check "ficha: enseña cuánto queda" 'visible "Quedan" contiene'
 tap_label "Continuar" contiene 5
 check "película: «Continuar» retoma donde se dejó" 'wait_player_open 25 && sleep 4 && [ "$(player_time)" -ge $((p3 - 10)) ]'
