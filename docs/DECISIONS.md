@@ -1881,6 +1881,17 @@ tests), recentrada en cada cambio de canal.
   valorado de los géneros favoritos. Sin ningún gusto todavía, «Populares ahora» (Top 10,
   tendencias y lo mejor valorado reciente) en vez de una fila vacía. Se recalcula también al
   cambiar la lista, marcar como visto o terminar algo (como mucho una vez por minuto).
+- **Emparejamiento con TMDB más fiable:** solo se miraba el primer resultado de la búsqueda
+  y con el título traducido; en el catálogo real quedaba sin emparejar 1 de cada 4 series
+  (también «La Casa de Papel»), y sin emparejar no hay géneros, nota ni recomendaciones. Ahora
+  se miran los cinco primeros, contra el título traducido y el original, sin signos de
+  puntuación y con el título alternativo entre paréntesis. La migración 023 vuelve a buscar
+  lo no encontrado: en el catálogo real se recuperaron 1.207 de 2.064 (series sin emparejar:
+  de 1.733 a 578). Un emparejamiento que encuentra títulos nuevos hace recalcular las
+  recomendaciones y las filas.
+- **El porqué de una recomendación dice lo que hizo el perfil:** «Porque te gustó X» (lo
+  valoró), «Porque viste X», «Porque tienes X en tu lista» o «Porque empezaste X», también en
+  las filas «Porque…».
 
 ## Deuda técnica conocida desde el diseño
 

@@ -60,6 +60,8 @@ pub struct RecommendedMovie {
     pub poster_path: Option<String>,
     pub rating: Option<f64>,
     pub because_of: String,
+    /// Por qué, con lo que hizo el perfil: «Porque te gustó X», «Porque viste X»...
+    pub reason: String,
 }
 
 /// Igual que `RecommendedMovie`, para series.
@@ -71,6 +73,8 @@ pub struct RecommendedSeries {
     pub poster_path: Option<String>,
     pub rating: Option<f64>,
     pub because_of: String,
+    /// Igual que en `RecommendedMovie`.
+    pub reason: String,
 }
 
 /// Un título de una fila «Porque viste X».
@@ -89,6 +93,8 @@ pub struct BecauseRow {
     /// `movie` o `series`.
     pub kind: &'static str,
     pub seed_title: String,
+    /// Título de la fila, con lo que hizo el perfil con la semilla («Porque viste X»).
+    pub row_title: String,
     pub items: Vec<RowTitle>,
 }
 
@@ -138,6 +144,15 @@ pub async fn get_cached_or_refresh(db_path: PathBuf, profile_id: i64) -> Recomme
         });
     }
     current
+}
+
+/// El catálogo cambió (p. ej. un emparejamiento con TMDB encontró títulos nuevos): todos
+/// los perfiles recalculan en su próxima visita.
+pub async fn invalidate_all() {
+    let mut cache = CACHE.lock().await;
+    for entry in cache.values_mut() {
+        entry.stale = true;
+    }
 }
 
 /// Se está calculando la primera vez para este perfil (todavía no hay nada que enseñar).
@@ -283,8 +298,44 @@ pub fn diversify<T: Clone>(ranked: Vec<(f64, T, String)>) -> Vec<(f64, T, String
     out
 }
 
+/// Qué hizo el perfil con una semilla, para decir el porqué con verdad.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SeedReason {
+    Liked,
+    Watched,
+    Listed,
+    Started,
+}
+
+impl SeedReason {
+    /// Lo más fuerte que hizo: valorarla, verla (una película casi entera o algún episodio
+    /// de una serie), guardarla en su lista o empezarla.
+    pub fn of(signal: &reads::TasteSignal, kind: &str) -> Self {
+        if matches!(signal.rating, Some(1) | Some(2)) {
+            Self::Liked
+        } else if (kind == "series" && signal.watched >= 1.0) || (kind != "series" && signal.watched >= 0.7) {
+            Self::Watched
+        } else if signal.favorite {
+            Self::Listed
+        } else {
+            Self::Started
+        }
+    }
+
+    pub fn phrase(self, title: &str) -> String {
+        match self {
+            Self::Liked => format!("Porque te gustó {title}"),
+            Self::Watched => format!("Porque viste {title}"),
+            Self::Listed => format!("Porque tienes {title} en tu lista"),
+            Self::Started => format!("Porque empezaste {title}"),
+        }
+    }
+}
+
 struct KindResult {
     ranked: Vec<(reads::LocalTitle, String)>,
+    /// Qué hizo el perfil con cada semilla (por título).
+    reasons: HashMap<String, SeedReason>,
     /// Filas «Porque viste X» de las semillas positivas más fuertes, con su peso.
     because: Vec<(f64, BecauseRow)>,
 }
@@ -301,10 +352,28 @@ async fn compute(db_path: PathBuf, profile_id: i64) -> Recommendations {
 
     Recommendations {
         movies: movies
-            .map(|r| r.ranked.into_iter().map(|(t, because_of)| RecommendedMovie { id: t.id, clean_title: t.clean_title, year: t.year, poster_path: t.poster_path, rating: t.rating, because_of }).collect())
+            .map(|r| {
+                let reasons = r.reasons;
+                r.ranked
+                    .into_iter()
+                    .map(|(t, because_of)| {
+                        let reason = reasons.get(&because_of).copied().unwrap_or(SeedReason::Liked).phrase(&because_of);
+                        RecommendedMovie { id: t.id, clean_title: t.clean_title, year: t.year, poster_path: t.poster_path, rating: t.rating, because_of, reason }
+                    })
+                    .collect()
+            })
             .unwrap_or_default(),
         series: series
-            .map(|r| r.ranked.into_iter().map(|(t, because_of)| RecommendedSeries { id: t.id, clean_title: t.clean_title, year: t.year, poster_path: t.poster_path, rating: t.rating, because_of }).collect())
+            .map(|r| {
+                let reasons = r.reasons;
+                r.ranked
+                    .into_iter()
+                    .map(|(t, because_of)| {
+                        let reason = reasons.get(&because_of).copied().unwrap_or(SeedReason::Liked).phrase(&because_of);
+                        RecommendedSeries { id: t.id, clean_title: t.clean_title, year: t.year, poster_path: t.poster_path, rating: t.rating, because_of, reason }
+                    })
+                    .collect()
+            })
             .unwrap_or_default(),
         because: because.into_iter().map(|(_, row)| row).collect(),
     }
@@ -421,11 +490,13 @@ async fn compute_kind(client: &TmdbClient, db_path: &PathBuf, profile_id: i64, k
             .map(|t| RowTitle { id: t.id, clean_title: t.clean_title.clone(), year: t.year, poster_path: t.poster_path.clone() })
             .collect();
         if items.len() >= MIN_BECAUSE_ROW {
-            because.push((*weight, BecauseRow { kind, seed_title: signal.clean_title.clone(), items }));
+            let row_title = SeedReason::of(signal, kind).phrase(&signal.clean_title);
+            because.push((*weight, BecauseRow { kind, seed_title: signal.clean_title.clone(), row_title, items }));
         }
     }
 
-    Some(KindResult { ranked: ranked.into_iter().take(MAX_RESULTS).map(|(_, t, because)| (t, because)).collect(), because })
+    let reasons = positives.iter().map(|(_, s)| (s.clean_title.clone(), SeedReason::of(s, kind))).collect();
+    Some(KindResult { ranked: ranked.into_iter().take(MAX_RESULTS).map(|(_, t, because)| (t, because)).collect(), reasons, because })
 }
 
 #[cfg(test)]
@@ -502,6 +573,16 @@ mod tests {
         assert!(seed_weight(&signal(None, false, 0.05, now - 5 * DAY), "movie", now) < 0.0);
         assert_eq!(seed_weight(&signal(None, false, 0.05, now - DAY), "movie", now), 0.0, "de ayer: aún puede volver a ella");
         assert!(seed_weight(&signal(Some(1), false, 0.05, now - 5 * DAY), "movie", now) > 0.0, "si la valoró, manda la valoración");
+    }
+
+    #[test]
+    fn the_reason_says_what_the_profile_actually_did() {
+        let listed = signal(None, true, 0.0, 0);
+        assert_eq!(SeedReason::of(&listed, "series").phrase("La Casa de Papel"), "Porque tienes La Casa de Papel en tu lista");
+        assert_eq!(SeedReason::of(&signal(Some(2), true, 0.0, 0), "movie"), SeedReason::Liked);
+        assert_eq!(SeedReason::of(&signal(None, true, 0.9, 0), "movie"), SeedReason::Watched);
+        assert_eq!(SeedReason::of(&signal(None, false, 0.3, 0), "movie"), SeedReason::Started);
+        assert_eq!(SeedReason::of(&signal(None, false, 2.0, 0), "series"), SeedReason::Watched, "dos episodios vistos");
     }
 
     #[test]

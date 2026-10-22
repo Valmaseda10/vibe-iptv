@@ -489,7 +489,15 @@ fn spawn_tmdb_matching(app: AppHandle) {
         });
 
         match tmdb::run_matching_pass(conn, Arc::clone(&client), Arc::new(AtomicBool::new(false)), Arc::clone(&on_progress)).await {
-            Ok(summary) => tracing::info!(matched = summary.matched, total = summary.total, "emparejamiento con TMDB completado"),
+            Ok(summary) => {
+                tracing::info!(matched = summary.matched, total = summary.total, "emparejamiento con TMDB completado");
+                // Títulos recién emparejados: nuevos géneros, notas y semillas para las
+                // recomendaciones de todos los perfiles y para las filas de las pantallas.
+                if summary.matched > 0 {
+                    crate::catalog::recommendations::invalidate_all().await;
+                    crate::catalog::browse::clear_index_cache();
+                }
+            }
             Err(err) => tracing::error!(error = %err, "emparejamiento con TMDB fallido"),
         }
 

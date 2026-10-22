@@ -176,20 +176,20 @@ fn gather(conn: &rusqlite::Connection, kind: &'static str, profile_id: i64, reco
         (
             trending.top_series_es.iter().map(|t| t.id).collect(),
             trending.series.iter().map(|t| t.id).collect(),
-            recommendations.series.iter().map(|r| (r.id, r.because_of.clone())).collect(),
+            recommendations.series.iter().map(|r| (r.id, r.reason.clone())).collect(),
         )
     } else {
         (
             trending.top_movies_es.iter().map(|t| t.id).collect(),
             trending.movies.iter().map(|t| t.id).collect(),
-            recommendations.movies.iter().map(|r| (r.id, r.because_of.clone())).collect(),
+            recommendations.movies.iter().map(|r| (r.id, r.reason.clone())).collect(),
         )
     };
     let because = recommendations
         .because
         .iter()
         .filter(|row| row.kind == kind)
-        .map(|row| (row.seed_title.clone(), row.items.iter().map(|t| t.id).collect()))
+        .map(|row| (row.row_title.clone(), row.items.iter().map(|t| t.id).collect()))
         .collect();
     let my_list = reads::list_favorites(conn, profile_id)?.into_iter().filter(|f| f.item_kind == kind).map(|f| f.item_id).collect();
     Ok(KindData {

@@ -48,6 +48,13 @@ pub fn cached_index(conn: &Connection, kind: &'static str) -> crate::db::Result<
     Ok(index)
 }
 
+/// Olvida el índice en memoria (el catálogo acaba de cambiar).
+pub fn clear_index_cache() {
+    if let Ok(mut cache) = INDEX_CACHE.lock() {
+        cache.clear();
+    }
+}
+
 /// Gustos de un perfil a partir de lo que ha hecho con cada título (ver
 /// `catalog::recommendations::seed_weight`).
 pub fn taste_from_signals(signals: &[TasteSignal], kind: &str, now: i64) -> Taste {
@@ -132,9 +139,10 @@ pub struct KindInputs<'a> {
     pub top: &'a [i64],
     /// Tendencias de la semana en TMDB, en orden.
     pub trending: &'a [i64],
-    /// Recomendadas para el perfil, de más a menos, con la semilla que más aportó.
+    /// Recomendadas para el perfil, de más a menos, con su porqué («Porque viste X»).
     pub recommended: &'a [(i64, String)],
-    /// Filas «Porque viste X», de la semilla más fuerte a la más débil.
+    /// Filas «Porque viste X» (título de la fila y títulos), de la semilla más fuerte a la
+    /// más débil.
     pub because: &'a [(String, Vec<i64>)],
     /// Lo último que añadió el proveedor, de lo más nuevo a lo más viejo.
     pub recent: &'a [i64],
@@ -275,7 +283,7 @@ fn discovery_title(kind: &str, discovery: Discovery, genre_names: &HashMap<i64, 
         Discovery::Classics => (if series { "Series de culto" } else { "Clásicos imprescindibles" }).to_string(),
         Discovery::Gems => (if series { "Series que quizá te perdiste" } else { "Joyas que quizá te perdiste" }).to_string(),
         Discovery::Releases => (if series { "Series recién estrenadas" } else { "Estrenos" }).to_string(),
-        Discovery::SecondBecause => format!("Porque viste {}", because_seed?),
+        Discovery::SecondBecause => because_seed?.to_string(),
     })
 }
 
@@ -341,7 +349,7 @@ fn pick_recommended(rng: &mut Rng, input: &KindInputs, take: usize) -> Vec<Card>
         .collect();
     weighted_sample(rng, &pool, take)
         .into_iter()
-        .map(|(id, because)| Card { kind: input.kind, id, reason: (!because.is_empty()).then(|| format!("Porque te gustó {because}")) })
+        .map(|(id, reason)| Card { kind: input.kind, id, reason: (!reason.is_empty()).then_some(reason) })
         .collect()
 }
 
@@ -424,15 +432,15 @@ pub fn plan_kind(input: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i
     let because_pool: Vec<(usize, f64)> = (0..input.because.len()).map(|i| (i, 1.0 / (1.0 + i as f64))).collect();
     let because_order = weighted_sample(&mut rng, &because_pool, 2);
     let because_row = |index: usize, used: &HashSet<i64>| -> Option<(String, Vec<i64>)> {
-        let (seed_title, ids) = input.because.get(index)?;
+        let (row_title, ids) = input.because.get(index)?;
         let clean: Vec<i64> = ids.iter().copied().filter(|id| !input.taste.disliked.contains(id) && !input.taste.known.contains(id)).collect();
         let fresh: Vec<i64> = clean.iter().copied().filter(|id| !used.contains(id)).collect();
-        Some((seed_title.clone(), if fresh.len() >= MIN_ROW { fresh } else { clean }))
+        Some((row_title.clone(), if fresh.len() >= MIN_ROW { fresh } else { clean }))
     };
-    if let Some((seed_title, ids)) = because_order.first().and_then(|i| because_row(*i, &used)) {
+    if let Some((row_title, ids)) = because_order.first().and_then(|i| because_row(*i, &used)) {
         let ids: Vec<i64> = ids.into_iter().take(ROW_SIZE).collect();
         used.extend(&ids);
-        push(&mut rows, "because-1", format!("Porque viste {seed_title}"), RowStyle::Poster, cards(input.kind, ids), 4);
+        push(&mut rows, "because-1", row_title, RowStyle::Poster, cards(input.kind, ids), 4);
     }
 
     push(&mut rows, "my-list", "Mi lista".to_string(), RowStyle::Poster, cards(input.kind, input.my_list.iter().copied().take(40)), 1);
@@ -488,8 +496,8 @@ pub fn plan_kind(input: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i
         }
         let (key, title, ids) = match discovery {
             Discovery::SecondBecause => {
-                let Some((seed_title, ids)) = because_order.get(1).and_then(|i| because_row(*i, &used)) else { continue };
-                ("because-2".to_string(), discovery_title(input.kind, discovery, input.genre_names, input.taste, home, Some(&seed_title)), ids.into_iter().take(ROW_SIZE).collect())
+                let Some((row_title, ids)) = because_order.get(1).and_then(|i| because_row(*i, &used)) else { continue };
+                ("because-2".to_string(), discovery_title(input.kind, discovery, input.genre_names, input.taste, home, Some(&row_title)), ids.into_iter().take(ROW_SIZE).collect())
             }
             _ => {
                 let key = match discovery {
@@ -632,7 +640,7 @@ mod tests {
     fn the_same_seed_gives_the_same_screen_and_another_seed_a_different_one() {
         let index = catalog();
         let (taste, names) = (Taste::default(), names());
-        let recommended: Vec<(i64, String)> = (50..90).map(|id| (id, "Matrix".to_string())).collect();
+        let recommended: Vec<(i64, String)> = (50..90).map(|id| (id, "Porque te gustó Matrix".to_string())).collect();
         let input = inputs(&index, &taste, &names, &recommended);
         let avoid = HashSet::new();
         let a = plan_kind(&input, 1, &avoid, false);
@@ -648,7 +656,7 @@ mod tests {
     fn personal_rows_come_first_in_a_fixed_order() {
         let index = catalog();
         let (taste, names) = (Taste::default(), names());
-        let recommended: Vec<(i64, String)> = (50..90).map(|id| (id, "Matrix".to_string())).collect();
+        let recommended: Vec<(i64, String)> = (50..90).map(|id| (id, "Porque te gustó Matrix".to_string())).collect();
         let plan = plan_kind(&inputs(&index, &taste, &names, &recommended), 7, &HashSet::new(), false);
         let keys: Vec<&str> = plan.rows.iter().map(|r| r.key.as_str()).collect();
         assert_eq!(&keys[..4], ["top", "recommended", "trending", "new"]);

@@ -62,6 +62,8 @@ pub struct TmdbMatch {
 pub struct TmdbSearchHit {
     pub id: i64,
     pub title: String,
+    /// Título en el idioma original («La casa de papel», «Money Heist»...).
+    pub original_title: Option<String>,
     pub year: Option<i32>,
     pub overview: Option<String>,
     pub poster_path: Option<String>,
@@ -337,17 +339,47 @@ fn pick_trailer(results: &[VideoWire]) -> Option<String> {
 
 /// "Acepta el primer resultado si la similitud del título supera 0,85 y el año coincide
 /// con un margen de un año." Si no hay año en alguno de los dos lados, no se comprueba.
+/// Resultados de TMDB que se miran: el primero no siempre es el bueno (otra serie con un
+/// nombre parecido puede ir delante).
+const CANDIDATES_CHECKED: usize = 5;
+
+/// El primer resultado (en el orden de TMDB) que se parece de verdad al título y cuyo año
+/// encaja. Se compara con el título traducido y con el original, sin signos de puntuación,
+/// y también con el título alternativo entre paréntesis («La familia (The Family)»).
 pub fn choose_best_match<'a>(results: &'a [TmdbSearchHit], query: &str, year: Option<i32>) -> Option<&'a TmdbSearchHit> {
-    let first = results.first()?;
-    if similarity(&first.title, query) < SIMILARITY_THRESHOLD {
-        return None;
-    }
-    if let (Some(q), Some(h)) = (year, first.year) {
-        if (q - h).abs() > YEAR_MARGIN {
-            return None;
+    let queries = query_variants(query);
+    results.iter().take(CANDIDATES_CHECKED).find(|hit| {
+        let names = std::iter::once(hit.title.as_str()).chain(hit.original_title.as_deref());
+        let close = names.into_iter().any(|name| queries.iter().any(|q| similarity(&comparable(name), q) >= SIMILARITY_THRESHOLD));
+        let year_ok = match (year, hit.year) {
+            (Some(q), Some(h)) => (q - h).abs() <= YEAR_MARGIN,
+            _ => true,
+        };
+        close && year_ok
+    })
+}
+
+/// Título sin signos de puntuación ni espacios repetidos, para comparar «Thank You,
+/// Goodnight - The Bon Jovi Story» con «Thank You, Goodnight: The Bon Jovi Story».
+fn comparable(text: &str) -> String {
+    text.chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// El título tal cual y, si lleva un paréntesis, también sin él y lo de dentro.
+fn query_variants(query: &str) -> Vec<String> {
+    let mut variants = vec![comparable(query)];
+    if let (Some(open), Some(close)) = (query.find('('), query.rfind(')')) {
+        if open < close {
+            let outside = format!("{} {}", &query[..open], &query[close + 1..]);
+            let inside = &query[open + 1..close];
+            for variant in [comparable(&outside), comparable(inside)] {
+                if !variant.is_empty() && !variants.contains(&variant) {
+                    variants.push(variant);
+                }
+            }
         }
     }
-    Some(first)
+    variants
 }
 
 /// Similitud normalizada por distancia de Levenshtein, 0.0 a 1.0. Case-insensitive.
@@ -663,6 +695,8 @@ struct MovieSearchHit {
     id: i64,
     title: String,
     #[serde(default)]
+    original_title: Option<String>,
+    #[serde(default)]
     release_date: Option<String>,
     #[serde(default)]
     overview: Option<String>,
@@ -681,6 +715,7 @@ impl MovieSearchHit {
         TmdbSearchHit {
             id: self.id,
             title: self.title,
+            original_title: self.original_title,
             year: year_from_date(self.release_date.as_deref()),
             overview: self.overview,
             poster_path: self.poster_path,
@@ -702,6 +737,8 @@ struct TvSearchHit {
     id: i64,
     name: String,
     #[serde(default)]
+    original_name: Option<String>,
+    #[serde(default)]
     first_air_date: Option<String>,
     #[serde(default)]
     overview: Option<String>,
@@ -720,6 +757,7 @@ impl TvSearchHit {
         TmdbSearchHit {
             id: self.id,
             title: self.name,
+            original_title: self.original_name,
             year: year_from_date(self.first_air_date.as_deref()),
             overview: self.overview,
             poster_path: self.poster_path,
@@ -891,7 +929,7 @@ mod tests {
     }
 
     fn hit(title: &str, year: Option<i32>) -> TmdbSearchHit {
-        TmdbSearchHit { id: 1, title: title.to_string(), year, overview: None, poster_path: None, backdrop_path: None, rating: None, genre_ids: vec![] }
+        TmdbSearchHit { id: 1, title: title.to_string(), original_title: None, year, overview: None, poster_path: None, backdrop_path: None, rating: None, genre_ids: vec![] }
     }
 
     #[test]
@@ -922,6 +960,33 @@ mod tests {
     fn choose_best_match_skips_year_check_when_missing() {
         let results = vec![hit("Blade Runner 2049", None)];
         assert!(choose_best_match(&results, "Blade Runner 2049", Some(2017)).is_some());
+    }
+
+    #[test]
+    fn choose_best_match_looks_past_a_first_result_with_another_name() {
+        let mut other = hit("El acuerdo de paz", Some(2019));
+        other.id = 9;
+        let mut good = hit("El acuerdo", Some(2021));
+        good.id = 10;
+        assert_eq!(choose_best_match(&[other, good], "El acuerdo", None).map(|h| h.id), Some(10));
+    }
+
+    #[test]
+    fn choose_best_match_accepts_the_original_title_and_ignores_punctuation() {
+        let mut heist = hit("La casa de papel", Some(2017));
+        heist.original_title = Some("La casa de papel".into());
+        assert!(choose_best_match(&[heist], "La Casa de Papel", None).is_some());
+        let mut original = hit("Algo traducido", Some(2015));
+        original.original_title = Some("On My Block".into());
+        assert!(choose_best_match(&[original], "On My Block", None).is_some());
+        let bon_jovi = hit("Thank You, Goodnight: The Bon Jovi Story", Some(2024));
+        assert!(choose_best_match(&[bon_jovi], "Thank You, Goodnight - The Bon Jovi Story", None).is_some());
+    }
+
+    #[test]
+    fn choose_best_match_accepts_the_alternative_title_in_brackets() {
+        let family = hit("The Family", Some(2016));
+        assert!(choose_best_match(&[family], "La familia (The Family)", None).is_some());
     }
 
     #[test]
