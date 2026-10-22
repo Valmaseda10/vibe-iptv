@@ -62,6 +62,16 @@ private struct PlayRequest: Decodable {
     let current_source: Int?
     /// Aviso breve al empezar (p. ej. tras cambiar solo de fuente porque una no cargaba).
     let notice: String?
+    /// Listas que se pueden elegir arriba de la lista de canales (todas, favoritos y cada
+    /// categoría) y la que se ve. Vacío fuera del directo.
+    let categories: [ListOption]?
+    let current_category: String?
+}
+
+/// Una lista de canales del selector: `id` vacío para todas, `fav` o el id de categoría.
+private struct ListOption: Codable {
+    let id: String
+    let name: String
 }
 
 /// Aspecto de los subtítulos, igual que en el reproductor del PC (`subtitleStyle.ts`):
@@ -307,6 +317,14 @@ final class VibePlayerController: UIViewController {
     private let lockButton = UIButton(type: .system)
     private let listPanel = UIView()
     private let listTable = UITableView(frame: .zero, style: .plain)
+    /// Selector de categoría arriba de la lista de canales (como el de la pantalla Directo).
+    private let categoryButton = UIButton(type: .system)
+    private var categories: [ListOption] = []
+    private var currentCategory: String?
+    /// La lista se recoloca solo al cambiar de categoría, no cada vez que llega la guía.
+    private var listedCategory: String?
+    private var listTopToGuide: NSLayoutConstraint?
+    private var listTopToCategory: NSLayoutConstraint?
     private let volumeView = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 10, height: 10))
 
     private var tickTimer: Timer?
@@ -455,8 +473,51 @@ final class VibePlayerController: UIViewController {
         currentIndex = request.current_index
         nextItem = request.next
         if self.request == nil || request.update_only != true { self.request = request }
-        listButton.isHidden = items.count < 2
+        categories = request.categories ?? []
+        currentCategory = request.current_category
+        refreshCategoryButton()
+        listButton.isHidden = items.count < 2 && categories.isEmpty
         listTable.reloadData()
+        if currentCategory != listedCategory {
+            listedCategory = currentCategory
+            if !listPanel.isHidden, !items.isEmpty {
+                let row = currentIndex.flatMap { $0 < items.count ? $0 : nil } ?? 0
+                listTable.scrollToRow(at: IndexPath(row: row, section: 0), at: .middle, animated: false)
+            }
+        }
+    }
+
+    /// Título y menú del selector de categoría; escondido si no hay entre qué elegir.
+    private func refreshCategoryButton() {
+        let hidden = categories.isEmpty
+        categoryButton.isHidden = hidden
+        listTopToCategory?.isActive = !hidden
+        listTopToGuide?.isActive = hidden
+        guard !hidden else { return }
+        let selected = categories.first { $0.id == (currentCategory ?? "") } ?? categories[0]
+        var config = UIButton.Configuration.plain()
+        config.title = selected.name
+        config.image = UIImage(systemName: "chevron.down", withConfiguration: UIImage.SymbolConfiguration(pointSize: 12, weight: .semibold))
+        config.imagePlacement = .trailing
+        config.imagePadding = 6
+        config.baseForegroundColor = .white
+        config.titleLineBreakMode = .byTruncatingTail
+        config.titleTextAttributesTransformer = UIConfigurationTextAttributesTransformer { attributes in
+            var attributes = attributes
+            attributes.font = .systemFont(ofSize: 17, weight: .semibold)
+            return attributes
+        }
+        categoryButton.configuration = config
+        categoryButton.contentHorizontalAlignment = .leading
+        categoryButton.menu = UIMenu(children: categories.map { option in
+            UIAction(title: option.name, state: option.id == selected.id ? .on : .off) { [weak self] _ in
+                guard let self = self else { return }
+                self.currentCategory = option.id
+                self.refreshCategoryButton()
+                sendEvent(["type": "category", "id": option.id])
+            }
+        })
+        categoryButton.showsMenuAsPrimaryAction = true
     }
 
     private func play(_ item: Current, startSeconds: Double) {
@@ -1648,6 +1709,10 @@ final class VibePlayerController: UIViewController {
         listTable.delegate = self
         listTable.translatesAutoresizingMaskIntoConstraints = false
         listPanel.addSubview(listTable)
+        categoryButton.isHidden = true
+        categoryButton.accessibilityLabel = "Categoría"
+        categoryButton.translatesAutoresizingMaskIntoConstraints = false
+        listPanel.addSubview(categoryButton)
         controlsRoot.addSubview(listPanel)
         controlsRoot.addSubview(lockButton)
 
@@ -1689,7 +1754,10 @@ final class VibePlayerController: UIViewController {
             listPanel.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             listPanel.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             listPanel.widthAnchor.constraint(equalTo: root.widthAnchor, multiplier: 0.42),
-            listTable.topAnchor.constraint(equalTo: guide.topAnchor, constant: 8),
+            categoryButton.topAnchor.constraint(equalTo: guide.topAnchor, constant: 8),
+            categoryButton.leadingAnchor.constraint(equalTo: listPanel.leadingAnchor, constant: 8),
+            categoryButton.trailingAnchor.constraint(lessThanOrEqualTo: guide.trailingAnchor, constant: -8),
+            categoryButton.heightAnchor.constraint(equalToConstant: 44),
             listTable.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
             listTable.leadingAnchor.constraint(equalTo: listPanel.leadingAnchor),
             listTable.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
@@ -1698,6 +1766,9 @@ final class VibePlayerController: UIViewController {
             lockButton.widthAnchor.constraint(equalToConstant: 48),
             lockButton.heightAnchor.constraint(equalToConstant: 48),
         ])
+        listTopToGuide = listTable.topAnchor.constraint(equalTo: guide.topAnchor, constant: 8)
+        listTopToCategory = listTable.topAnchor.constraint(equalTo: categoryButton.bottomAnchor, constant: 4)
+        listTopToGuide?.isActive = true
         titles.setContentHuggingPriority(.defaultLow, for: .horizontal)
         titles.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // Los botones de la barra de arriba, a su tamaño: el título se queda con el resto

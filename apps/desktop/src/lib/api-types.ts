@@ -214,6 +214,12 @@ export type MoviesPage = { items: Array<MovieSummary>, next_cursor: number | nul
 next_cursor_key: string | null, };
 
 /**
+ * Una lista de canales del selector del reproductor: `id` vacío para todas, `fav` para
+ * los favoritos o el id de la categoría.
+ */
+export type NativeListOption = { id: string, name: string, };
+
+/**
  * Un canal o episodio que el reproductor puede abrir por su cuenta.
  */
 export type NativePlayItem = { id: number, title: string, 
@@ -295,12 +301,21 @@ current_source: number | null,
 /**
  * Aviso breve al empezar (p. ej. «La fuente 1 no responde: probando la 2»).
  */
-notice: string | null, };
+notice: string | null, 
+/**
+ * Listas que se pueden elegir arriba de la lista de canales del directo: todas,
+ * «★ Favoritos» y cada categoría. Vacío fuera del directo.
+ */
+categories: Array<NativeListOption>, 
+/**
+ * `id` de la lista que va en `items`.
+ */
+current_category: string | null, };
 
 /**
  * Lo que cuenta el reproductor nativo.
  */
-export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, } | { "type": "subtitle_style", style: SubtitleStyle, } | { "type": "source", index: number, };
+export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, } | { "type": "subtitle_style", style: SubtitleStyle, } | { "type": "source", index: number, } | { "type": "category", id: string, };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 

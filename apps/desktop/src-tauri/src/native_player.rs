@@ -76,6 +76,22 @@ pub struct NativePlayRequest {
     /// Aviso breve al empezar (p. ej. «La fuente 1 no responde: probando la 2»).
     #[serde(default)]
     pub notice: Option<String>,
+    /// Listas que se pueden elegir arriba de la lista de canales del directo: todas,
+    /// «★ Favoritos» y cada categoría. Vacío fuera del directo.
+    #[serde(default)]
+    pub categories: Vec<NativeListOption>,
+    /// `id` de la lista que va en `items`.
+    #[serde(default)]
+    pub current_category: Option<String>,
+}
+
+/// Una lista de canales del selector del reproductor: `id` vacío para todas, `fav` para
+/// los favoritos o el id de la categoría.
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct NativeListOption {
+    pub id: String,
+    pub name: String,
 }
 
 /// Aspecto de los subtítulos: igual en el reproductor del PC (`::cue`) y en el de iPhone y
@@ -143,8 +159,11 @@ pub enum NativePlayerEvent {
     /// El usuario cambió el aspecto de los subtítulos desde el reproductor: se guarda para
     /// el perfil, igual que si lo hubiera cambiado en Ajustes.
     SubtitleStyle { style: SubtitleStyle },
-    /// El usuario eligió otra fuente de la película (posición en `sources`).
+    /// El usuario eligió otra fuente (posición en `sources`): de la película, o del canal
+    /// en directo (otra calidad).
     Source { index: u32 },
+    /// El usuario eligió otra lista de canales arriba de la lista (`id` de `categories`).
+    Category { id: String },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -252,6 +271,8 @@ mod platform {
                     sources: vec![],
                     current_source: None,
                     notice: None,
+                    categories: vec![],
+                    current_category: None,
                 };
                 let _ = present(&request);
             });
@@ -345,12 +366,13 @@ mod tests {
             })
         );
         assert_eq!(parse_event(r#"{"type":"source","index":1}"#), Some(NativePlayerEvent::Source { index: 1 }));
+        assert_eq!(parse_event(r#"{"type":"category","id":"fav"}"#), Some(NativePlayerEvent::Category { id: "fav".into() }));
         assert_eq!(parse_event(r#"{"type":"otra_cosa"}"#), None);
     }
 
     #[test]
     fn outside_ios_the_command_says_it_is_not_available() {
-        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false, message: None, kind: "movie".into(), items: vec![], current_index: None, next: None, preferred_audio: None, preferred_subtitle: None, update_only: false, subtitle_style: None, sources: vec![], current_source: None, notice: None };
+        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false, message: None, kind: "movie".into(), items: vec![], current_index: None, next: None, preferred_audio: None, preferred_subtitle: None, update_only: false, subtitle_style: None, sources: vec![], current_source: None, notice: None, categories: vec![], current_category: None };
         assert!(matches!(native_player_play(request), Err(NativePlayerError::Unsupported)));
     }
 }

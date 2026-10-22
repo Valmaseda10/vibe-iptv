@@ -486,6 +486,7 @@ check "directo: «Ir al directo» vuelve al directo" 'for _ in $(seq 1 10); do [
 before=$(player_titles)
 open_list; shot lista-canales
 check "directo: la lista de canales se abre en el reproductor" 'wait_native "La 2" 5 && [ "$(player_field list)" = "True" ]'
+check "directo: la lista lleva selector de categoría" 'wait_native "Categoría" 5'
 tap_label "La 2" contiene 5; sleep 6
 after=$(player_titles)
 echo "  canal: «${before}» → «${after}»"

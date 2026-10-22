@@ -8,10 +8,13 @@ import { listen } from "@tauri-apps/api/event";
 import { apiGetOrNull, apiPost, errorMessage, useApiBase } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type {
+  CategorySummary,
+  ChannelSummary,
   ChannelsPage,
   EpgNowNextResponse,
   EpisodeSummary,
   MovieDetailResponse,
+  NativeListOption,
   NativePlayItem,
   NativePlayerEvent,
   NativePlayRequest,
@@ -20,8 +23,13 @@ import type {
   StreamFailure,
 } from "../../lib/api-types";
 import { findNextEpisode } from "./episodes";
+import { feedLabels } from "../../lib/channels";
 
 type Kind = "channel" | "movie" | "episode";
+
+/** Lista de canales del reproductor: una categoría, los favoritos o todas. */
+type ListScope = { categoryId?: string; favorites?: boolean };
+const FAVORITES_SCOPE = "fav";
 
 const RESUME_MIN_SECONDS = 5;
 /** Si el título no llega en este tiempo (núcleo lento, ficha sin datos), se reproduce igual. */
@@ -91,15 +99,37 @@ export function NativePlayerScreen() {
   // Los canales de alrededor del que se ve (nombre, lista y zapping), no la primera página:
   // en listas de miles el canal podía no estar en ella. La ventana da la vuelta por los
   // extremos y se recentra en cada cambio de canal; mientras llega la nueva, sigue la vieja.
+  // Lista elegida en el selector de categoría del reproductor; mientras no se toca, la
+  // de la ruta (con la que se abrió).
+  const [listScope, setListScope] = useState<ListScope | null>(null);
+  const scope: ListScope = listScope ?? { categoryId: search.categoryId, favorites: search.favorites };
+  // Otra fuente del canal puede no estar en la lista (otra categoría): la lista y el
+  // zapping siguen anclados al canal de la lista, como en el PC.
+  const [feedAnchor, setFeedAnchor] = useState<{ feed: number; anchor: number } | null>(null);
+  const listChannelId = kind === "channel" && feedAnchor?.feed === itemId ? feedAnchor.anchor : itemId;
   const channelsQuery = useQuery({
-    queryKey: ["player-channels", profileId, search.categoryId, search.favorites, itemId],
+    queryKey: ["player-channels", profileId, scope.categoryId, scope.favorites, listChannelId],
     queryFn: () =>
       apiGetOrNull<ChannelsPage>(
-        `/api/live/channels?profile_id=${profileId}&limit=100&around=${itemId}${search.favorites ? "&favorites=1" : search.categoryId ? `&category_id=${search.categoryId}` : ""}`,
+        `/api/live/channels?profile_id=${profileId}&limit=100&around=${listChannelId}${scope.favorites ? "&favorites=1" : scope.categoryId ? `&category_id=${scope.categoryId}` : ""}`,
       ),
     placeholderData: keepPreviousData,
     enabled: kind === "channel" && profileId !== null,
   });
+  const categoriesQuery = useQuery({
+    queryKey: ["live-categories", profileId],
+    queryFn: () => apiGetOrNull<CategorySummary[]>(`/api/live/categories?profile_id=${profileId}`),
+    enabled: kind === "channel" && profileId !== null,
+    staleTime: 5 * 60_000,
+  });
+  // Las fuentes del canal (sus otras calidades), para el menú «Más» → Fuente.
+  const variantsQuery = useQuery({
+    queryKey: ["player-channel-variants", listChannelId, profileId],
+    queryFn: () => apiGetOrNull<ChannelSummary[]>(`/api/live/channels/${listChannelId}/variants?profile_id=${profileId}`),
+    enabled: kind === "channel" && profileId !== null,
+    staleTime: 5 * 60_000,
+  });
+  const channelFeeds = useMemo(() => (kind === "channel" ? (variantsQuery.data ?? []) : []), [kind, variantsQuery.data]);
   const channelIds = useMemo(() => (channelsQuery.data?.items ?? []).map((c) => c.id).join(","), [channelsQuery.data]);
   const epgNowQuery = useQuery({
     queryKey: ["player-epg-now-list", channelIds],
@@ -123,7 +153,7 @@ export function NativePlayerScreen() {
   );
   const currentEpisode = episodes.find((e) => e.id === itemId);
   const nextEpisode = useMemo(() => (currentEpisode ? findNextEpisode(episodes, currentEpisode) : undefined), [episodes, currentEpisode]);
-  const currentChannel = channelsQuery.data?.items.find((c) => c.id === itemId);
+  const currentChannel = channelsQuery.data?.items.find((c) => c.id === listChannelId) ?? channelFeeds.find((c) => c.id === itemId);
 
   const title =
     kind === "movie" ? movieQuery.data?.clean_title : kind === "episode" ? seriesQuery.data?.clean_title : currentChannel?.display_name;
@@ -190,7 +220,20 @@ export function NativePlayerScreen() {
     }
     return [];
   }, [base, liveBuffer, kind, channelsQuery.data, nowByChannel, episodes, seriesQuery.data, channelPath, episodePath]);
-  const currentIndex = items.findIndex((item) => item.id === itemId);
+  const currentIndex = items.findIndex((item) => item.id === listChannelId);
+  const listOptions: NativeListOption[] = useMemo(
+    () =>
+      liveBuffer
+        ? [
+            { id: "", name: "Todas las categorías" },
+            { id: FAVORITES_SCOPE, name: "★ Favoritos" },
+            ...(categoriesQuery.data ?? []).map((c) => ({ id: String(c.id), name: c.name })),
+          ]
+        : [],
+    [liveBuffer, categoriesQuery.data],
+  );
+  const scopeId = scope.favorites ? FAVORITES_SCOPE : (scope.categoryId ?? "");
+  const feedIndex = channelFeeds.findIndex((c) => c.id === itemId);
   const next: NativePlayItem | null =
     kind === "episode" && nextEpisode && base
       ? { id: nextEpisode.id, title: seriesQuery.data?.clean_title ?? "", subtitle: episodeLabel(nextEpisode), number: null, url: `${base}${episodePath(nextEpisode.id)}` }
@@ -250,12 +293,15 @@ export function NativePlayerScreen() {
       preferred_audio: tracks.audio,
       preferred_subtitle: tracks.subtitle,
       subtitle_style: readSubtitleStyle(profileId),
-      sources: movieSources.length > 1 ? movieSources.map(sourceLabel) : [],
-      current_source: movieSources.length > 1 ? activeSourceIndex : null,
+      sources:
+        movieSources.length > 1 ? movieSources.map(sourceLabel) : liveBuffer && channelFeeds.length > 1 ? feedLabels(channelFeeds) : [],
+      current_source: movieSources.length > 1 ? activeSourceIndex : liveBuffer && channelFeeds.length > 1 && feedIndex >= 0 ? feedIndex : null,
       notice,
       update_only: false,
+      categories: listOptions,
+      current_category: liveBuffer ? scopeId : null,
     };
-  }, [base, startSeconds, profileId, streamPath, title, subtitle, kind, isCatchup, liveBuffer, items, currentIndex, next, movieSources, activeSourceIndex, notice]);
+  }, [base, startSeconds, profileId, streamPath, title, subtitle, kind, isCatchup, liveBuffer, items, currentIndex, next, movieSources, activeSourceIndex, notice, channelFeeds, feedIndex, listOptions, scopeId]);
 
   const play = useCallback(() => {
     const request = buildRequest();
@@ -274,7 +320,7 @@ export function NativePlayerScreen() {
 
   // La lista o el siguiente episodio llegan (o cambian) con el reproductor ya abierto: se
   // le pasan sin recargar el vídeo.
-  const itemsKey = `${items.map((i) => `${i.id}:${i.subtitle ?? ""}`).join("|")}#${currentIndex}#${next?.id ?? ""}`;
+  const itemsKey = `${items.map((i) => `${i.id}:${i.subtitle ?? ""}`).join("|")}#${currentIndex}#${next?.id ?? ""}#${scopeId}#${listOptions.length}#${channelFeeds.map((c) => c.id).join(",")}`;
   useEffect(() => {
     if (closedRef.current || !lastRequestRef.current || playedPathRef.current !== streamPath) return;
     const request = buildRequest();
@@ -290,9 +336,20 @@ export function NativePlayerScreen() {
   }, [kind, id, search.seriesId, isCatchup, navigate]);
 
   // Los eventos llegan a un solo oyente; lo que cambia de un render a otro se lee de aquí.
-  const latestRef = useRef({ kind, itemId, profileId, channels: channelsQuery.data?.items, search, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource });
+  // Otra calidad del mismo canal, en el sitio: la lista y el zapping no cambian.
+  const switchChannelFeed = useCallback(
+    (index: number) => {
+      const target = channelFeeds[index];
+      if (!target || target.id === itemId) return;
+      setFeedAnchor({ feed: target.id, anchor: listChannelId });
+      navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(target.id) }, search, replace: true });
+    },
+    [channelFeeds, itemId, listChannelId, navigate, search],
+  );
+
+  const latestRef = useRef({ kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed });
   useEffect(() => {
-    latestRef.current = { kind, itemId, profileId, channels: channelsQuery.data?.items, search, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource };
+    latestRef.current = { kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed };
   });
 
   useEffect(() => {
@@ -319,7 +376,11 @@ export function NativePlayerScreen() {
           saveProgress(payload.position_s, payload.duration_s, payload.id);
           break;
         case "source":
-          latest.switchSource(payload.index, false);
+          if (latest.kind === "channel") latest.switchChannelFeed(payload.index);
+          else latest.switchSource(payload.index, false);
+          break;
+        case "category":
+          setListScope(payload.id === FAVORITES_SCOPE ? { favorites: true } : payload.id ? { categoryId: payload.id } : {});
           break;
         case "closed": {
           const position = payload.ended && payload.duration_s ? payload.duration_s : payload.position_s;
@@ -343,7 +404,9 @@ export function NativePlayerScreen() {
           // se pone al día (ruta, recientes, progreso) sin pedirle que vuelva a empezar.
           if (latest.kind === "channel") {
             playedPathRef.current = latest.channelPath(payload.id);
-            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(payload.id) }, search: { categoryId: latest.search.categoryId, favorites: latest.search.favorites } });
+            // La lista elegida en el selector pasa a ser la del zapping.
+            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(payload.id) }, search: { categoryId: latest.scope.categoryId, favorites: latest.scope.favorites } });
+            setListScope(null);
           } else if (latest.kind === "episode") {
             playedPathRef.current = latest.episodePath(payload.id);
             navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(payload.id) }, search: { seriesId: latest.search.seriesId } });
@@ -358,11 +421,13 @@ export function NativePlayerScreen() {
           break;
         case "zap": {
           const list = latest.channels ?? [];
-          const index = list.findIndex((c) => c.id === latest.itemId);
-          // Tras el último canal viene el primero (y al revés), como en TiviMate.
-          const target = index === -1 || list.length < 2 ? undefined : list[(((index + payload.direction) % list.length) + list.length) % list.length];
+          const index = list.findIndex((c) => c.id === latest.listChannelId);
+          // Tras el último canal viene el primero (y al revés), como en TiviMate. Si el que
+          // se ve no está en la lista elegida, se empieza por el primero.
+          const target = list.length === 0 ? undefined : index === -1 ? list[0] : list.length < 2 ? undefined : list[(((index + payload.direction) % list.length) + list.length) % list.length];
           if (target) {
-            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(target.id) }, search: { categoryId: latest.search.categoryId, favorites: latest.search.favorites } });
+            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(target.id) }, search: { categoryId: latest.scope.categoryId, favorites: latest.scope.favorites } });
+            setListScope(null);
           }
           break;
         }
