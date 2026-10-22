@@ -236,6 +236,7 @@ mod platform {
                     preferred_audio: None,
                     preferred_subtitle: None,
                     update_only: false,
+                    subtitle_style: None,
                 };
                 let _ = present(&request);
             });
