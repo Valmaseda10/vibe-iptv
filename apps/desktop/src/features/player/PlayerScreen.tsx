@@ -16,7 +16,7 @@ import type {
   SeriesDetailResponse,
   SubtitleCuesResponse,
 } from "../../lib/api-types";
-import { ArrowDownIcon, ArrowUpIcon, FullscreenIcon, MuteIcon, PauseIcon, PlayIcon, VolumeIcon } from "../../components/icons";
+import { ArrowDownIcon, ArrowUpIcon, BackIcon, FullscreenIcon, MuteIcon, PauseIcon, PictureInPictureIcon, PlayIcon, VolumeIcon } from "../../components/icons";
 import { useLiveTimeshift } from "./useLiveTimeshift";
 import { SUBTITLE_SIZES, subtitleCueCss, useSubtitleStyle } from "../../lib/subtitleStyle";
 import { findNextEpisode } from "./episodes";
@@ -1033,7 +1033,7 @@ export function PlayerScreen() {
           />
         ) : null}
 
-        <div className="flex items-center gap-4 text-white">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-2 text-white">
           <button type="button" onClick={togglePlay} className="outline-none" aria-label={playing ? "Pausar" : "Reproducir"}>
             {playing ? <PauseIcon className="h-7 w-7" /> : <PlayIcon className="h-7 w-7" />}
           </button>
@@ -1097,13 +1097,13 @@ export function PlayerScreen() {
               setVolume(Number(e.target.value));
               setMuted(false);
             }}
-            className="w-24 accent-red-600"
+            className="w-20 accent-red-600 xl:w-24"
             aria-label="Volumen"
           />
 
           {kind !== "channel" && (tierQuery.data?.audio_tracks.length ?? 0) > 1 && (
             <label className="flex items-center gap-1.5 text-xs text-neutral-400">
-              Audio
+              <span className="hidden 2xl:inline">Audio</span>
               <select
                 value={search.audioTrack ?? 0}
                 onChange={(e) => setAudioTrack(Number(e.target.value))}
@@ -1121,7 +1121,7 @@ export function PlayerScreen() {
 
           {kind !== "channel" && (tierQuery.data?.subtitle_tracks.length ?? 0) > 0 && (
             <label className="flex items-center gap-1.5 text-xs text-neutral-400">
-              Subtítulos
+              <span className="hidden 2xl:inline">Subtítulos</span>
               <select
                 value={subtitleTrack ?? -1}
                 onChange={(e) => chooseSubtitles(Number(e.target.value) < 0 ? null : Number(e.target.value))}
@@ -1140,7 +1140,7 @@ export function PlayerScreen() {
 
           {subtitleTrack != null && (
             <label className="flex items-center gap-1.5 text-xs text-neutral-400">
-              Tamaño
+              <span className="hidden 2xl:inline">Tamaño</span>
               <select
                 value={subtitleStyle.size}
                 onChange={(e) => setSubtitleStyle({ ...subtitleStyle, size: e.target.value })}
@@ -1159,11 +1159,11 @@ export function PlayerScreen() {
 
           {movieSources.length > 1 && (
             <label className="flex items-center gap-1.5 text-xs text-neutral-400">
-              Fuente
+              <span className="hidden 2xl:inline">Fuente</span>
               <select
                 value={activeSourceIndex}
                 onChange={(e) => switchSource(Number(e.target.value), false)}
-                className="max-w-[12rem] rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-2 focus:ring-white/60"
+                className="max-w-[9rem] truncate rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-2 focus:ring-white/60 2xl:max-w-[12rem]"
                 aria-label="Fuente"
               >
                 {movieSources.map((source, index) => (
@@ -1177,7 +1177,7 @@ export function PlayerScreen() {
 
           {kind !== "channel" && (
             <label className="flex items-center gap-1.5 text-xs text-neutral-400">
-              Velocidad
+              <span className="hidden 2xl:inline">Velocidad</span>
               <select
                 value={playbackRate}
                 onChange={(e) => setPlaybackRate(Number(e.target.value))}
@@ -1199,15 +1199,24 @@ export function PlayerScreen() {
               type="button"
               onClick={togglePictureInPicture}
               aria-pressed={inPictureInPicture}
-              className="rounded px-2 py-1 text-xs text-neutral-300 outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/60"
+              className="flex items-center gap-1.5 rounded px-2 py-1 text-xs text-neutral-300 outline-none hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/60"
               title="Imagen en imagen (P)"
+              aria-label={inPictureInPicture ? "Salir de imagen en imagen" : "Imagen en imagen"}
             >
-              {inPictureInPicture ? "Salir de imagen en imagen" : "Imagen en imagen"}
+              <PictureInPictureIcon className="h-5 w-5" />
+              <span className="hidden 2xl:inline">{inPictureInPicture ? "Salir de imagen en imagen" : "Imagen en imagen"}</span>
             </button>
           )}
 
-          <button type="button" onClick={goBack} className="ml-auto text-sm text-neutral-300 outline-none hover:text-white">
-            ← Volver (Esc)
+          <button
+            type="button"
+            onClick={goBack}
+            className="ml-auto flex items-center gap-1.5 text-sm text-neutral-300 outline-none hover:text-white"
+            aria-label="Volver (Esc)"
+            title="Volver (Esc)"
+          >
+            <BackIcon className="h-5 w-5" />
+            <span className="hidden xl:inline">Volver (Esc)</span>
           </button>
           <button type="button" onClick={toggleFullscreen} className="outline-none" aria-label="Pantalla completa">
             <FullscreenIcon className="h-5 w-5" />

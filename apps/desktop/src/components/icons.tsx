@@ -129,6 +129,23 @@ export function FullscreenIcon(props: SVGProps<SVGSVGElement>) {
   );
 }
 
+export function PictureInPictureIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <rect x="3" y="5" width="18" height="14" rx="2" />
+      <rect x="12" y="12" width="7" height="5" rx="1" />
+    </Icon>
+  );
+}
+
+export function BackIcon(props: SVGProps<SVGSVGElement>) {
+  return (
+    <Icon {...props}>
+      <path d="M19 12H5M12 19l-7-7 7-7" />
+    </Icon>
+  );
+}
+
 export function ArrowUpIcon(props: SVGProps<SVGSVGElement>) {
   return (
     <Icon {...props}>
