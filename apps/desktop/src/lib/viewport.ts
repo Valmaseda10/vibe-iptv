@@ -15,14 +15,16 @@ export function useIsDesk(): boolean {
   return desk;
 }
 
-/** Píxeles que tapa ahora el teclado en pantalla (iOS, F15). En el WebView, lo fijo abajo
- * se queda detrás del teclado: quien quiera ir pegado encima de él suma este valor. */
-export function useKeyboardInset(): number {
-  const [inset, setInset] = useState(0);
+/** Dónde acaba ahora la zona visible de la pantalla (encima del teclado, si está abierto),
+ * en las mismas coordenadas que `position: fixed; top`. iOS (F15): calcularlo como «lo que
+ * tapa el teclado desde abajo» fallaba cuando iOS reservaba además las zonas de la hora y
+ * del indicador de inicio, y el campo de Buscar quedaba flotando lejos del teclado. */
+export function useVisibleBottom(): number {
+  const [bottom, setBottom] = useState(() => window.visualViewport ? window.visualViewport.offsetTop + window.visualViewport.height : window.innerHeight);
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!viewport) return;
-    const update = () => setInset(Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop)));
+    const update = () => setBottom(Math.round(viewport.offsetTop + viewport.height));
     viewport.addEventListener("resize", update);
     viewport.addEventListener("scroll", update);
     update();
@@ -31,5 +33,5 @@ export function useKeyboardInset(): number {
       viewport.removeEventListener("scroll", update);
     };
   }, []);
-  return inset;
+  return bottom;
 }

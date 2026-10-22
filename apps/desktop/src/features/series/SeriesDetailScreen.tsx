@@ -73,6 +73,7 @@ export function SeriesDetailScreen() {
   // Mismo criterio que la ficha de película: sin fondo de TMDB, el póster ocupa su lugar.
   const poster = backdrop ? null : imagePath(base, data.poster_path, "w500");
   const episodesOfSeason = seasons.find((s) => s.season === activeSeason)?.episodes ?? [];
+  const seasonWatched = episodesOfSeason.length > 0 && episodesOfSeason.every((e) => e.watched);
   // "Ver/Continuar T·E" (como Netflix): el núcleo decide qué episodio toca.
   const upNext = data.episodes.find((e) => e.id === data.up_next_episode_id);
 
@@ -119,6 +120,20 @@ export function SeriesDetailScreen() {
               <HeartIcon filled={isFavorite("series", data.id)} className={`h-6 w-6 sm:h-5 sm:w-5 ${isFavorite("series", data.id) ? "text-red-500" : ""}`} />
               {isFavorite("series", data.id) ? "En mi lista" : "Mi lista"}
             </button>
+            {/* Junto a «Mi lista» (como «Marcar vista» en la ficha de película): al lado de las
+                temporadas les quitaba sitio y salían cortadas en el iPhone. */}
+            {activeSeason !== null && (
+              <button
+                type="button"
+                onClick={() => seasonWatchedMutation.mutate({ season: activeSeason, watched: !seasonWatched })}
+                aria-pressed={seasonWatched}
+                aria-label={seasonWatched ? "Marcar temporada como no vista" : "Marcar temporada como vista"}
+                className={DETAIL_ACTION}
+              >
+                <span className="text-xl leading-none sm:text-base">{seasonWatched ? "✓" : "○"}</span>
+                {seasonWatched ? `T${activeSeason} vista` : `Marcar T${activeSeason}`}
+              </button>
+            )}
             {data.trailer_key && (
               <button type="button" onClick={() => setTrailerOpen(true)} className={DETAIL_ACTION}>
                 <span className="text-xl leading-none sm:text-base">🎬</span>
@@ -138,7 +153,7 @@ export function SeriesDetailScreen() {
           </p>
         ) : (
           <div className="pt-6">
-            <div className="mb-4 flex items-center justify-between gap-4">
+            <div className="mb-4">
               <div className="flex gap-2 overflow-x-auto" role="tablist" aria-label="Temporadas">
                 {seasons.map((s) => (
                   <button
@@ -154,17 +169,6 @@ export function SeriesDetailScreen() {
                   </button>
                 ))}
               </div>
-              {activeSeason !== null && (
-                <button
-                  type="button"
-                  onClick={() =>
-                    seasonWatchedMutation.mutate({ season: activeSeason, watched: !episodesOfSeason.every((e) => e.watched) })
-                  }
-                  className="shrink-0 whitespace-nowrap text-sm text-neutral-400 outline-none hover:text-neutral-200"
-                >
-                  {episodesOfSeason.every((e) => e.watched) ? "Marcar temporada como no vista" : "Marcar temporada como vista"}
-                </button>
-              )}
             </div>
 
             <ul className="flex flex-col gap-3">

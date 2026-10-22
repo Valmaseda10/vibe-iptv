@@ -7,7 +7,7 @@ import type { SearchResults } from "../../lib/api-types";
 import { LargeTitle } from "../../components/LargeTitle";
 import { createPortal } from "react-dom";
 import { IS_IOS } from "../../lib/platform";
-import { useIsDesk, useKeyboardInset } from "../../lib/viewport";
+import { useIsDesk, useVisibleBottom } from "../../lib/viewport";
 import { SearchIcon } from "../../components/icons";
 
 /** Buscador instantáneo con rebote de 150 ms sobre `GET /api/search` (FTS5). Portadas en
@@ -22,7 +22,9 @@ export function SearchScreen() {
   // sube con el teclado al escribir. En el iPad y el PC sigue arriba.
   const desk = useIsDesk();
   const bottomField = IS_IOS && !desk;
-  const keyboard = useKeyboardInset();
+  const visibleBottom = useVisibleBottom();
+  // Escribiendo, el campo va justo encima del teclado; si no, encima de la barra de pestañas.
+  const [typing, setTyping] = useState(false);
 
   useEffect(() => {
     const id = setTimeout(() => setDebounced(input), 150);
@@ -58,8 +60,8 @@ export function SearchScreen() {
       {bottomField ? (
         createPortal(
         <div
-          className="glass fixed inset-x-4 z-40 mx-auto flex h-12 max-w-md items-center gap-2 rounded-full pl-4 pr-1.5 transition-[bottom] duration-200"
-          style={{ bottom: keyboard > 0 ? `${keyboard + 8}px` : "calc(max(10px, env(safe-area-inset-bottom) - 12px) + 72px)" }}
+          className="glass fixed inset-x-4 z-40 mx-auto flex h-12 max-w-md items-center gap-2 rounded-full pl-4 pr-1.5"
+          style={typing ? { top: `${visibleBottom - 48 - 8}px` } : { bottom: "calc(max(10px, env(safe-area-inset-bottom) - 12px) + 72px)" }}
         >
           <SearchIcon className="h-5 w-5 shrink-0 text-white/60" />
           <input
@@ -67,6 +69,8 @@ export function SearchScreen() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={onInputKeyDown}
+            onFocus={() => setTyping(true)}
+            onBlur={() => setTyping(false)}
             placeholder="Películas, series y canales"
             aria-label="Campo de búsqueda"
             className="min-w-0 flex-1 bg-transparent text-[17px] text-white outline-none placeholder:text-white/50 [&::-webkit-search-cancel-button]:hidden"
@@ -75,6 +79,9 @@ export function SearchScreen() {
             <button
               type="button"
               onClick={() => setInput("")}
+              // Sin quitar el foco al campo: si no, se cerraba el teclado, el campo bajaba y
+              // el toque se perdía.
+              onPointerDown={(e) => e.preventDefault()}
               aria-label="Borrar búsqueda"
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white/70 outline-none active:bg-white/10"
             >

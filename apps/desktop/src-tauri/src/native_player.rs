@@ -174,6 +174,7 @@ mod platform {
         fn vibe_network_start();
         fn vibe_network_is_metered() -> bool;
         fn vibe_reduce_transparency() -> bool;
+        fn vibe_webview_full_screen();
     }
 
     pub fn reduce_transparency() -> bool {
@@ -191,6 +192,8 @@ mod platform {
         let _ = APP.set(app);
         // SAFETY: función de Swift sin argumentos; solo arranca un `NWPathMonitor`.
         unsafe { vibe_network_start() };
+        // SAFETY: función de Swift sin argumentos; ajusta la vista web en el hilo principal.
+        unsafe { vibe_webview_full_screen() };
         // Prueba automática del reproductor en el simulador (`.github/workflows/ios.yml`):
         // con `VIBE_QA_PLAYER_URL`, abre el reproductor con ese vídeo nada más arrancar.
         // Solo en compilaciones de depuración: la app que se instala nunca lo mira.

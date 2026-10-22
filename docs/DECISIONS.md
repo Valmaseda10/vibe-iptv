@@ -1719,6 +1719,13 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
     cerraba. Ahora un corte a mitad nunca la da por vista: se reabre en el punto (o en el
     del salto) hasta cinco veces y, si no puede, avisa y guarda por dónde iba. Se recuerda
     la última duración conocida.
+  - *Visto por el usuario en su iPhone (compilación ios-36):* a veces, al abrir la app,
+    la pantalla quedaba 96 puntos más corta (barra de pestañas a media altura y franja
+    vacía abajo): iOS reservaba a la vista web las zonas de la hora y del indicador, que ya
+    gestiona la interfaz. Ahora la vista web no reserva nada (`vibe_webview_full_screen`).
+    En Buscar, el campo quedaba lejos del teclado: se ancla al borde de la zona visible
+    (`useVisibleBottom`). En la ficha de serie, «Marcar temporada» pasa junto a «Mi lista»
+    para que las temporadas no salgan cortadas.
   - *Zapping:* después del último canal viene el primero (y al revés), como en TiviMate.
   - *Directo:* sin la barra de cristal vacía abajo (no hay tiempos que enseñar).
 
