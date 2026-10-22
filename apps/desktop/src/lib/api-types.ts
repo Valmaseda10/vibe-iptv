@@ -128,15 +128,6 @@ trending_movies: Array<SimilarTitleSummary>, trending_series: Array<SimilarTitle
  */
 genre_rows: Array<GenreRowResponse>, };
 
-export type LanStatusResponse = { enabled: boolean, devices: Array<PairedDeviceItem>, 
-/**
- * IP de este PC en la red local, para enseñarla junto al código de emparejamiento
- * (el otro dispositivo la necesita para saber a quién conectarse; no hay ningún
- * mecanismo de descubrimiento tipo mDNS todavía). `None` si no se pudo determinar
- * (sin red, por ejemplo) — no es un error, solo no hay nada que enseñar.
- */
-local_address: string | null, };
-
 export type M3uValidation = { channel_count: number, movie_count: number, series_count: number, 
 /**
  * Presente si la URL es en realidad un `get.php` de Xtream (ver
@@ -266,25 +257,6 @@ update_only: boolean, };
 export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
-
-export type PairResponse = { device_id: number, 
-/**
- * Solo se manda esta vez: no se guarda en claro en ningún sitio (regla R5, mismo
- * criterio que una credencial de proveedor).
- */
-token: string, };
-
-export type PairedDeviceItem = { id: number, device_name: string, created_at: number, last_seen_at: number | null, revoked: boolean, };
-
-export type PairingStartResponse = { code: string, 
-/**
- * Segundos desde ahora hasta que caduca — más cómodo para el frontend que mandar
- * un instante que no significa nada fuera de este proceso (`std::time::Instant` no
- * es una fecha de calendario). `u64` -> "number", no "bigint": un TTL de unos
- * minutos cabe sobrado en `Number.MAX_SAFE_INTEGER` (igual que los `i64` de esta
- * API, ver `commands::ProviderSummary`).
- */
-expires_in_s: number, };
 
 export type PlaybackProgressInput = { profile_id: number, item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
 

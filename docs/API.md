@@ -15,9 +15,9 @@ la pantalla de cuenta del escritorio.
 
 ## Convenciones
 
-- Todas las rutas son relativas a `http://<host>:<puerto>` — el puerto es efímero
-  (regla R2), se pide al PC durante el emparejamiento (ver más abajo) o, para la propia
-  app de escritorio, con el comando Tauri `get_server_port`.
+- Todas las rutas son relativas a `http://127.0.0.1:<puerto>` — el puerto es efímero
+  (regla R2) y la interfaz lo pide con el comando Tauri `get_server_port`. Solo la usa la
+  propia app: nada escucha en la red.
 - JSON en request y response salvo `GET /stream/*` (vídeo) e `GET /img/*` (imágenes).
 - IDs son siempre el id interno de VIBE IPTV (autoincremental de SQLite), nunca el id
   del proveedor. El cliente no necesita saber nada del proveedor: Xtream, M3U, todo se
@@ -26,10 +26,6 @@ la pantalla de cuenta del escritorio.
   respuesta trae `next_cursor` — `null` cuando ya no hay más páginas.
 - Ningún endpoint de catálogo devuelve nunca una URL de proveedor (regla R5): la
   reproducción siempre pasa por `/stream/*`, que resuelve la URL real internamente.
-- **Local vs LAN**: todo lo de aquí funciona igual en `127.0.0.1` sin autenticación
-  ninguna. Desde fuera de loopback, hace falta que el modo LAN esté activado y llevar
-  `Authorization: Bearer <token>` — ver la sección **Modo LAN** al final; el resto del
-  documento no repite esto en cada endpoint.
 
 ---
 
@@ -257,65 +253,3 @@ El control parental es por perfil (sustituyó al PIN global de F8).
   cacheadas en disco.
 
 ---
-
-## Modo LAN (F10)
-
-Todo lo de arriba, más lo siguiente, sirve exactamente igual sea local o remoto — la
-diferencia solo la impone el middleware de acceso (ver `server::lan`), no rutas
-distintas.
-
-### `GET /api/lan/status`
-`{ enabled: bool, devices: [{ id, device_name, created_at, last_seen_at, revoked }],
-local_address: string | null }`. `local_address` es la IP de este PC en la red local
-(mejor esfuerzo; `null` si no se pudo determinar) — no hay descubrimiento automático
-todavía, el cliente necesita saber a qué IP conectarse de antemano.
-
-### `POST /api/lan/enable` / `POST /api/lan/disable`
-Sin cuerpo. `204`. Actúa al instante, sin reiniciar la app.
-
-### `POST /api/lan/pairing/start`
-Lo llama el PC (el dispositivo que ya tiene la app) para generar un código de
-emparejamiento. Sin cuerpo. `{ code: "123456", expires_in_s: 300 }`. Un código nuevo
-invalida cualquiera pendiente; una tecleada equivocada en el otro dispositivo no lo
-quema (se puede reintentar hasta que caduque).
-
-### `POST /api/lan/pair`
-Lo llama el dispositivo **nuevo**, sin token todavía — así consigue el primero. Único
-endpoint que no exige `Authorization` aunque sí exige que el modo LAN esté activado.
-
-Cuerpo: `{ code: string, device_name: string }`. Respuesta: `{ device_id, token }`.
-
-**El `token` se manda una sola vez.** No hay forma de recuperarlo después (solo se
-guarda su hash) — si el cliente lo pierde, hay que revocar el dispositivo y emparejarlo
-de nuevo. Guárdalo de forma segura en el dispositivo (no en texto plano en un fichero
-de configuración legible por cualquier app, si la plataforma lo permite).
-
-Errores: `403` si el modo LAN está desactivado; `401` si el código no coincide o
-caducó.
-
-### `POST /api/lan/devices/:id/revoke`
-Sin cuerpo. `204`. Revoca el token de ese dispositivo con efecto inmediato (la siguiente
-petición suya devuelve `401`). No hay "des-revocar": hay que volver a emparejarlo.
-
-### Autenticación del resto de rutas
-
-Toda petición que llegue por una interfaz que no sea loopback:
-
-1. Si el modo LAN está desactivado → `403`.
-2. Si no lleva `Authorization: Bearer <token>` (y no es `POST /api/lan/pair`) → `401`.
-3. Si el token no corresponde a ningún dispositivo activo (no emparejado, o revocado) →
-   `401`.
-4. En cualquier otro caso, la petición sigue exactamente igual que si viniera de
-   loopback — el mismo `StreamGuard`, la misma base de datos, el mismo control parental.
-
-No hay "roles": todo dispositivo emparejado ve todo lo que ve la propia app de
-escritorio.
-
-### StreamGuard y varios dispositivos
-
-No existe un StreamGuard "por dispositivo": es el mismo objeto de este proceso para
-absolutamente todo el mundo, local o LAN (ver `server::lan`, comentario de cabecera).
-Si un dispositivo LAN pide directo mientras la propia app de escritorio está
-reproduciendo algo, gana el que pide más tarde — exactamente la misma regla que ya
-regía entre pestañas o zapping rápido dentro de la propia app (regla R1: una sola
-conexión de stream activa, sea cual sea el origen de la petición).

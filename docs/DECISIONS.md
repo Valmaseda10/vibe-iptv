@@ -1729,7 +1729,10 @@ en `0.0.0.0` cuando el modo LAN está activo, o quitar el modo.
   Kotlin contra la API LAN del PC. Sigue pospuesta hasta tener un Fire TV para probar.
 - **El modo LAN de F10 se quita.** No funciona (el servidor solo escucha en
   `127.0.0.1`) y ya no lo necesita ningún cliente: menos código y nada abierto en la red.
-  Se hará con su propio plan después de cerrar F15.
+  Hecho el 2026-10-22 (rama `despues-del-ipa`): fuera `server::lan`, `util::pairing`, las
+  rutas `/api/lan/*` y su middleware, la sección de Ajustes y la tabla `paired_devices`
+  (migración `020_quitar_modo_lan.sql`; `app_settings` se queda para la nube). Regla R2
+  de `CLAUDE.md` actualizada con el usuario: nada escucha en la red.
 - **Lo siguiente tras F15: probar con el proveedor real del usuario**, en el PC y en el
   iPhone, en una sesión guiada y con cuidado de no provocar el bloqueo del panel. Todo lo
   de F15 se ha probado con el proveedor falso.

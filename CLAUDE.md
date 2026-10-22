@@ -36,9 +36,10 @@ supera, el proveedor corta el stream o banea la cuenta temporalmente.
 
 ### R2. El usuario no tiene servidor
 No hay VPS, ni NAS, ni Raspberry Pi. **La app de escritorio es el servidor.** Contiene
-la base de datos, el sincronizador y un servidor HTTP local (axum). En v1 escucha solo
-en `127.0.0.1`. En una fase posterior podrá escuchar en la LAN para que Fire TV se
-conecte cuando el PC esté encendido. Diseña pensando en eso, pero no lo implementes aún.
+la base de datos, el sincronizador y un servidor HTTP local (axum) que escucha solo en
+`127.0.0.1`. Nada escucha en la red: cada aparato lleva su propio núcleo (el iPhone desde
+F15, Fire TV será la misma app en Android) y habla con el proveedor directamente. El modo
+LAN de F10 se quitó el 2026-10-22 (ver `docs/DECISIONS.md`).
 
 **Única excepción: la nube de cuentas (Firebase, F11).** Perfiles, favoritos y progreso
 viajan entre dispositivos por Firebase. Nunca el catálogo, ni credenciales o URLs del

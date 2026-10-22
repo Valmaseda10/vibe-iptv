@@ -177,8 +177,8 @@ Usarán el SDK oficial de Firebase contra este mismo modelo. Lo imprescindible:
 - `updated_at`, `played_at` y `added_at` en **segundos** epoch, como enteros.
 - Ids de favoritos y progreso: SHA-256 en hexadecimal de `favorite:{perfil}:{tipo}:{clave}`
   o `playback:{perfil}:{tipo}:{clave}`, igual que el PC, o el mismo favorito se duplicaría.
-- `item_key` sale del `match_key` que calcula el PC (`catalog::normalize`). Un cliente que
-  no tenga el catálogo del PC tiene que pedírselo por la API LAN, no recalcularlo.
+- `item_key` sale del `match_key` (`catalog::normalize`). Todos los clientes llevan el
+  mismo núcleo y lo calculan igual; uno que no lo llevara no podría recalcularlo.
 
 ---
 

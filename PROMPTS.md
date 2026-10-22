@@ -18,7 +18,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F7 EPG y directo (construido de manera autónoma — ver DECISIONS.md)
 - [x] F8 Búsqueda, favoritos, continuar viendo (construido de manera autónoma — ver DECISIONS.md)
 - [x] F9 mpv, catch-up y pulido (construido de manera autónoma — mpv y catch-up sin verificar contra software/proveedor real, ver DECISIONS.md)
-- [x] F10 Empaquetado y apertura a la LAN (construido de manera autónoma — modo LAN sin verificar contra un dispositivo real, instalador sin firmar, ver DECISIONS.md)
+- [x] F10 Empaquetado y apertura a la LAN (construido de manera autónoma — instalador sin firmar; el modo LAN se quitó el 2026-10-22, ver DECISIONS.md)
 - [x] F11 Nube sin pausas y app local-first (Firebase en lugar de Supabase — verificada contra el proyecto real; la interfaz nueva sin ver en pantalla, ver DECISIONS.md)
 - [x] F12 Cerrar la deuda de v1 (logos en disco, hls.js y LGPL quedan como pendientes documentados)
 - [x] F13 Directo de nivel TiviMate

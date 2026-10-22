@@ -1,6 +1,5 @@
 pub mod account;
 pub mod api;
-pub mod lan;
 pub mod live_buffer;
 pub mod profiles;
 pub mod provider_status;
@@ -9,9 +8,9 @@ pub mod stream;
 pub mod timeshift;
 pub mod tv;
 
-use std::net::{SocketAddr, TcpListener as StdTcpListener};
+use std::net::TcpListener as StdTcpListener;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicU16, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -22,7 +21,6 @@ use crate::db::schema;
 use crate::sync::backend::CloudBackend;
 use crate::sync::engine;
 use crate::sync::firebase::{FirebaseBackend, FirebaseConfig};
-use crate::util::pairing::PairingState;
 use crate::util::stream_guard::StreamGuard;
 
 /// El servidor local: su puerto y lo necesario para volver a levantarlo.
@@ -113,9 +111,7 @@ fn spawn_serving(listener: StdTcpListener, router: Router) -> std::io::Result<ta
                 return;
             }
         };
-        // `with_connect_info` es lo que le da a `lan::require_local_or_paired` la IP real
-        // del que llama — sin esto no habría forma de distinguir loopback de LAN.
-        if let Err(err) = axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>()).await {
+        if let Err(err) = axum::serve(listener, router.into_make_service()).await {
             tracing::error!(error = %err, "el servidor local se detuvo inesperadamente");
         }
     }))
@@ -128,19 +124,17 @@ pub async fn build(image_cache_dir: PathBuf, db_path: PathBuf, stream_guard: Arc
     // verdad, no solo teórica: en una instalación nueva (fichero de base de datos
     // inexistente) la primera petición HTTP real llega por `open_readonly_at` (que
     // nunca comprueba migraciones) y podría adelantarse al primer comando Tauri que sí
-    // las dispara (`list_providers`, vía `open_connection`). De paso, es el sitio
-    // natural para leer el ajuste de LAN antes de construir su estado.
-    let lan_enabled = {
+    // las dispara (`list_providers`, vía `open_connection`).
+    {
         let db_path = db_path.clone();
-        tokio::task::spawn_blocking(move || -> crate::db::Result<bool> {
-            let conn = schema::open_connection_at(&db_path)?;
-            lan::read_lan_enabled_setting(&conn)
+        tokio::task::spawn_blocking(move || -> crate::db::Result<()> {
+            schema::open_connection_at(&db_path)?;
+            Ok(())
         })
         .await
         .map_err(std::io::Error::other)?
-        .map_err(std::io::Error::other)?
-    };
-    let lan_state = lan::LanState { db_path: db_path.clone(), enabled: Arc::new(AtomicBool::new(lan_enabled)), pairing: PairingState::new() };
+        .map_err(std::io::Error::other)?;
+    }
 
     crate::media::subtitles::clear_temp_dir();
     timeshift::clear_temp_root();
@@ -171,7 +165,7 @@ pub async fn build(image_cache_dir: PathBuf, db_path: PathBuf, stream_guard: Arc
     let cloud: Arc<dyn CloudBackend> = Arc::new(FirebaseBackend::new(FirebaseConfig::production()));
     engine::start(db_path.clone(), cloud.clone());
 
-    Ok(full_router(image_cache_dir, db_path, stream_state, lan_state, cloud))
+    Ok(full_router(image_cache_dir, db_path, stream_state, cloud))
 }
 
 /// El router completo: catálogo + salud/imágenes + streaming, con CORS aplicado una
@@ -181,7 +175,6 @@ pub async fn build(image_cache_dir: PathBuf, db_path: PathBuf, stream_guard: Arc
 /// CORS abierto a cualquier origen: el WebView de Tauri sirve el frontend desde un
 /// origen distinto al del servidor (`http://localhost:1420` en dev, `tauri://localhost`
 /// empaquetado), y este servidor solo escucha en 127.0.0.1 sin cookies ni sesión (R2).
-/// Se revisará al abrir la LAN en la fase F10.
 ///
 /// Tiene que envolver el router ya fusionado, no una de sus mitades por separado: un
 /// `.layer()` aplicado antes de `.merge()` no cubre las rutas que se fusionan después.
@@ -189,25 +182,13 @@ pub async fn build(image_cache_dir: PathBuf, db_path: PathBuf, stream_guard: Arc
 /// `/api/playback/tier/*` fallaba en silencio por CORS —`<video src>` no lo notó porque
 /// cargar un recurso de vídeo no pasa por CORS, solo `fetch`/`XHR` sí— y el panel de
 /// estadísticas del reproductor se quedó mostrando "nivel desconocido" para siempre.
-///
-/// El middleware del modo LAN (F10) se aplica antes del CORS (queda por dentro): así
-/// una petición de preflight (`OPTIONS`, sin `Authorization`) la resuelve `CorsLayer`
-/// sin pasar nunca por la comprobación de token, que no tiene sentido aplicarle.
-fn full_router(
-    image_cache_dir: PathBuf,
-    db_path: PathBuf,
-    stream_state: stream::StreamState,
-    lan_state: lan::LanState,
-    cloud: Arc<dyn CloudBackend>,
-) -> Router {
+fn full_router(image_cache_dir: PathBuf, db_path: PathBuf, stream_state: stream::StreamState, cloud: Arc<dyn CloudBackend>) -> Router {
     routes::build_router(image_cache_dir, db_path.clone())
         .merge(stream::stream_router(stream_state))
-        .merge(lan::lan_router(lan_state.clone()))
         .merge(account::account_router(account::AccountState { db_path: db_path.clone(), cloud }))
         .merge(tv::tv_router(tv::TvState { db_path: db_path.clone() }))
         .merge(provider_status::provider_status_router(provider_status::ProviderStatusState::new(db_path.clone())))
         .merge(profiles::profiles_router(profiles::ProfilesState { db_path }))
-        .layer(axum::middleware::from_fn_with_state(lan_state, lan::require_local_or_paired))
         .layer(CorsLayer::new().allow_origin(Any).allow_methods(Any).allow_headers(Any))
 }
 
@@ -252,13 +233,8 @@ mod tests {
             timeshift: Default::default(),
             live_buffer: Default::default(),
         };
-        let lan_state = lan::LanState {
-            db_path: std::env::temp_dir(),
-            enabled: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            pairing: crate::util::pairing::PairingState::new(),
-        };
         let cloud: Arc<dyn CloudBackend> = Arc::new(crate::sync::memory::MemoryBackend::new());
-        let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state, lan_state, cloud);
+        let router = full_router(std::env::temp_dir(), std::env::temp_dir(), stream_state, cloud);
 
         // Una respuesta a una ruta de F6 (fusionada tras el CORS de F4) debe llevar la
         // cabecera igual que una del catálogo: el bug real fue que no la llevaba.
@@ -302,8 +278,7 @@ mod tests {
         let cloud: Arc<dyn CloudBackend> = Arc::new(FirebaseBackend::new(FirebaseConfig::production()));
         engine::start(db_path.clone(), cloud.clone());
         let stream_state = stream::StreamState { db_path: db_path.clone(), stream_guard: StreamGuard::new(), ffmpeg_path: None, ffprobe_path: None, mpv_path: None, last_errors: Default::default(), subtitles: Default::default(), timeshift: Default::default(), live_buffer: Default::default() };
-        let lan_state = lan::LanState { db_path: db_path.clone(), enabled: Arc::new(AtomicBool::new(false)), pairing: PairingState::new() };
-        let router = full_router(std::env::temp_dir(), db_path.clone(), stream_state, lan_state, cloud.clone());
+        let router = full_router(std::env::temp_dir(), db_path.clone(), stream_state, cloud.clone());
 
         let call = |method: &'static str, uri: String, body: serde_json::Value| {
             let router = router.clone();

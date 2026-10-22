@@ -23,10 +23,10 @@
 ```
 
 **Por qué un servidor HTTP local en vez de solo comandos Tauri:** el elemento `<video>`
-necesita una URL. Un comando Tauri no puede servir un flujo de vídeo continuo. Además,
-esa misma superficie HTTP es lo que en la fase 10 se abre a la LAN para que el cliente
-de Fire TV la consuma sin reescribir nada del núcleo. Los comandos Tauri se reservan
-para operaciones de ventana, diálogos de fichero y acceso al keychain.
+necesita una URL. Un comando Tauri no puede servir un flujo de vídeo continuo. El
+servidor solo escucha en `127.0.0.1` y solo lo usa la propia app (el modo LAN de F10 se
+quitó: ver "Camino hacia las demás plataformas"). Los comandos Tauri se reservan para
+operaciones de ventana, diálogos de fichero y acceso al keychain.
 
 El puerto es efímero y se comunica al frontend en el arranque mediante un comando
 Tauri. Nada de puertos fijos hardcodeados.
@@ -211,11 +211,11 @@ transacción con índice sobre `(channel_id, start)`.
 
 ## Camino hacia las demás plataformas
 
-La fase 10 abre `0.0.0.0` con emparejamiento por código y token. A partir de ahí:
+Cada plataforma lleva su propio núcleo (la misma app de Tauri compilada para ella) y no
+depende del PC: lo único compartido es la nube de cuentas (perfiles, favoritos y
+progreso, `docs/CLOUD-SYNC.md`). El modo LAN de F10 (el PC como servidor de la red) se
+quitó el 2026-10-22: nunca llegó a funcionar y ningún cliente lo necesita.
 
-- **Fire TV**: cliente nativo que consume `/api` cuando el PC está encendido, con caché
-  local del catálogo para poder navegar aunque el PC esté apagado. La reproducción
-  puede ir directa al proveedor, saltándose el PC, porque ExoPlayer sí reproduce TS.
-  Ojo con el StreamGuard: el permiso pasa a ser distribuido y lo concede el PC.
-- **Web**: la misma API, servida por la app de escritorio. Limitada por códecs.
-- **iOS**: SwiftUI con VLCKit contra la misma API. Sin publicación en App Store.
+- **iOS** (F15): Tauri iOS con un reproductor nativo de VLC. Ver `docs/IOS.md`.
+- **Fire TV** (F16, pospuesta): la misma app en Android, manejada con el mando.
+- **Web**: fuera de alcance (los navegadores no reproducen TS ni MKV).

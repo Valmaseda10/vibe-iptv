@@ -88,7 +88,7 @@ export async function apiGetOrNull<T>(path: string): Promise<T | null> {
 
 /** Genérico en el tipo de vuelta: la mayoría de llamadas ignoran la respuesta (muchas
  * rutas dan `204 sin contenido`), pero algunas sí devuelven algo que hace falta leer
- * (p. ej. el código de emparejamiento de `/api/lan/pairing/start`). Un 204 da
+ * (p. ej. la cuenta al entrar). Un 204 da
  * `undefined` en vez de reventar `response.json()` sobre un cuerpo vacío. */
 export async function apiPost<T = void>(path: string, body: unknown): Promise<T> {
   const response = await localFetch(path, {

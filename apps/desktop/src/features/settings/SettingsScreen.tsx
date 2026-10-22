@@ -14,9 +14,7 @@ import type {
   CloudSyncStatus,
   BinariesStatus,
   EpgSyncSummary,
-  LanStatusResponse,
   M3uValidation,
-  PairingStartResponse,
   ProviderKind,
   ProviderSummary,
   SyncFinished,
@@ -486,7 +484,6 @@ export function SettingsScreen() {
       <AdultCategoriesSection />
       {/* En iPhone y iPad no aplican: la app no sirve a otros dispositivos y el fichero de
           diagnóstico quedaría donde el usuario no puede abrirlo (F15). */}
-      {!IS_IOS && <LanSection />}
       {!IS_IOS && <DiagnosticsSection />}
     </div>
   );
@@ -792,126 +789,6 @@ function ChangePasswordForm() {
       {error && <p role="alert" className="mt-2 text-sm text-red-400">{error}</p>}
       {success && <p className="mt-2 text-sm text-emerald-400">Contraseña actualizada.</p>}
     </div>
-  );
-}
-
-/** Modo LAN (F10): abrir el servidor a la red local, emparejar dispositivos por código
- * de 6 dígitos, y revocar el acceso de un dispositivo. Sin ningún dispositivo real (el
- * cliente de Fire TV llega en una fase posterior) contra el que probar el emparejamiento
- * de punta a punta — ver `docs/DECISIONS.md`. */
-function LanSection() {
-  const queryClient = useQueryClient();
-  const [pairingResult, setPairingResult] = useState<PairingStartResponse | null>(null);
-  const [pairingError, setPairingError] = useState<string | null>(null);
-
-  const statusQuery = useQuery({
-    queryKey: ["lan-status"],
-    queryFn: () => apiGet<LanStatusResponse>("/api/lan/status"),
-    // El código de emparejamiento caduca solo (5 min); refrescar de vez en cuando basta
-    // para que "visto por última vez" de la lista de dispositivos no se quede parado.
-    refetchInterval: 15_000,
-  });
-
-  function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["lan-status"] });
-  }
-
-  const enableMutation = useMutation({
-    mutationFn: () => apiPost("/api/lan/enable", {}),
-    onSuccess: invalidate,
-  });
-  const disableMutation = useMutation({
-    mutationFn: () => apiPost("/api/lan/disable", {}),
-    onSuccess: () => {
-      setPairingResult(null);
-      invalidate();
-    },
-  });
-  const revokeMutation = useMutation({
-    mutationFn: (deviceId: number) => apiPost(`/api/lan/devices/${deviceId}/revoke`, {}),
-    onSuccess: invalidate,
-  });
-
-  async function startPairing() {
-    setPairingError(null);
-    try {
-      const result = await apiPost<PairingStartResponse>("/api/lan/pairing/start", {});
-      setPairingResult(result);
-    } catch (error) {
-      setPairingError(String(error));
-    }
-  }
-
-  const enabled = statusQuery.data?.enabled ?? false;
-
-  return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-      <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Red local</h2>
-      <p className="mb-4 text-sm text-neutral-400">
-        Deja que otros dispositivos de tu red (por ejemplo, un futuro cliente de Fire TV) usen esta app como servidor.
-        Desactivado, el servidor solo responde a este mismo PC — igual que hasta ahora.
-      </p>
-
-      <label className="mb-4 flex items-center gap-3">
-        <input
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => (e.target.checked ? enableMutation.mutate() : disableMutation.mutate())}
-          disabled={enableMutation.isPending || disableMutation.isPending}
-        />
-        <span>Permitir acceso desde la red local</span>
-      </label>
-
-      {enabled && (
-        <div className="rounded border border-neutral-700 p-4">
-          <div className="mb-3 flex items-center gap-3">
-            <button type="button" className="rounded bg-red-600 px-4 py-2 hover:bg-red-500" onClick={startPairing}>
-              Emparejar dispositivo nuevo
-            </button>
-            {statusQuery.data?.local_address && (
-              <span className="text-sm text-neutral-400">Esta PC: {statusQuery.data.local_address}</span>
-            )}
-          </div>
-          {pairingError && <p className="mb-3 text-red-400">{pairingError}</p>}
-          {pairingResult && (
-            <div className="mb-4 rounded bg-neutral-800 p-4 text-center">
-              <p className="mb-1 text-sm text-neutral-400">Introduce este código en el otro dispositivo:</p>
-              <p className="font-mono text-4xl tracking-[0.3em]">{pairingResult.code}</p>
-              <p className="mt-1 text-xs text-neutral-500">Caduca en {Math.round(pairingResult.expires_in_s / 60)} min</p>
-            </div>
-          )}
-
-          <h3 className="mb-2 text-sm font-medium text-neutral-400">Dispositivos emparejados</h3>
-          {statusQuery.data && statusQuery.data.devices.length === 0 ? (
-            <p className="text-sm text-neutral-500">Ninguno todavía.</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {statusQuery.data?.devices.map((device) => (
-                <li key={device.id} className="flex items-center justify-between rounded bg-neutral-800 px-3 py-2 text-sm">
-                  <div>
-                    <span className={device.revoked ? "text-neutral-500 line-through" : ""}>{device.device_name}</span>
-                    {device.last_seen_at && (
-                      <span className="ml-2 text-xs text-neutral-500">
-                        visto {new Date(device.last_seen_at * 1000).toLocaleString()}
-                      </span>
-                    )}
-                  </div>
-                  {!device.revoked && (
-                    <button
-                      type="button"
-                      className="rounded bg-neutral-700 px-3 py-1 hover:bg-neutral-600"
-                      onClick={() => revokeMutation.mutate(device.id)}
-                    >
-                      Revocar
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
-    </section>
   );
 }
 
