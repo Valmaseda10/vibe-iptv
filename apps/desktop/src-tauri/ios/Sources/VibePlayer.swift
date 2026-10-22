@@ -57,6 +57,11 @@ private struct PlayRequest: Decodable {
     let update_only: Bool?
     /// Aspecto de los subtítulos del perfil (Ajustes → Subtítulos).
     let subtitle_style: SubtitleStyle?
+    /// Fuentes de la película para cambiar a mano (vacío si solo hay una) y la actual.
+    let sources: [String]?
+    let current_source: Int?
+    /// Aviso breve al empezar (p. ej. tras cambiar solo de fuente porque una no cargaba).
+    let notice: String?
 }
 
 /// Aspecto de los subtítulos, igual que en el reproductor del PC (`subtitleStyle.ts`):
@@ -329,6 +334,8 @@ final class VibePlayerController: UIViewController {
     /// Último botón tocado, para la prueba del simulador (¿llegó el toque?).
     private var lastAction = ""
     private var subtitleStyle = SubtitleStyle.standard
+    private var sourceLabels: [String] = []
+    private var currentSource: Int?
     /// Pistas que se estaban viendo antes de reabrir el vídeo para cambiar el aspecto de los
     /// subtítulos: se recuperan en vez de las preferidas del perfil.
     private var restoreTracks: (audio: String?, subtitle: String?)?
@@ -421,6 +428,7 @@ final class VibePlayerController: UIViewController {
 
     private func load(_ request: PlayRequest) {
         guard !closed else { return }
+        defer { if let notice = request.notice, !notice.isEmpty { hud(notice, seconds: 4) } }
         self.request = request
         update(request)
         let item = Current(
@@ -433,6 +441,8 @@ final class VibePlayerController: UIViewController {
     /// Lista, siguiente episodio y preferencias, sin tocar lo que se reproduce.
     private func update(_ request: PlayRequest) {
         if let style = request.subtitle_style { subtitleStyle = style }
+        sourceLabels = request.sources ?? []
+        currentSource = request.current_source
         if let list = request.items { items = list }
         currentIndex = request.current_index
         nextItem = request.next
@@ -659,6 +669,7 @@ final class VibePlayerController: UIViewController {
                     spinner.stopAnimating()
                     sendProgress(final: false)
                     showMessage("Se cortó la reproducción. Ciérrala y vuelve a abrirla para seguir donde ibas.")
+                    sendEvent(["type": "error", "message": "La película se cortó y no se pudo reanudar"])
                     self.current = nil
                     return
                 }
@@ -1341,6 +1352,16 @@ final class VibePlayerController: UIViewController {
                 self?.setSleep(minutes: nil)
             })
             elements.append(UIMenu(title: "Temporizador de apagado", image: UIImage(systemName: "moon.zzz"), children: sleep))
+            if self.sourceLabels.count > 1 {
+                let sources = self.sourceLabels.enumerated().map { index, label in
+                    UIAction(title: label, state: index == self.currentSource ? .on : .off) { [weak self] _ in
+                        guard let self = self, index != self.currentSource else { return }
+                        self.hud("Cambiando a la fuente \(index + 1)…")
+                        sendEvent(["type": "source", "index": index])
+                    }
+                }
+                elements.append(UIMenu(title: "Fuente", image: UIImage(systemName: "antenna.radiowaves.left.and.right"), children: sources))
+            }
             elements.append(UIAction(title: "Bloquear pantalla", image: UIImage(systemName: "lock")) { [weak self] _ in self?.lock() })
             completion(elements)
         }])
@@ -1675,12 +1696,12 @@ final class VibePlayerController: UIViewController {
         showOverlay(autoHide: false)
     }
 
-    private func hud(_ text: String) {
+    private func hud(_ text: String, seconds: TimeInterval = 1.2) {
         hudLabel.text = text
         controlsRoot.bringSubviewToFront(hudLabel)
         hudTimer?.invalidate()
         UIView.animate(withDuration: 0.12) { self.hudLabel.alpha = 1 }
-        hudTimer = Timer.scheduledTimer(withTimeInterval: 1.2, repeats: false) { [weak self] _ in
+        hudTimer = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
             UIView.animate(withDuration: 0.25) { self?.hudLabel.alpha = 0 }
         }
     }

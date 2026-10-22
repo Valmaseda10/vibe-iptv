@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { failoverNotice, nextUntriedSource, sourceLabel } from "./movieSources";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { apiGetOrNull, apiPost, useApiBase } from "../../lib/api-client";
@@ -328,6 +329,33 @@ export function PlayerScreen() {
   // se reintenta solo unas pocas veces (ver `MAX_RECONNECT_ATTEMPTS`) forzando un
   // remontaje del `<video>` con la misma URL, salvo que el motivo sea de los que no se
   // arreglan reintentando (`DEFINITIVE_ERROR_STATUSES`).
+  // Fuentes de la película: se cambia a mano abajo y, si una no carga, se prueba sola la
+  // siguiente desde el mismo punto (cada una una vez).
+  const movieSources = useMemo(() => (kind === "movie" ? (movieQuery.data?.sources ?? []) : []), [kind, movieQuery.data]);
+  const activeSourceId = search.source ?? movieSources[0]?.id ?? null;
+  const activeSourceIndex = Math.max(0, movieSources.findIndex((source) => source.id === activeSourceId));
+  const triedSourcesRef = useRef<Set<number>>(new Set());
+  useEffect(() => {
+    triedSourcesRef.current = new Set();
+  }, [kind, itemId]);
+  const [sourceNotice, setSourceNotice] = useState<string | null>(null);
+  useEffect(() => {
+    if (!sourceNotice) return;
+    const timer = window.setTimeout(() => setSourceNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [sourceNotice]);
+  const switchSource = useCallback(
+    (index: number, auto: boolean) => {
+      const target = movieSources[index];
+      if (!target || target.id === activeSourceId) return;
+      if (auto) setSourceNotice(failoverNotice(activeSourceIndex, index));
+      setAppliedStart(Math.floor(latestRef.current.displayCurrentTime));
+      setVideoCurrentTime(0);
+      navigate({ to: "/player/$kind/$id", params: { kind, id }, search: { ...search, source: target.id }, replace: true });
+    },
+    [movieSources, activeSourceId, activeSourceIndex, navigate, kind, id, search],
+  );
+
   const handleVideoError = useCallback(async () => {
     if (!streamUrl) return;
     // En pausa, el núcleo deja de mandar el directo (sigue grabando): que se corte no es un
@@ -348,6 +376,16 @@ export function PlayerScreen() {
     }
     if (currentStreamPathRef.current !== failedPath) return;
 
+    // Película con más fuentes: antes de rendirse (o de abrir mpv), la siguiente sin probar.
+    if (kind === "movie" && movieSources.length > 1) {
+      if (activeSourceId != null) triedSourcesRef.current.add(activeSourceId);
+      const nextIndex = nextUntriedSource(movieSources, triedSourcesRef.current);
+      if (nextIndex >= 0) {
+        switchSource(nextIndex, true);
+        return;
+      }
+    }
+
     const definitive = status != null && DEFINITIVE_ERROR_STATUSES.has(status);
     if (kind === "channel" && !definitive && reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
       setReconnectAttempt((n) => n + 1);
@@ -360,7 +398,7 @@ export function PlayerScreen() {
     // prometer algo que reproduciría el momento equivocado.
     setNeedsMpv(status === 501 && !isCatchup);
     setErrorMessage(text || "No se pudo reproducir este contenido.");
-  }, [streamUrl, streamPath, isCatchup, kind, itemId, reconnectAttempt, timeshift]);
+  }, [streamUrl, streamPath, isCatchup, kind, itemId, reconnectAttempt, timeshift, movieSources, activeSourceId, switchSource]);
 
   const launchMpv = useCallback(async () => {
     if (!base || profileId === null) return;
@@ -851,6 +889,12 @@ export function PlayerScreen() {
         </div>
       )}
 
+      {sourceNotice && (
+        <div className="absolute left-1/2 top-6 -translate-x-1/2 rounded-lg bg-black/80 px-4 py-2 text-sm text-neutral-200" role="status">
+          {sourceNotice}
+        </div>
+      )}
+
       {resumeBanner != null && (
         <div className="absolute left-6 top-6 rounded-lg bg-black/70 px-4 py-2 text-sm text-neutral-200">
           Reanudando desde {formatTime(resumeBanner)}
@@ -1107,6 +1151,24 @@ export function PlayerScreen() {
                 {SUBTITLE_SIZES.map((size) => (
                   <option key={size.value} value={size.value}>
                     {size.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {movieSources.length > 1 && (
+            <label className="flex items-center gap-1.5 text-xs text-neutral-400">
+              Fuente
+              <select
+                value={activeSourceIndex}
+                onChange={(e) => switchSource(Number(e.target.value), false)}
+                className="max-w-[12rem] rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-2 focus:ring-white/60"
+                aria-label="Fuente"
+              >
+                {movieSources.map((source, index) => (
+                  <option key={source.id} value={index}>
+                    {sourceLabel(source, index)}
                   </option>
                 ))}
               </select>

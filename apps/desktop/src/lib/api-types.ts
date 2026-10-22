@@ -269,12 +269,25 @@ update_only: boolean,
 /**
  * Aspecto de los subtítulos que eligió el perfil (Ajustes → Subtítulos).
  */
-subtitle_style: SubtitleStyle | null, };
+subtitle_style: SubtitleStyle | null, 
+/**
+ * Fuentes de la película (calidad e idioma, o «Fuente N»), para cambiar a mano desde
+ * el reproductor; vacío si solo hay una.
+ */
+sources: Array<string>, 
+/**
+ * Posición en `sources` de la que se reproduce.
+ */
+current_source: number | null, 
+/**
+ * Aviso breve al empezar (p. ej. «La fuente 1 no responde: probando la 2»).
+ */
+notice: string | null, };
 
 /**
  * Lo que cuenta el reproductor nativo.
  */
-export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, } | { "type": "subtitle_style", style: SubtitleStyle, };
+export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, } | { "type": "subtitle_style", style: SubtitleStyle, } | { "type": "source", index: number, };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 

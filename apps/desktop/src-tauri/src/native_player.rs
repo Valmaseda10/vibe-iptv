@@ -66,6 +66,16 @@ pub struct NativePlayRequest {
     /// Aspecto de los subtítulos que eligió el perfil (Ajustes → Subtítulos).
     #[serde(default)]
     pub subtitle_style: Option<SubtitleStyle>,
+    /// Fuentes de la película (calidad e idioma, o «Fuente N»), para cambiar a mano desde
+    /// el reproductor; vacío si solo hay una.
+    #[serde(default)]
+    pub sources: Vec<String>,
+    /// Posición en `sources` de la que se reproduce.
+    #[serde(default)]
+    pub current_source: Option<u32>,
+    /// Aviso breve al empezar (p. ej. «La fuente 1 no responde: probando la 2»).
+    #[serde(default)]
+    pub notice: Option<String>,
 }
 
 /// Aspecto de los subtítulos: igual en el reproductor del PC (`::cue`) y en el de iPhone y
@@ -133,6 +143,8 @@ pub enum NativePlayerEvent {
     /// El usuario cambió el aspecto de los subtítulos desde el reproductor: se guarda para
     /// el perfil, igual que si lo hubiera cambiado en Ajustes.
     SubtitleStyle { style: SubtitleStyle },
+    /// El usuario eligió otra fuente de la película (posición en `sources`).
+    Source { index: u32 },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -237,6 +249,9 @@ mod platform {
                     preferred_subtitle: None,
                     update_only: false,
                     subtitle_style: None,
+                    sources: vec![],
+                    current_source: None,
+                    notice: None,
                 };
                 let _ = present(&request);
             });
@@ -329,12 +344,13 @@ mod tests {
                 style: SubtitleStyle { size: "large".into(), look: "box".into(), color: "yellow".into(), font: "serif".into() }
             })
         );
+        assert_eq!(parse_event(r#"{"type":"source","index":1}"#), Some(NativePlayerEvent::Source { index: 1 }));
         assert_eq!(parse_event(r#"{"type":"otra_cosa"}"#), None);
     }
 
     #[test]
     fn outside_ios_the_command_says_it_is_not_available() {
-        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false, message: None, kind: "movie".into(), items: vec![], current_index: None, next: None, preferred_audio: None, preferred_subtitle: None, update_only: false, subtitle_style: None };
+        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false, message: None, kind: "movie".into(), items: vec![], current_index: None, next: None, preferred_audio: None, preferred_subtitle: None, update_only: false, subtitle_style: None, sources: vec![], current_source: None, notice: None };
         assert!(matches!(native_player_play(request), Err(NativePlayerError::Unsupported)));
     }
 }

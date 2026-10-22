@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { failoverNotice, nextUntriedSource, sourceLabel } from "./movieSources";
 import { readSubtitleStyle, saveSubtitleStyle } from "../../lib/subtitleStyle";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -195,6 +196,30 @@ export function NativePlayerScreen() {
       ? { id: nextEpisode.id, title: seriesQuery.data?.clean_title ?? "", subtitle: episodeLabel(nextEpisode), number: null, url: `${base}${episodePath(nextEpisode.id)}` }
       : null;
 
+  // Fuentes de la película (F15): se cambia a mano desde el reproductor y, si una no carga,
+  // se prueba sola la siguiente (cada una una vez).
+  const movieSources = useMemo(() => (kind === "movie" ? (movieQuery.data?.sources ?? []) : []), [kind, movieQuery.data]);
+  const activeSourceId = search.source ?? movieSources[0]?.id ?? null;
+  const activeSourceIndex = Math.max(0, movieSources.findIndex((source) => source.id === activeSourceId));
+  const triedSourcesRef = useRef<Set<number>>(new Set());
+  const lastPositionRef = useRef(0);
+  const [notice, setNotice] = useState<string | null>(null);
+  useEffect(() => {
+    triedSourcesRef.current = new Set();
+    lastPositionRef.current = 0;
+  }, [kind, itemId]);
+  const switchSource = useCallback(
+    (index: number, auto: boolean) => {
+      const target = movieSources[index];
+      if (!target || target.id === activeSourceId) return;
+      if (auto) setNotice(failoverNotice(activeSourceIndex, index));
+      // Sigue en el mismo minuto, con la otra fuente.
+      setStartSeconds(Math.floor(lastPositionRef.current));
+      navigate({ to: "/player/$kind/$id", params: { kind: "movie", id }, search: { ...search, source: target.id }, replace: true });
+    },
+    [movieSources, activeSourceId, activeSourceIndex, navigate, id, search],
+  );
+
   const ready = base != null && profileId !== null && startSeconds !== null && (title != null || titleWaitOver);
   const playedPathRef = useRef<string | null>(null);
   const lastRequestRef = useRef<NativePlayRequest | null>(null);
@@ -225,15 +250,19 @@ export function NativePlayerScreen() {
       preferred_audio: tracks.audio,
       preferred_subtitle: tracks.subtitle,
       subtitle_style: readSubtitleStyle(profileId),
+      sources: movieSources.length > 1 ? movieSources.map(sourceLabel) : [],
+      current_source: movieSources.length > 1 ? activeSourceIndex : null,
+      notice,
       update_only: false,
     };
-  }, [base, startSeconds, profileId, streamPath, title, subtitle, kind, isCatchup, liveBuffer, items, currentIndex, next]);
+  }, [base, startSeconds, profileId, streamPath, title, subtitle, kind, isCatchup, liveBuffer, items, currentIndex, next, movieSources, activeSourceIndex, notice]);
 
   const play = useCallback(() => {
     const request = buildRequest();
     if (!request) return;
     lastRequestRef.current = request;
     setError(null);
+    setNotice(null);
     invoke("native_player_play", { request }).catch((err: unknown) => setError(errorMessage(err)));
   }, [buildRequest]);
 
@@ -261,9 +290,9 @@ export function NativePlayerScreen() {
   }, [kind, id, search.seriesId, isCatchup, navigate]);
 
   // Los eventos llegan a un solo oyente; lo que cambia de un render a otro se lee de aquí.
-  const latestRef = useRef({ kind, itemId, profileId, channels: channelsQuery.data?.items, search, goBack, isCatchup, channelPath, episodePath });
+  const latestRef = useRef({ kind, itemId, profileId, channels: channelsQuery.data?.items, search, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource });
   useEffect(() => {
-    latestRef.current = { kind, itemId, profileId, channels: channelsQuery.data?.items, search, goBack, isCatchup, channelPath, episodePath };
+    latestRef.current = { kind, itemId, profileId, channels: channelsQuery.data?.items, search, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource };
   });
 
   useEffect(() => {
@@ -286,7 +315,11 @@ export function NativePlayerScreen() {
       const latest = latestRef.current;
       switch (payload.type) {
         case "progress":
+          if (payload.position_s > 0) lastPositionRef.current = payload.position_s;
           saveProgress(payload.position_s, payload.duration_s, payload.id);
+          break;
+        case "source":
+          latest.switchSource(payload.index, false);
           break;
         case "closed": {
           const position = payload.ended && payload.duration_s ? payload.duration_s : payload.position_s;
@@ -334,6 +367,15 @@ export function NativePlayerScreen() {
           break;
         }
         case "error": {
+          // Película con más fuentes: se prueba la siguiente sin probar, desde el mismo punto.
+          if (latest.kind === "movie" && latest.movieSources.length > 1) {
+            if (latest.activeSourceId != null) triedSourcesRef.current.add(latest.activeSourceId);
+            const nextIndex = nextUntriedSource(latest.movieSources, triedSourcesRef.current);
+            if (nextIndex >= 0) {
+              latest.switchSource(nextIndex, true);
+              break;
+            }
+          }
           // VLC solo sabe que no pudo; el núcleo sabe por qué (bloqueo por país, cuenta en
           // uso, caducada...). Se pide y se enseña en el propio reproductor.
           setError(payload.message);
