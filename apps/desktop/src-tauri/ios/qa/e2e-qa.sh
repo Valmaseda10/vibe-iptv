@@ -379,7 +379,7 @@ check "ficha: tocar otra vez la desmarca" 'wait_visible "Marcar vista" contiene 
 # Valorar (como Netflix): la hoja con las tres opciones, y la ficha recuerda la elegida.
 tap_label "Valorar" exacta 5; sleep 1
 check "ficha: «Valorar» ofrece las tres opciones" 'wait_visible "Me encanta" contiene 5 && visible "No es para mí" contiene'
-tap_label "Me gusta" ultima 3; sleep 2
+tap_label "Me gusta" contiene 3; sleep 2
 check "ficha: la valoración elegida se queda en la ficha" 'wait_visible "Valoración: Me gusta. Cambiar" exacta 5'
 tap_label "Reproducir" contiene 10
 check "película: se abre el reproductor" 'wait_player_open 25'
