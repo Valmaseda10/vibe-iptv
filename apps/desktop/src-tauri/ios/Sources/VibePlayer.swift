@@ -226,6 +226,13 @@ final class VibePlayerController: UIViewController {
     private var liveReconnects = 0
     /// Última posición conocida en VOD y reaperturas tras un corte a mitad.
     private var lastPosition: Double = 0
+    /// Salto pedido y aún no alcanzado: VLC tarda en llegar y, si le llega otro mientras,
+    /// lo puede ignorar. Los saltos seguidos (+30, +30, −10) se suman sobre este destino, y
+    /// si VLC no llega, se le vuelve a pedir una vez (visto en el simulador: un −10 s justo
+    /// después de un +30 s no hacía nada).
+    private var seekTarget: Double?
+    private var seekRequestedAt = Date.distantPast
+    private var seekRetried = false
     private var vodReconnects = 0
     private var errorRetries = 0
     private var lastRetryAt = Date.distantPast
@@ -340,6 +347,7 @@ final class VibePlayerController: UIViewController {
             return
         }
         current = item
+        seekTarget = nil
         behindLive = 0
         pausedAt = nil
         liveReconnects = 0
@@ -480,6 +488,7 @@ final class VibePlayerController: UIViewController {
             state["subtitle"] = subtitleLabel.text ?? ""
             state["controls"] = overlayVisible
             state["list"] = !listPanel.isHidden
+            state["seekTarget"] = seekTarget ?? NSNull()
             // Tamaño de la interfaz (en horizontal, el ancho es el lado largo): la prueba
             // lo necesita para girar sus toques y no depender de que idb devuelva la pantalla.
             state["uiWidth"] = Int(controlsRoot.bounds.width)
@@ -493,6 +502,7 @@ final class VibePlayerController: UIViewController {
     private func tick() {
         guard let current = current, !closed else { return }
         writeQaState(open: true)
+        followSeek()
         switch player.state {
         case .opening, .buffering:
             if !player.isPlaying { spinner.startAnimating() } else { spinner.stopAnimating() }
@@ -808,10 +818,33 @@ final class VibePlayerController: UIViewController {
             return
         }
         guard !isLive else { return }
-        var target = max(0, positionSeconds + seconds)
+        let from = seekTarget ?? positionSeconds
+        var target = max(0, from + seconds)
         if let duration = durationSeconds { target = min(target, duration - 1) }
-        player.time = VLCTime(int: Int32(target * 1000))
+        applySeek(to: target)
         showOverlay()
+    }
+
+    private func applySeek(to target: Double) {
+        seekTarget = target
+        seekRequestedAt = Date()
+        seekRetried = false
+        player.time = VLCTime(int: Int32(target * 1000))
+    }
+
+    /// Mira si VLC llegó al salto pedido; si no, se lo vuelve a pedir una vez.
+    private func followSeek() {
+        guard let target = seekTarget else { return }
+        let elapsed = Date().timeIntervalSince(seekRequestedAt)
+        let position = positionSeconds
+        if position >= target - 1, position <= target + elapsed + 2 {
+            seekTarget = nil
+        } else if elapsed > 1.5, !seekRetried, player.isPlaying {
+            seekRetried = true
+            player.time = VLCTime(int: Int32(target * 1000))
+        } else if elapsed > 5 {
+            seekTarget = nil
+        }
     }
 
     @objc private func sliderBegan() { scrubbing = true; hideTimer?.invalidate() }
@@ -819,7 +852,7 @@ final class VibePlayerController: UIViewController {
 
     @objc private func sliderEnded() {
         scrubbing = false
-        player.time = VLCTime(int: Int32(slider.value * 1000))
+        applySeek(to: Double(slider.value))
         showOverlay()
     }
 
@@ -1010,7 +1043,7 @@ final class VibePlayerController: UIViewController {
                     } else {
                         var target = max(0, panStartValue + delta)
                         if let duration = durationSeconds { target = min(target, duration - 1) }
-                        player.time = VLCTime(int: Int32(target * 1000))
+                        applySeek(to: target)
                     }
                 }
             case .zap:

@@ -366,11 +366,15 @@ player_tap "Adelante 30 segundos"; sleep 3
 t1=$(player_time)
 echo "  tiempo: antes ${t0}s, tras +30 s ${t1}s"
 check "película: +30 s avanza de verdad" '[ "$t1" -ge $((t0 + 25)) ]'
-player_tap "Atrás 10 segundos"; sleep 2
+player_tap "Atrás 10 segundos"; sleep 0.5
+echo "  salto pedido hasta: $(player_field seekTarget)s"
+sleep 2.5
 t2=$(player_time)
 if [ "$t2" -ge "$t1" ]; then
   echo "  (−10 s: el toque no llegó, se repite)"
-  t1=$(player_time); player_tap "Atrás 10 segundos"; sleep 2; t2=$(player_time)
+  t1=$(player_time); player_tap "Atrás 10 segundos"; sleep 0.5
+  echo "  salto pedido hasta: $(player_field seekTarget)s"
+  sleep 2.5; t2=$(player_time)
 fi
 echo "  tiempo: tras −10 s ${t2}s"
 check "película: −10 s retrocede" '[ "$t2" -lt "$t1" ] && [ "$t2" -ge $((t1 - 15)) ]'
