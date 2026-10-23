@@ -218,7 +218,9 @@ final class VibePlayerController: UIViewController {
                 controller.spinner.stopAnimating()
                 controller.showMessage(message)
             } else if request.update_only == true {
-                controller.update(request)
+                // Aún entrando (animación): se aplica al cargar, si no `load` la pisaba con la
+                // petición del principio (la lista de canales se quedaba vacía).
+                if controller.hasLoaded { controller.update(request) } else { controller.pendingUpdate = request }
             } else {
                 controller.load(request)
             }
@@ -315,6 +317,10 @@ final class VibePlayerController: UIViewController {
     private let nextPlayButton = UIButton(type: .system)
     private let nextCancelButton = UIButton(type: .system)
     private let lockButton = UIButton(type: .system)
+    /// Ya cargó su primera petición (ver `pendingUpdate`).
+    fileprivate var hasLoaded = false
+    /// Actualización llegada mientras el reproductor aún se estaba abriendo.
+    fileprivate var pendingUpdate: PlayRequest?
     private let listPanel = UIView()
     private let listTable = UITableView(frame: .zero, style: .plain)
     /// Selector de categoría arriba de la lista de canales (como el de la pantalla Directo).
@@ -458,6 +464,12 @@ final class VibePlayerController: UIViewController {
         defer { if let notice = request.notice, !notice.isEmpty { hud(notice, seconds: 4) } }
         self.request = request
         update(request)
+        // Lo que llegó mientras se abría (lista, siguiente episodio...) es más nuevo.
+        if !hasLoaded, let pending = pendingUpdate {
+            pendingUpdate = nil
+            update(pending)
+        }
+        hasLoaded = true
         let item = Current(
             id: request.current_index.flatMap { $0 < items.count ? items[$0].id : nil },
             url: request.url, title: request.title, subtitle: request.subtitle,
