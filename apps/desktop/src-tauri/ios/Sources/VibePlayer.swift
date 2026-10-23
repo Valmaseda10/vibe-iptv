@@ -323,8 +323,9 @@ final class VibePlayerController: UIViewController {
     private var currentCategory: String?
     /// La lista se recoloca solo al cambiar de categoría, no cada vez que llega la guía.
     private var listedCategory: String?
-    private var listTopToGuide: NSLayoutConstraint?
-    private var listTopToCategory: NSLayoutConstraint?
+    /// Cabecera de la lista que lleva el selector (sin restricciones que cambiar: la lista
+    /// la coloca y la ajusta al ancho ella sola).
+    private let categoryHeader = UIView(frame: CGRect(x: 0, y: 0, width: 320, height: 52))
     private let volumeView = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 10, height: 10))
 
     private var tickTimer: Timer?
@@ -490,15 +491,8 @@ final class VibePlayerController: UIViewController {
     /// Título y menú del selector de categoría; escondido si no hay entre qué elegir.
     private func refreshCategoryButton() {
         let hidden = categories.isEmpty
-        categoryButton.isHidden = hidden
-        // Primero se suelta la que sobra: con las dos activas a la vez chocan, y UIKit rompe
-        // otra cualquiera para resolverlo (dejaba la lista de canales sin altura).
-        if hidden {
-            listTopToCategory?.isActive = false
-            listTopToGuide?.isActive = true
-        } else {
-            listTopToGuide?.isActive = false
-            listTopToCategory?.isActive = true
+        if (listTable.tableHeaderView == nil) != hidden {
+            listTable.tableHeaderView = hidden ? nil : categoryHeader
         }
         guard !hidden else { return }
         let selected = categories.first { $0.id == (currentCategory ?? "") } ?? categories[0]
@@ -682,6 +676,9 @@ final class VibePlayerController: UIViewController {
             state["subtitle"] = subtitleLabel.text ?? ""
             state["controls"] = overlayVisible
             state["list"] = !listPanel.isHidden
+            state["listItems"] = items.count
+            state["listRows"] = listTable.numberOfRows(inSection: 0)
+            state["listHeight"] = Int(listTable.bounds.height)
             state["seekTarget"] = seekTarget ?? NSNull()
             state["lastAction"] = lastAction
             // Tamaño de la interfaz (en horizontal, el ancho es el lado largo): la prueba
@@ -1716,10 +1713,10 @@ final class VibePlayerController: UIViewController {
         listTable.delegate = self
         listTable.translatesAutoresizingMaskIntoConstraints = false
         listPanel.addSubview(listTable)
-        categoryButton.isHidden = true
         categoryButton.accessibilityLabel = "Categoría"
-        categoryButton.translatesAutoresizingMaskIntoConstraints = false
-        listPanel.addSubview(categoryButton)
+        categoryButton.frame = categoryHeader.bounds.inset(by: UIEdgeInsets(top: 4, left: 8, bottom: 4, right: 8))
+        categoryButton.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        categoryHeader.addSubview(categoryButton)
         controlsRoot.addSubview(listPanel)
         controlsRoot.addSubview(lockButton)
 
@@ -1761,10 +1758,7 @@ final class VibePlayerController: UIViewController {
             listPanel.bottomAnchor.constraint(equalTo: root.bottomAnchor),
             listPanel.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             listPanel.widthAnchor.constraint(equalTo: root.widthAnchor, multiplier: 0.42),
-            categoryButton.topAnchor.constraint(equalTo: guide.topAnchor, constant: 8),
-            categoryButton.leadingAnchor.constraint(equalTo: listPanel.leadingAnchor, constant: 8),
-            categoryButton.trailingAnchor.constraint(lessThanOrEqualTo: guide.trailingAnchor, constant: -8),
-            categoryButton.heightAnchor.constraint(equalToConstant: 44),
+            listTable.topAnchor.constraint(equalTo: guide.topAnchor, constant: 8),
             listTable.bottomAnchor.constraint(equalTo: guide.bottomAnchor),
             listTable.leadingAnchor.constraint(equalTo: listPanel.leadingAnchor),
             listTable.trailingAnchor.constraint(equalTo: guide.trailingAnchor),
@@ -1773,9 +1767,7 @@ final class VibePlayerController: UIViewController {
             lockButton.widthAnchor.constraint(equalToConstant: 48),
             lockButton.heightAnchor.constraint(equalToConstant: 48),
         ])
-        listTopToGuide = listTable.topAnchor.constraint(equalTo: guide.topAnchor, constant: 8)
-        listTopToCategory = listTable.topAnchor.constraint(equalTo: categoryButton.bottomAnchor, constant: 4)
-        listTopToGuide?.isActive = true
+
         titles.setContentHuggingPriority(.defaultLow, for: .horizontal)
         titles.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // Los botones de la barra de arriba, a su tamaño: el título se queda con el resto

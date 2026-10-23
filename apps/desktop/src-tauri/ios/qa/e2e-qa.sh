@@ -505,6 +505,7 @@ player_tap "Ir al directo" contiene; sleep 4
 check "directo: «Ir al directo» vuelve al directo" 'for _ in $(seq 1 10); do [ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ] && break; sleep 1; done; [ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ]'
 before=$(player_titles)
 open_list; shot lista-canales
+echo "  lista de canales: $(player_field listItems) canales, $(player_field listRows) filas, $(player_field listHeight) pt de alto"
 check "directo: la lista de canales se abre en el reproductor" 'wait_native "La 2" 5 && [ "$(player_field list)" = "True" ]'
 check "directo: la lista lleva selector de categoría" 'wait_native "Categoría" 5'
 tap_label "La 2" contiene 5; sleep 6
