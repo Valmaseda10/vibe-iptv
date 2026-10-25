@@ -98,6 +98,9 @@ impl XtreamSource {
             if let Some(reason) = rejection_reason(&bytes) {
                 return Err(SourceError::Rejected(reason));
             }
+            if status.is_server_error() {
+                return Err(SourceError::ServerDown(status.as_u16()));
+            }
             return Err(SourceError::invalid_response(url.as_str(), format!("HTTP {status}")));
         }
 

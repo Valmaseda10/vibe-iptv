@@ -295,6 +295,9 @@ enum StreamError {
     AccountExpired,
     #[error("No se pudo conectar con el proveedor. Puede que hayas alcanzado el límite de conexiones simultáneas, que la cuenta esté caída, o que no haya conexión a internet. Inténtalo de nuevo en un momento.")]
     Unreachable,
+    /// El servidor del proveedor da error (5xx): no es la cuenta ni otro aparato.
+    #[error("El servidor de tu proveedor no responde ahora mismo (error {0}). No es la app ni otro aparato: es su servidor. Prueba de nuevo en unos minutos.")]
+    ProviderDown(u16),
     #[error("{}", no_data_message(*max_connections))]
     NoData { max_connections: i64 },
     #[error("ffmpeg o ffprobe no están instalados todavía (se empaquetan como sidecar en una fase posterior).")]
@@ -321,7 +324,7 @@ impl StreamError {
             StreamError::NotFound | StreamError::ProviderNotFound => StatusCode::NOT_FOUND,
             StreamError::BadKind => StatusCode::BAD_REQUEST,
             StreamError::NotAllowed => StatusCode::FORBIDDEN,
-            StreamError::Source(_) | StreamError::Unreachable | StreamError::MpvLaunchFailed(_) => StatusCode::BAD_GATEWAY,
+            StreamError::Source(_) | StreamError::Unreachable | StreamError::ProviderDown(_) | StreamError::MpvLaunchFailed(_) => StatusCode::BAD_GATEWAY,
             StreamError::Rejected(_) => StatusCode::FORBIDDEN,
             StreamError::NoData { .. } => StatusCode::GATEWAY_TIMEOUT,
             StreamError::AccountExpired => StatusCode::PAYMENT_REQUIRED,
@@ -930,13 +933,13 @@ async fn resolve_catchup_tier_and_url(
             let fallback = source.catchup_url_fallback(item).map_err(|err| StreamError::Source(err.to_string()))?;
             let Some(fallback_url) = fallback else {
                 tracing::warn!(error = %primary_err, "no se pudo inspeccionar el catch-up y no hay URL alternativa");
-                return Err(StreamError::Unreachable);
+                return Err(probe_failure(&primary_err, None));
             };
             match probe::probe_url(ffprobe_path, fallback_url.as_str(), DEFAULT_USER_AGENT).await {
                 Ok(result) => (fallback_url, result),
                 Err(fallback_err) => {
                     tracing::warn!(primary = %primary_err, fallback = %fallback_err, "ninguna de las dos formas de la URL de catch-up respondió");
-                    return Err(StreamError::Unreachable);
+                    return Err(probe_failure(&primary_err, Some(&fallback_err)));
                 }
             }
         }
@@ -998,13 +1001,13 @@ async fn resolve_tier_and_url(
             let fallback = source.stream_url_fallback(item).map_err(|err| StreamError::Source(err.to_string()))?;
             let Some(fallback_url) = fallback else {
                 tracing::warn!(error = %primary_err, "no se pudo inspeccionar el stream y no hay URL alternativa");
-                return Err(StreamError::Unreachable);
+                return Err(probe_failure(&primary_err, None));
             };
             match probe::probe_url(ffprobe_path, fallback_url.as_str(), DEFAULT_USER_AGENT).await {
                 Ok(result) => (fallback_url, result),
                 Err(fallback_err) => {
                     tracing::warn!(primary = %primary_err, fallback = %fallback_err, "ninguna de las dos formas de la URL respondió");
-                    return Err(StreamError::Unreachable);
+                    return Err(probe_failure(&primary_err, Some(&fallback_err)));
                 }
             }
         }
@@ -1122,15 +1125,32 @@ async fn proxy_passthrough(url: Url, range: Option<HeaderValue>, permit: StreamP
 }
 
 /// El proveedor respondió con un error: si dice por qué (`{"message": "..."}`, como el
-/// bloqueo por país), ese motivo; si no, el mensaje genérico de no poder conectar.
+/// bloqueo por país), ese motivo; si es un error de su servidor (5xx), que está caído; si
+/// no, el mensaje genérico de no poder conectar.
 async fn upstream_refusal(upstream: reqwest::Response) -> StreamError {
+    let status = upstream.status();
     let body = tokio::time::timeout(std::time::Duration::from_secs(3), upstream.bytes()).await;
-    match body {
-        Ok(Ok(bytes)) => match crate::sources::xtream::rejection_reason(&bytes[..bytes.len().min(4096)]) {
-            Some(reason) => StreamError::Rejected(reason),
-            None => StreamError::Unreachable,
-        },
-        _ => StreamError::Unreachable,
+    let reason = match body {
+        Ok(Ok(bytes)) => crate::sources::xtream::rejection_reason(&bytes[..bytes.len().min(4096)]),
+        _ => None,
+    };
+    match reason {
+        Some(reason) => StreamError::Rejected(reason),
+        None if status.is_server_error() => StreamError::ProviderDown(status.as_u16()),
+        None => StreamError::Unreachable,
+    }
+}
+
+/// Por qué no se pudo inspeccionar un stream: si el proveedor contestó con un error de su
+/// servidor, se dice; si no, el mensaje genérico.
+fn probe_failure(primary: &probe::ProbeError, fallback: Option<&probe::ProbeError>) -> StreamError {
+    let server_error = [Some(primary), fallback].into_iter().flatten().find_map(|err| match err {
+        probe::ProbeError::Http(code) if *code >= 500 => Some(*code),
+        _ => None,
+    });
+    match server_error {
+        Some(code) => StreamError::ProviderDown(code),
+        None => StreamError::Unreachable,
     }
 }
 

@@ -24,6 +24,9 @@ pub enum ProbeError {
     Timeout,
     #[error("ffprobe terminó con error")]
     ExitFailure,
+    /// El proveedor contestó con un error HTTP (500 si solo dice «5XX»).
+    #[error("el proveedor respondió HTTP {0}")]
+    Http(u16),
     #[error("la salida de ffprobe no se pudo interpretar")]
     InvalidOutput,
 }
@@ -118,7 +121,7 @@ pub async fn probe_url(ffprobe_path: &Path, url: &str, user_agent: &str) -> Resu
     command
         .args([
             "-v",
-            "quiet",
+            "error",
             "-print_format",
             "json",
             "-show_streams",
@@ -130,7 +133,9 @@ pub async fn probe_url(ffprobe_path: &Path, url: &str, user_agent: &str) -> Resu
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        // Solo para saber el código HTTP de un fallo (`http_status_in`); nunca se registra
+        // tal cual, porque puede llevar la URL con las credenciales (R5).
+        .stderr(Stdio::piped())
         // Si el timeout de abajo cancela la espera, tokio mata el proceso al soltar el
         // `Child` en vez de dejarlo huérfano intentando conectar indefinidamente.
         .kill_on_drop(true);
@@ -143,10 +148,21 @@ pub async fn probe_url(ffprobe_path: &Path, url: &str, user_agent: &str) -> Resu
         .map_err(ProbeError::Spawn)?;
 
     if !output.status.success() {
-        return Err(ProbeError::ExitFailure);
+        return Err(http_status_in(&String::from_utf8_lossy(&output.stderr)).map(ProbeError::Http).unwrap_or(ProbeError::ExitFailure));
     }
 
     parse_ffprobe_json(&output.stdout).ok_or(ProbeError::InvalidOutput)
+}
+
+/// El código HTTP de un «Server returned …» de ffmpeg/ffprobe: `403 Forbidden`, `404 Not
+/// Found` o `5XX Server Error reply` (que no dice cuál: se da 500).
+pub fn http_status_in(stderr: &str) -> Option<u16> {
+    let rest = stderr.split("Server returned ").nth(1)?;
+    let code: String = rest.chars().take(3).collect();
+    if code.eq_ignore_ascii_case("5XX") {
+        return Some(500);
+    }
+    code.parse().ok()
 }
 
 fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
@@ -297,6 +313,14 @@ pub fn audio_needs_transcode(audio_codec: Option<&str>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_providers_http_error_is_read_from_ffprobe() {
+        assert_eq!(http_status_in("[http @ 0x1] HTTP error 502\nhttps://x: Server returned 5XX Server Error reply"), Some(500));
+        assert_eq!(http_status_in("Server returned 403 Forbidden (access denied)"), Some(403));
+        assert_eq!(http_status_in("Server returned 404 Not Found"), Some(404));
+        assert_eq!(http_status_in("Connection refused"), None);
+    }
 
     #[test]
     fn stream_cache_key_is_stable_and_never_contains_the_url() {

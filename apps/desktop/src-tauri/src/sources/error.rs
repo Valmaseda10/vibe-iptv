@@ -21,6 +21,10 @@ pub enum SourceError {
     #[error("{0}")]
     Rejected(String),
 
+    /// El servidor del panel da error (5xx) incluso tras reintentar.
+    #[error("El servidor de tu proveedor no responde ahora mismo (error {0}). No es la app ni otro aparato: es su servidor. Prueba de nuevo en unos minutos.")]
+    ServerDown(u16),
+
     #[error("serie o categoría no encontrada: {remote_id}")]
     NotFound { remote_id: String },
 
