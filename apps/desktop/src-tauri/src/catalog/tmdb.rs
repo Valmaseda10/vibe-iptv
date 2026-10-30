@@ -130,7 +130,8 @@ impl TmdbClient {
 
         let mut delay = INITIAL_RETRY_DELAY;
         for attempt in 0..MAX_RETRIES {
-            let response = self.client.get(url.clone()).send().await.map_err(|err| TmdbError::Http(err.to_string()))?;
+            // Sin la URL: lleva la clave de TMDB (`api_key`) y el error acaba en el registro.
+            let response = self.client.get(url.clone()).send().await.map_err(|err| TmdbError::Http(err.without_url().to_string()))?;
 
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 if attempt + 1 == MAX_RETRIES {
@@ -143,7 +144,7 @@ impl TmdbClient {
             if !response.status().is_success() {
                 return Err(TmdbError::InvalidResponse(format!("HTTP {}", response.status())));
             }
-            return response.json::<T>().await.map_err(|err| TmdbError::InvalidResponse(err.to_string()));
+            return response.json::<T>().await.map_err(|err| TmdbError::InvalidResponse(err.without_url().to_string()));
         }
         Err(TmdbError::RateLimited)
     }

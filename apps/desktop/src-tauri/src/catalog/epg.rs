@@ -138,13 +138,15 @@ pub async fn download_xmltv(url: &str, user_agent: &str, dest_path: &Path) -> Re
         .build()
         .map_err(|err| EpgError::Download(err.to_string()))?;
 
-    let mut response = client.get(url).send().await.map_err(|err| EpgError::Download(err.to_string()))?;
+    // `without_url`: el error de reqwest lleva la URL, y la de la guía lleva usuario y
+    // contraseña (R5); acaba en el registro («importación de la guía EPG fallida»).
+    let mut response = client.get(url).send().await.map_err(|err| EpgError::Download(err.without_url().to_string()))?;
     if !response.status().is_success() {
         return Err(EpgError::Download(format!("HTTP {}", response.status())));
     }
 
     let mut file = tokio::fs::File::create(dest_path).await?;
-    while let Some(chunk) = response.chunk().await.map_err(|err| EpgError::Download(err.to_string()))? {
+    while let Some(chunk) = response.chunk().await.map_err(|err| EpgError::Download(err.without_url().to_string()))? {
         file.write_all(&chunk).await?;
     }
     file.flush().await?;
