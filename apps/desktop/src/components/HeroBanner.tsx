@@ -1,8 +1,11 @@
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { imagePath, useApiBase } from "../lib/api-client";
 import type { BrowseFeatured } from "../lib/api-types";
 import { useFavorites } from "../lib/favorites";
 import { IS_IOS } from "../lib/platform";
+import { usePlayerSession } from "../lib/playerSession";
+import { BackdropTrailer } from "./BackdropTrailer";
 import { HeartIcon } from "./icons";
 
 /** Portada grande de Inicio, Películas y Series, con el fondo del título destacado y por
@@ -16,6 +19,8 @@ export function HeroBanner({ featured }: { featured: BrowseFeatured }) {
   const isSeries = featured.kind === "series";
   const inList = isFavorite(featured.kind, featured.id);
   const isTop = featured.reason.startsWith("N.º");
+  const heroRef = useRef<HTMLDivElement>(null);
+  const trailerActive = useTrailerActive(heroRef);
 
   const openDetail = () =>
     isSeries
@@ -30,8 +35,11 @@ export function HeroBanner({ featured }: { featured: BrowseFeatured }) {
     : "flex items-center gap-2 rounded-lg bg-neutral-700/80 px-5 py-2.5 font-semibold text-white outline-none transition hover:bg-neutral-600/80 focus-visible:ring-2 focus-visible:ring-red-600";
 
   return (
-    <div className="relative h-[56vh] min-h-[340px] w-full overflow-hidden sm:h-[62vh] sm:min-h-[380px]">
+    <div ref={heroRef} className="relative h-[56vh] min-h-[340px] w-full overflow-hidden sm:h-[62vh] sm:min-h-[380px]" style={{ ["--trailer-h" as string]: "62vh" }}>
       {backdrop && <img key={backdrop} src={backdrop} alt="" className="hero-fade absolute inset-0 h-full w-full object-cover" />}
+      {backdrop && featured.trailer_key && (
+        <BackdropTrailer key={featured.trailer_key} youtubeKey={featured.trailer_key} desktop active={trailerActive} delayMs={2500} soundToggle />
+      )}
       <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent ios:from-black ios:via-black/40" />
       <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/85 via-neutral-950/20 to-transparent ios:from-black/60" />
 
@@ -70,6 +78,30 @@ export function HeroBanner({ featured }: { featured: BrowseFeatured }) {
       </div>
     </div>
   );
+}
+
+/** El tráiler de la portada solo corre con la portada a la vista, la ventana delante y
+ * nada sonando en el reproductor (ni en pequeño). */
+function useTrailerActive(ref: React.RefObject<HTMLDivElement | null>): boolean {
+  const { session } = usePlayerSession();
+  const [inView, setInView] = useState(true);
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden);
+
+  useEffect(() => {
+    const element = ref.current;
+    if (!element) return;
+    const observer = new IntersectionObserver(([entry]) => setInView((entry?.intersectionRatio ?? 0) >= 0.4), { threshold: [0, 0.4, 1] });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [ref]);
+
+  useEffect(() => {
+    const onChange = () => setPageVisible(!document.hidden);
+    document.addEventListener("visibilitychange", onChange);
+    return () => document.removeEventListener("visibilitychange", onChange);
+  }, []);
+
+  return inView && pageVisible && session === null;
 }
 
 export function HeroBannerSkeleton() {

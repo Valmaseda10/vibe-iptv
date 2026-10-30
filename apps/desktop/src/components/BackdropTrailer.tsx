@@ -1,38 +1,59 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { IS_IOS } from "../lib/platform";
+import { MuteIcon, VolumeIcon } from "./icons";
 
 const YOUTUBE_ORIGIN = "https://www.youtube-nocookie.com";
 
-/** Tráiler de fondo de una ficha, en silencio y sin controles, como Netflix (F15). Solo
- * en iOS y con Wi‑Fi (`network_is_metered`) y solo se ve cuando YouTube confirma que está
+type Props = {
+  youtubeKey: string;
+  /** También en el PC (la portada). Las fichas lo tienen solo en iPhone/iPad. */
+  desktop?: boolean;
+  /** `false` lo pausa y vuelve al fondo fijo: fuera de la vista, ventana oculta, algo sonando. */
+  active?: boolean;
+  /** Espera antes de cargar nada: si solo se está pasando, no se descarga el tráiler. */
+  delayMs?: number;
+  /** Botón para activar el sonido, abajo a la derecha. */
+  soundToggle?: boolean;
+};
+
+/** Tráiler de fondo, en silencio y sin controles, como Netflix (F15). En iOS solo con
+ * Wi‑Fi (`network_is_metered`), y solo se ve cuando YouTube confirma que está
  * reproduciendo: si el embed falla o el sistema no deja reproducir solo, el fondo se
  * queda como estaba, sin cajas de error. Al acabar, vuelve el fondo. No es un stream
  * del proveedor, así que no pasa por `StreamGuard` (R1). */
-export function BackdropTrailer({ youtubeKey }: { youtubeKey: string }) {
+export function BackdropTrailer({ youtubeKey, desktop = false, active = true, delayMs = 1500, soundToggle = false }: Props) {
   const frameRef = useRef<HTMLIFrameElement>(null);
+  const activeRef = useRef(active);
+  activeRef.current = active;
+  const loadedRef = useRef(false);
   const [allowed, setAllowed] = useState(false);
   const [visible, setVisible] = useState(false);
+  const [muted, setMuted] = useState(true);
+  const platformOk = IS_IOS || desktop;
 
   useEffect(() => {
-    let cancelled = false;
+    loadedRef.current = false;
     setAllowed(false);
     setVisible(false);
-    // Solo en iPhone/iPad (lo pidió el usuario para la app móvil; el PC no cambia).
-    if (!IS_IOS) return;
-    // Un instante de espera: si solo se está pasando por la ficha, no se carga nada.
+    setMuted(true);
+  }, [youtubeKey]);
+
+  useEffect(() => {
+    if (!platformOk || !active || allowed) return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
       invoke<boolean>("network_is_metered")
         .then((metered) => {
           if (!cancelled && !metered) setAllowed(true);
         })
         .catch(() => {});
-    }, 1500);
+    }, delayMs);
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [youtubeKey]);
+  }, [youtubeKey, platformOk, active, allowed, delayMs]);
 
   useEffect(() => {
     if (!allowed) return;
@@ -64,6 +85,11 @@ export function BackdropTrailer({ youtubeKey }: { youtubeKey: string }) {
     };
   }, [allowed]);
 
+  useEffect(() => {
+    // Antes de cargar, el `onLoad` ya lo tiene en cuenta.
+    if (allowed && loadedRef.current) command(frameRef.current, active ? "playVideo" : "pauseVideo");
+  }, [allowed, active]);
+
   if (!allowed) return null;
 
   const params = new URLSearchParams({
@@ -77,23 +103,49 @@ export function BackdropTrailer({ youtubeKey }: { youtubeKey: string }) {
     fs: "0",
     enablejsapi: "1",
   });
+  const shown = visible && active;
 
   return (
-    <iframe
-      ref={frameRef}
-      src={`${YOUTUBE_ORIGIN}/embed/${youtubeKey}?${params.toString()}`}
-      title=""
-      aria-hidden
-      tabIndex={-1}
-      allow="autoplay; encrypted-media"
-      // Para que YouTube mande el estado del reproductor por `postMessage`.
-      onLoad={() => frameRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "listening", id: 1, channel: "widget" }), YOUTUBE_ORIGIN)}
-      // Cubre todo el fondo (16:9 recortado) y un poco más, para que no asomen los bordes
-      // ni la barra de título del embed.
-      className={`pointer-events-none absolute left-1/2 top-1/2 aspect-video min-h-full min-w-full -translate-x-1/2 -translate-y-1/2 scale-[1.35] border-0 transition-opacity duration-1000 ${visible ? "opacity-100" : "opacity-0"}`}
-      style={{ width: "max(100%, calc(var(--trailer-h, 60vh) * 16 / 9))" }}
-    />
+    <>
+      <iframe
+        ref={frameRef}
+        src={`${YOUTUBE_ORIGIN}/embed/${youtubeKey}?${params.toString()}`}
+        title=""
+        aria-hidden
+        tabIndex={-1}
+        allow="autoplay; encrypted-media"
+        // Para que YouTube mande el estado del reproductor por `postMessage`.
+        onLoad={() => {
+          loadedRef.current = true;
+          frameRef.current?.contentWindow?.postMessage(JSON.stringify({ event: "listening", id: 1, channel: "widget" }), YOUTUBE_ORIGIN);
+          if (!activeRef.current) command(frameRef.current, "pauseVideo");
+        }}
+        // Cubre todo el fondo (16:9 recortado) y un poco más, para que no asomen los bordes
+        // ni la barra de título del embed.
+        className={`pointer-events-none absolute left-1/2 top-1/2 aspect-video min-h-full min-w-full -translate-x-1/2 -translate-y-1/2 scale-[1.35] border-0 transition-opacity duration-1000 ${shown ? "opacity-100" : "opacity-0"}`}
+        style={{ width: "max(100%, calc(var(--trailer-h, 60vh) * 16 / 9))" }}
+      />
+      {soundToggle && shown && (
+        <button
+          type="button"
+          onClick={() => {
+            command(frameRef.current, muted ? "unMute" : "mute");
+            setMuted(!muted);
+          }}
+          aria-label={muted ? "Activar el sonido del tráiler" : "Silenciar el tráiler"}
+          aria-pressed={!muted}
+          className="preview-in absolute bottom-8 right-4 z-10 rounded-full border border-white/60 bg-black/30 p-2.5 text-white outline-none backdrop-blur transition hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-red-600 sm:bottom-10 sm:right-10 ios:glass-clear ios:border-0"
+        >
+          {muted ? <MuteIcon className="h-5 w-5" /> : <VolumeIcon className="h-5 w-5" />}
+        </button>
+      )}
+    </>
   );
+}
+
+/** Orden al reproductor del embed por el API de iframes de YouTube. */
+function command(frame: HTMLIFrameElement | null, func: "playVideo" | "pauseVideo" | "mute" | "unMute") {
+  frame?.contentWindow?.postMessage(JSON.stringify({ event: "command", func, args: [] }), YOUTUBE_ORIGIN);
 }
 
 /** Estado del reproductor en los mensajes del API de iframes (1 reproduciendo, 0 terminado). */

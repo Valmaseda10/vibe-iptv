@@ -1604,6 +1604,16 @@ pub fn series_with_new_episodes(conn: &Connection, profile_id: i64, now: i64, wi
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }
 
+/// Tráiler de YouTube guardado de TMDB para una película o serie (`kind` `movie`/`series`).
+pub fn trailer_key(conn: &Connection, kind: &str, id: i64) -> Result<Option<String>> {
+    let sql = match kind {
+        "movie" => "SELECT youtube_trailer_key FROM movies WHERE id = ?1",
+        "series" => "SELECT youtube_trailer_key FROM series WHERE id = ?1",
+        _ => return Ok(None),
+    };
+    Ok(conn.query_row(sql, params![id], |row| row.get::<_, Option<String>>(0)).optional()?.flatten())
+}
+
 /// Serie a la que pertenece un episodio.
 pub fn series_id_of_episode(conn: &Connection, episode_id: i64) -> Result<Option<i64>> {
     conn.query_row(

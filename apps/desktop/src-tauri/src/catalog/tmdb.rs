@@ -206,7 +206,10 @@ impl TmdbClient {
     /// hay dato: TMDB simplemente no siempre tiene tráiler o certificación para todo.
     pub async fn movie_extras(&self, tmdb_id: i64) -> Result<TmdbExtras> {
         let response: MovieExtrasResponse = self
-            .get_json(&format!("/movie/{tmdb_id}"), &[("language", "es-ES"), ("append_to_response", "videos,release_dates,recommendations")])
+            .get_json(
+                &format!("/movie/{tmdb_id}"),
+                &[("language", "es-ES"), ("append_to_response", "videos,release_dates,recommendations"), ("include_video_language", VIDEO_LANGUAGES)],
+            )
             .await?;
         Ok(TmdbExtras {
             trailer_key: pick_trailer(&response.videos.results),
@@ -219,7 +222,10 @@ impl TmdbClient {
 
     pub async fn tv_extras(&self, tmdb_id: i64) -> Result<TmdbExtras> {
         let response: TvExtrasResponse = self
-            .get_json(&format!("/tv/{tmdb_id}"), &[("language", "es-ES"), ("append_to_response", "videos,content_ratings,recommendations")])
+            .get_json(
+                &format!("/tv/{tmdb_id}"),
+                &[("language", "es-ES"), ("append_to_response", "videos,content_ratings,recommendations"), ("include_video_language", VIDEO_LANGUAGES)],
+            )
             .await?;
         Ok(TmdbExtras {
             trailer_key: pick_trailer(&response.videos.results),
@@ -335,16 +341,24 @@ fn pick_certification<'a>(entries: impl Iterator<Item = (&'a str, Option<&'a str
     us.or(any)
 }
 
-/// Prefiere un tráiler "oficial" en YouTube; si no hay ninguno marcado como oficial,
-/// acepta el primer tráiler en YouTube que haya. Nunca un "Teaser"/"Clip"/"Featurette"
-/// si hay un "Trailer" de verdad disponible.
+/// Con `language=es-ES`, TMDB solo devuelve vídeos en español: muchos títulos se quedaban
+/// sin tráiler teniendo el original en inglés.
+const VIDEO_LANGUAGES: &str = "es,en,null";
+
+/// Tráiler en YouTube: primero en español, si no en inglés (los vídeos se piden en los dos,
+/// `VIDEO_LANGUAGES`) y, dentro de cada idioma, el "oficial" antes que el primero que haya.
+/// Nunca un "Teaser"/"Clip"/"Featurette".
 fn pick_trailer(results: &[VideoWire]) -> Option<String> {
     let youtube_trailers: Vec<&VideoWire> = results.iter().filter(|v| v.site == "YouTube" && v.kind == "Trailer").collect();
-    youtube_trailers
-        .iter()
-        .find(|v| v.official)
-        .or_else(|| youtube_trailers.first())
-        .map(|v| v.key.clone())
+    let rank = |v: &VideoWire| {
+        let language = match v.iso_639_1.as_str() {
+            "es" => 0,
+            "en" => 1,
+            _ => 2,
+        };
+        (language, !v.official)
+    };
+    youtube_trailers.iter().enumerate().min_by_key(|(i, v)| (rank(v), *i)).map(|(_, v)| v.key.clone())
 }
 
 /// "Acepta el primer resultado si la similitud del título supera 0,85 y el año coincide
@@ -922,6 +936,9 @@ struct VideoWire {
     kind: String,
     #[serde(default)]
     official: bool,
+    /// Idioma del vídeo (`es`, `en`...).
+    #[serde(default)]
+    iso_639_1: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1205,8 +1222,8 @@ mod tests {
     #[test]
     fn pick_trailer_prefers_official_over_first() {
         let results = vec![
-            VideoWire { key: "no-oficial".into(), site: "YouTube".into(), kind: "Trailer".into(), official: false },
-            VideoWire { key: "oficial".into(), site: "YouTube".into(), kind: "Trailer".into(), official: true },
+            VideoWire { key: "no-oficial".into(), site: "YouTube".into(), kind: "Trailer".into(), official: false, iso_639_1: String::new() },
+            VideoWire { key: "oficial".into(), site: "YouTube".into(), kind: "Trailer".into(), official: true, iso_639_1: String::new() },
         ];
         assert_eq!(pick_trailer(&results), Some("oficial".to_string()));
     }
@@ -1214,16 +1231,24 @@ mod tests {
     #[test]
     fn pick_trailer_ignores_teasers_and_non_youtube_sites() {
         let results = vec![
-            VideoWire { key: "teaser".into(), site: "YouTube".into(), kind: "Teaser".into(), official: true },
-            VideoWire { key: "vimeo".into(), site: "Vimeo".into(), kind: "Trailer".into(), official: true },
+            VideoWire { key: "teaser".into(), site: "YouTube".into(), kind: "Teaser".into(), official: true, iso_639_1: String::new() },
+            VideoWire { key: "vimeo".into(), site: "Vimeo".into(), kind: "Trailer".into(), official: true, iso_639_1: String::new() },
         ];
         assert_eq!(pick_trailer(&results), None);
     }
 
     #[test]
     fn pick_trailer_falls_back_to_first_trailer_when_none_official() {
-        let results = vec![VideoWire { key: "unico".into(), site: "YouTube".into(), kind: "Trailer".into(), official: false }];
+        let results = vec![VideoWire { key: "unico".into(), site: "YouTube".into(), kind: "Trailer".into(), official: false, iso_639_1: String::new() }];
         assert_eq!(pick_trailer(&results), Some("unico".to_string()));
+    }
+
+    #[test]
+    fn pick_trailer_prefers_spanish_then_english() {
+        let video = |key: &str, lang: &str, official: bool| VideoWire { key: key.into(), site: "YouTube".into(), kind: "Trailer".into(), official, iso_639_1: lang.into() };
+        assert_eq!(pick_trailer(&[video("en", "en", true), video("es", "es", false)]), Some("es".to_string()));
+        assert_eq!(pick_trailer(&[video("fr", "fr", true), video("en", "en", false)]), Some("en".to_string()));
+        assert_eq!(pick_trailer(&[video("en-1", "en", false), video("en-oficial", "en", true)]), Some("en-oficial".to_string()));
     }
 
     #[test]

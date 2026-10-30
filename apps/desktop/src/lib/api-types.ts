@@ -32,7 +32,11 @@ kind: string, id: number, clean_title: string, year: number | null, overview: st
 /**
  * «N.º 2 en España hoy», «Recomendada para ti»...
  */
-reason: string, };
+reason: string, 
+/**
+ * Tráiler de YouTube, de fondo y sin sonido tras unos segundos, como Netflix.
+ */
+trailer_key: string | null, };
 
 /**
  * Un título en una fila.

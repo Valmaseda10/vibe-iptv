@@ -558,7 +558,7 @@ fn join_tmdb_ids(ids: &[i64]) -> Option<String> {
 pub fn list_titles_without_extras(conn: &Connection, table: &str) -> Result<Vec<(i64, i64)>> {
     let table = if table == "series" { "series" } else { "movies" };
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, tmdb_id FROM {table} WHERE tmdb_id IS NOT NULL AND trailer_checked_at IS NULL ORDER BY id"
+        "SELECT id, tmdb_id FROM {table} WHERE tmdb_id IS NOT NULL AND trailer_checked_at IS NULL ORDER BY COALESCE(vote_count, 0) DESC, id"
     ))?;
     let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)

@@ -167,6 +167,8 @@ pub struct BrowseFeatured {
     pub rating: Option<f64>,
     /// «N.º 2 en España hoy», «Recomendada para ti»...
     pub reason: String,
+    /// Tráiler de YouTube, de fondo y sin sonido tras unos segundos, como Netflix.
+    pub trailer_key: Option<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -384,6 +386,10 @@ fn hydrate(conn: &rusqlite::Connection, plan: Plan, access: reads::ProfileAccess
         cards_by_kind.get(kind)?.get(&id)
     };
 
+    let featured_trailer = match &plan.featured {
+        Some(f) if allowed.contains(&(f.kind, f.id)) => reads::trailer_key(conn, f.kind, f.id)?,
+        _ => None,
+    };
     let featured = plan.featured.as_ref().and_then(|f| {
         let card = lookup(f.kind, f.id)?;
         Some(BrowseFeatured {
@@ -396,6 +402,7 @@ fn hydrate(conn: &rusqlite::Connection, plan: Plan, access: reads::ProfileAccess
             poster_path: card.poster_path.clone(),
             rating: card.rating,
             reason: f.reason.clone(),
+            trailer_key: featured_trailer,
         })
     });
 

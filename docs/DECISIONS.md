@@ -1941,6 +1941,16 @@ tests), recentrada en cada cambio de canal.
 - **«Mis gustos» en Ajustes (2026-10-30).** Lista lo valorado por el perfil, agrupado por
   valoración, para cambiarlo o quitarlo, y «Elegir más títulos» reabre el selector del
   primer arranque (`/api/taste/candidates?force=1`) sin repetir lo ya valorado.
+- **Tráiler de fondo en la portada, también en el PC (2026-10-30).** Inicio, Películas y
+  Series ponen el tráiler de YouTube del título destacado detrás de la portada, sin sonido,
+  a los 2,5 s, con un botón para activar el sonido. Se pausa y vuelve la imagen fija si la
+  portada sale de la vista, la ventana se oculta o hay algo en el reproductor (también en
+  pequeño). Las fichas siguen con tráiler de fondo solo en iPhone/iPad. Es YouTube, no el
+  proveedor: no pasa por `StreamGuard` (R1).
+- **Tráileres también en inglés (2026-10-30).** Con `language=es-ES` TMDB solo devuelve
+  vídeos en español y el 58 % de las películas se quedaba sin tráiler; ahora se piden en
+  español, inglés y sin idioma, prefiriendo el español. La migración 028 vuelve a mirar los
+  que no tenían, de más a menos votados.
 
 ## Deuda técnica conocida desde el diseño
 
