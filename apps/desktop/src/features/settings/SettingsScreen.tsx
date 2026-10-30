@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { SubtitlesSection } from "./SubtitlesSection";
+import { TasteSection } from "./TasteSection";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -483,6 +484,7 @@ export function SettingsScreen() {
       <AccountSection />
       <ProfileSection />
       <SubtitlesSection />
+      <TasteSection />
       <AdultCategoriesSection />
       {/* En iPhone y iPad no aplican: la app no sirve a otros dispositivos y el fichero de
           diagnóstico quedaría donde el usuario no puede abrirlo (F15). */}

@@ -52,7 +52,56 @@ pub fn browse_router(state: BrowseState) -> Router {
     Router::new()
         .route("/api/browse/:page", get(get_browse))
         .route("/api/taste/candidates", get(get_taste_candidates))
+        .route("/api/taste/ratings", get(get_rated_titles))
         .with_state(state)
+}
+
+/// Un título valorado por el perfil, para «Mis gustos» en Ajustes.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct RatedTitle {
+    /// `movie` o `series`.
+    pub kind: String,
+    #[ts(type = "number")]
+    pub id: i64,
+    pub clean_title: String,
+    pub poster_path: Option<String>,
+    /// -1 «No es para mí», 1 «Me gusta», 2 «Me encanta».
+    #[ts(type = "number")]
+    pub rating: i64,
+}
+
+#[derive(Deserialize)]
+struct TasteQuery {
+    profile_id: i64,
+    seed: Option<u64>,
+    /// `1`: ofrecer títulos aunque el perfil ya tenga gustos («Elegir más» en Ajustes).
+    #[serde(default)]
+    force: Option<u8>,
+}
+
+/// «Mis gustos»: lo que ha valorado el perfil, lo más reciente primero.
+async fn get_rated_titles(State(state): State<BrowseState>, Query(query): Query<TasteQuery>) -> Result<Json<Vec<RatedTitle>>, BrowseError> {
+    let db_path = state.db_path;
+    let titles = tokio::task::spawn_blocking(move || -> crate::db::Result<Vec<RatedTitle>> {
+        let conn = schema::open_readonly_at(&db_path)?;
+        let ratings = reads::list_ratings(&conn, query.profile_id)?;
+        let mut out = Vec::with_capacity(ratings.len());
+        for kind in ["movie", "series"] {
+            let ids: Vec<i64> = ratings.iter().filter(|r| r.item_kind == kind).map(|r| r.item_id).collect();
+            let cards = reads::browse_cards(&conn, kind, &ids)?;
+            for rating in ratings.iter().filter(|r| r.item_kind == kind) {
+                if let Some(card) = cards.get(&rating.item_id) {
+                    out.push((rating.rated_at, RatedTitle { kind: kind.into(), id: rating.item_id, clean_title: card.clean_title.clone(), poster_path: card.poster_path.clone(), rating: rating.rating }));
+                }
+            }
+        }
+        out.sort_by(|a, b| b.0.cmp(&a.0));
+        Ok(out.into_iter().map(|(_, title)| title).collect())
+    })
+    .await
+    .map_err(|_| BrowseError::Internal)??;
+    Ok(Json(titles))
 }
 
 /// «Elige lo que te gusta»: si el perfil aún no tiene gustos y qué títulos ofrecerle.
@@ -440,7 +489,8 @@ async fn get_browse(State(state): State<BrowseState>, AxumPath(page): AxumPath<S
 /// Títulos que se ofrecen en «Elige lo que te gusta».
 const TASTE_CANDIDATES: usize = 36;
 
-async fn get_taste_candidates(State(state): State<BrowseState>, Query(query): Query<BrowseQuery>) -> Result<Json<TasteCandidatesResponse>, BrowseError> {
+async fn get_taste_candidates(State(state): State<BrowseState>, Query(query): Query<TasteQuery>) -> Result<Json<TasteCandidatesResponse>, BrowseError> {
+    let force = query.force == Some(1);
     let profile_id = query.profile_id;
     let seed = query.seed.unwrap_or(0);
     let recommendations = crate::catalog::recommendations::get_cached_or_refresh(state.db_path.clone(), profile_id).await;
@@ -452,15 +502,19 @@ async fn get_taste_candidates(State(state): State<BrowseState>, Query(query): Qu
         let now = now_epoch();
         let movies = gather(&conn, "movie", profile_id, &recommendations, &trending, now)?;
         let series = gather(&conn, "series", profile_id, &recommendations, &trending, now)?;
-        let needed = reads::list_ratings(&conn, profile_id)?.is_empty() && movies.positives + series.positives < 3;
-        if !needed {
+        let ratings = reads::list_ratings(&conn, profile_id)?;
+        let needed = ratings.is_empty() && movies.positives + series.positives < 3;
+        if !needed && !force {
             return Ok(TasteCandidatesResponse { needed, items: Vec::new() });
         }
         let now_year = current_year();
         let cards = browse::taste_candidates(&movies.inputs(now_year), &series.inputs(now_year), seed, TASTE_CANDIDATES);
         let plan = Plan { featured: None, rows: vec![browse::PlannedRow { key: "taste".into(), title: String::new(), style: RowStyle::Poster, cards }] };
         let names: HashMap<&'static str, &HashMap<i64, String>> = [("movie", &movies.genre_names), ("series", &series.genre_names)].into_iter().collect();
-        let items = hydrate(&conn, plan, access, now, &names)?.rows.into_iter().next().map(|row| row.items).unwrap_or_default();
+        let rated: HashSet<(String, i64)> = ratings.into_iter().map(|r| (r.item_kind, r.item_id)).collect();
+        let mut items = hydrate(&conn, plan, access, now, &names)?.rows.into_iter().next().map(|row| row.items).unwrap_or_default();
+        // «Elegir más títulos» desde Ajustes: no volver a ofrecer lo ya valorado.
+        items.retain(|item| !rated.contains(&(item.kind.clone(), item.id)));
         Ok(TasteCandidatesResponse { needed, items })
     })
     .await

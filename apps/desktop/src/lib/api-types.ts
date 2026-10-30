@@ -450,6 +450,19 @@ export type ProviderSummary = { id: number, name: string, kind: ProviderKind, ba
 
 export type RandomTitleResponse = { kind: string, id: number, };
 
+/**
+ * Un título valorado por el perfil, para «Mis gustos» en Ajustes.
+ */
+export type RatedTitle = { 
+/**
+ * `movie` o `series`.
+ */
+kind: string, id: number, clean_title: string, poster_path: string | null, 
+/**
+ * -1 «No es para mí», 1 «Me gusta», 2 «Me encanta».
+ */
+rating: number, };
+
 export type RatingInput = { profile_id: number, item_kind: string, item_id: number, rating: number, };
 
 /**

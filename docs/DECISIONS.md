@@ -1929,6 +1929,18 @@ tests), recentrada en cada cambio de canal.
   primero). Una nota cuenta para «Aclamadas», «Joyas», «Clásicos» y la portada con 80 votos
   o más; sin votos todavía, sigue el filtro a ojo. En el catálogo real, 930 de las 3.000
   películas mejor puntuadas tenían menos de 80 votos (algún 10 con cero).
+- **«¿Qué te ha parecido…?» al terminar (2026-10-30).** Al acabar una película o un
+  episodio (≥ 90 % visto) se pregunta una vez por título, al volver del reproductor y nunca
+  encima del vídeo; se va sola a los 25 s. La valoración explícita es la señal que más
+  afina las recomendaciones y casi nadie va a la ficha a darla.
+- **«Nuevos episodios de tus series» (2026-10-30).** Fila en Inicio y en Series con las
+  series que sigue el perfil (en su lista o con algún episodio visto) que han cambiado en
+  el proveedor después de lo último que hizo con ellas, en los últimos 30 días. Se usa el
+  `last_modified` que ya trae `get_series` (migración 027): no se pide la ficha de cada
+  serie, que serían miles de consultas al panel.
+- **«Mis gustos» en Ajustes (2026-10-30).** Lista lo valorado por el perfil, agrupado por
+  valoración, para cambiarlo o quitarlo, y «Elegir más títulos» reabre el selector del
+  primer arranque (`/api/taste/candidates?force=1`) sin repetir lo ya valorado.
 
 ## Deuda técnica conocida desde el diseño
 
