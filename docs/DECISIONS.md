@@ -1892,6 +1892,31 @@ tests), recentrada en cada cambio de canal.
 - **El porqué de una recomendación dice lo que hizo el perfil:** «Porque te gustó X» (lo
   valoró), «Porque viste X», «Porque tienes X en tu lista» o «Porque empezaste X», también en
   las filas «Porque…».
+- **Servidor del proveedor caído (2026-10-25):** un 5xx del panel (al reproducir, al
+  comprobar la cuenta o al sincronizar) da «El servidor de tu proveedor no responde ahora
+  mismo (error 502). No es la app ni otro aparato...». Antes salía el mensaje genérico de
+  «límite de conexiones», y el usuario creyó que el PC tenía la cuenta ocupada. ffprobe
+  pasa de `-v quiet` a `-v error` para saber el código (su salida nunca se registra: lleva
+  la URL).
+- **«Elige lo que te gusta» (2026-10-30):** un perfil sin valoraciones y con menos de tres
+  señales de gusto ve al entrar en Inicio 36 títulos variados (`GET /api/taste/candidates`:
+  lo popular y lo mejor valorado de cada género grande, películas y series alternadas); cada
+  elegido es un «Me gusta». Valorar recalcula las recomendaciones al momento (sin el minuto
+  de espera de las demás señales) y la pantalla espera el resultado (`pending`). Saltarlo se
+  recuerda en el aparato (`localStorage`); las valoraciones viajan por la nube.
+- **Tarjeta ampliada (PC):** medio segundo con el ratón sobre una portada de las filas y sale
+  encima, en `body`, con el fondo del título, ▶, «Mi lista», más información, año, nota y
+  géneros (`BrowseItem` lleva ya `rating`, `genres` y `backdrop_path`). Nunca en iPhone/iPad.
+- **«Tus canales, ahora» en Inicio:** los canales favoritos con el programa en emisión, su
+  hora, cuánto lleva y lo siguiente (guía, cada minuto). Un canal con varias fuentes en
+  favoritos sale una vez.
+- **Reproductor en pequeño en iPhone y iPad:** botón nuevo junto a cerrar. La vista en la que
+  pinta VLC pasa a una ventana propia abajo a la derecha (encima de la barra de pestañas; se
+  arrastra de lado) y la pantalla del reproductor se retira: el mismo vídeo, sin volver a
+  pedir nada (R1). ✕ cierra, ⏯ pausa y tocarla la devuelve a pantalla completa; abrir otra
+  cosa la amplía y la reproduce. En la interfaz, `NativePlayerScreen` ya no lo monta la ruta
+  sino `PlayerHost` (como en el PC), para seguir escuchando a VLC (progreso, siguiente
+  episodio, cierre) mientras está en pequeño; eventos nuevos `minimized` y `expanded`.
 
 ## Deuda técnica conocida desde el diseño
 

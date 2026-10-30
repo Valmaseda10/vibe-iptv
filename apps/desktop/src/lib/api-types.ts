@@ -378,7 +378,7 @@ current_category: string | null, };
 /**
  * Lo que cuenta el reproductor nativo.
  */
-export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, } | { "type": "subtitle_style", style: SubtitleStyle, } | { "type": "source", index: number, } | { "type": "category", id: string, };
+export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, } | { "type": "subtitle_style", style: SubtitleStyle, } | { "type": "source", index: number, } | { "type": "category", id: string, } | { "type": "minimized" } | { "type": "expanded" };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 

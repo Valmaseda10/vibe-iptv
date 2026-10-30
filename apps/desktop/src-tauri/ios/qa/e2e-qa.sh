@@ -534,6 +534,15 @@ shot directo-tras-zapping
 echo "  zapping: «${before}» → «${after}»"
 check "directo: deslizar hacia arriba cambia de canal" 'player_open && [ "$before" != "$after" ]'
 check "directo: una sola conexión tras el zapping" '[ "$(active_cons)" -le 1 ]'
+# En pequeño (como en el PC): el directo sigue sonando mientras se navega por la app.
+player_tap "Reproductor en pequeño"; sleep 4
+check "directo: en pequeño sigue sonando y la app vuelve a la lista" '[ "$(player_field mini)" = "True" ] && [ "$(player_field playing)" = "True" ] && wait_visible "ruta:/live" exacta 8'
+shot directo-en-pequeno
+check "directo: en pequeño sigue habiendo una sola conexión" '[ "$(active_cons)" -le 1 ]'
+mini_xy=""
+for _ in 1 2 3; do a11y; mini_xy=$(find_label "Ampliar el reproductor" exacta); [ -n "$mini_xy" ] && break; sleep 1; done
+[ -n "$mini_xy" ] && tap_point $mini_xy; sleep 4
+check "directo: tocar la ventana pequeña vuelve a pantalla completa" 'player_open && [ "$(player_field mini)" = "False" ] && wait_visible "ruta:/player/channel/" contiene 8'
 close_player; sleep 2
 check "directo: cerrar vuelve a la lista de canales" 'wait_player_closed 10 && wait_visible "ruta:/live" exacta 8'
 check "directo: al cerrar se suelta la conexión" 'wait_cons_zero'

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { failoverNotice, nextUntriedSource, sourceLabel } from "./movieSources";
 import { readSubtitleStyle, saveSubtitleStyle } from "../../lib/subtitleStyle";
-import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -24,6 +24,7 @@ import type {
 } from "../../lib/api-types";
 import { findNextEpisode } from "./episodes";
 import { feedLabels } from "../../lib/channels";
+import type { PlayerSearch, PlayerSession } from "../../lib/playerSession";
 
 type Kind = "channel" | "movie" | "episode";
 
@@ -72,9 +73,22 @@ function episodeLabel(episode: EpisodeSummary): string {
  * viendo»), el progreso y los canales recientes. */
 const WATCH_DEPENDENT_QUERY_KEYS = ["movie", "series", "home", "browse", "progress", "live-recent", "player-series", "player-movie"];
 
-export function NativePlayerScreen() {
-  const { kind, id } = useParams({ from: "/player/$kind/$id" }) as { kind: Kind; id: string };
-  const search = useSearch({ from: "/player/$kind/$id" });
+type NativePlayerScreenProps = {
+  kind: Kind;
+  id: string;
+  search: PlayerSearch;
+  /** Encogido en la ventana pequeña de VLC mientras se navega por la app. */
+  mini: boolean;
+  /** Otro canal, fuente o episodio sin salir del reproductor (ver `PlayerHost`). */
+  onNavigate: (next: PlayerSession, options?: { replace?: boolean }) => void;
+  /** VLC volvió a pantalla completa desde la ventana pequeña. */
+  onExpand: () => void;
+  /** VLC se cerró: se acaba la sesión. */
+  onClose: () => void;
+};
+
+/** Lo monta `PlayerHost` (no la ruta): así sigue escuchando a VLC mientras está en pequeño. */
+export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onClose }: NativePlayerScreenProps) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const { data: base } = useApiBase();
@@ -258,9 +272,9 @@ export function NativePlayerScreen() {
       if (auto) setNotice(failoverNotice(activeSourceIndex, index));
       // Sigue en el mismo minuto, con la otra fuente.
       setStartSeconds(Math.floor(lastPositionRef.current));
-      navigate({ to: "/player/$kind/$id", params: { kind: "movie", id }, search: { ...search, source: target.id }, replace: true });
+      onNavigate({ kind: "movie", id, search: { ...search, source: target.id } }, { replace: true });
     },
-    [movieSources, activeSourceId, activeSourceIndex, navigate, id, search],
+    [movieSources, activeSourceId, activeSourceIndex, onNavigate, id, search],
   );
 
   const ready = base != null && profileId !== null && startSeconds !== null && (title != null || titleWaitOver);
@@ -342,14 +356,14 @@ export function NativePlayerScreen() {
       const target = channelFeeds[index];
       if (!target || target.id === itemId) return;
       setFeedAnchor({ feed: target.id, anchor: listChannelId });
-      navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(target.id) }, search, replace: true });
+      onNavigate({ kind: "channel", id: String(target.id), search }, { replace: true });
     },
-    [channelFeeds, itemId, listChannelId, navigate, search],
+    [channelFeeds, itemId, listChannelId, onNavigate, search],
   );
 
-  const latestRef = useRef({ kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed });
+  const latestRef = useRef({ kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose });
   useEffect(() => {
-    latestRef.current = { kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed };
+    latestRef.current = { kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose };
   });
 
   useEffect(() => {
@@ -398,7 +412,9 @@ export function NativePlayerScreen() {
           lastRequestRef.current = null;
           // La grabación del directo la suelta el propio reproductor (VibePlayer.swift) en
           // cuanto VLC ha parado: pedirlo desde aquí, antes, hacía que VLC reconectara.
-          latest.goBack();
+          // Cerrado desde la ventana pequeña: el usuario ya está en otra pantalla.
+          if (!latest.mini) latest.goBack();
+          latest.onClose();
           // Lo visto cambia la ficha ("Continuar", "Quedan N min"), Inicio y los recientes:
           // sin esto, la ficha seguía con los datos de antes de ver nada.
           // Solo lo que depende de lo visto: refrescar todo hacía que la app tardara en
@@ -408,17 +424,24 @@ export function NativePlayerScreen() {
           });
           break;
         }
+        case "minimized":
+          // Sigue sonando en pequeño: la interfaz vuelve a la pantalla de antes.
+          latest.goBack();
+          break;
+        case "expanded":
+          latest.onExpand();
+          break;
         case "switched": {
           // El reproductor ya está reproduciendo el nuevo canal o episodio: la interfaz solo
           // se pone al día (ruta, recientes, progreso) sin pedirle que vuelva a empezar.
           if (latest.kind === "channel") {
             playedPathRef.current = latest.channelPath(payload.id);
             // La lista elegida en el selector pasa a ser la del zapping.
-            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(payload.id) }, search: { categoryId: latest.scope.categoryId, favorites: latest.scope.favorites } });
+            latest.onNavigate({ kind: "channel", id: String(payload.id), search: { categoryId: latest.scope.categoryId, favorites: latest.scope.favorites } });
             setListScope(null);
           } else if (latest.kind === "episode") {
             playedPathRef.current = latest.episodePath(payload.id);
-            navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(payload.id) }, search: { seriesId: latest.search.seriesId } });
+            latest.onNavigate({ kind: "episode", id: String(payload.id), search: { seriesId: latest.search.seriesId } });
           }
           break;
         }
@@ -435,7 +458,7 @@ export function NativePlayerScreen() {
           // se ve no está en la lista elegida, se empieza por el primero.
           const target = list.length === 0 ? undefined : index === -1 ? list[0] : list.length < 2 ? undefined : list[(((index + payload.direction) % list.length) + list.length) % list.length];
           if (target) {
-            navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(target.id) }, search: { categoryId: latest.scope.categoryId, favorites: latest.scope.favorites } });
+            latest.onNavigate({ kind: "channel", id: String(target.id), search: { categoryId: latest.scope.categoryId, favorites: latest.scope.favorites } });
             setListScope(null);
           }
           break;
@@ -470,6 +493,9 @@ export function NativePlayerScreen() {
       unlisten.then((stop) => stop());
     };
   }, [navigate, queryClient]);
+
+  // En pequeño lo pinta VLC en su propia ventana; aquí no hay nada que enseñar.
+  if (mini) return null;
 
   return (
     <div className="flex h-full min-h-screen flex-col items-center justify-center gap-4 bg-black px-4 text-center text-neutral-300">

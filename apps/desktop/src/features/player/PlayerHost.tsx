@@ -4,6 +4,7 @@ import { IS_IOS } from "../../lib/platform";
 import { useActiveProfile } from "../../lib/activeProfile";
 import { sessionKey, usePlayerSession, type PlayerKind, type PlayerSearch, type PlayerSession } from "../../lib/playerSession";
 import { PlayerScreen } from "./PlayerScreen";
+import { NativePlayerScreen } from "./NativePlayerScreen";
 
 /** El reproductor del PC, montado por encima de toda la app (no dentro de la ruta).
  *
@@ -13,7 +14,9 @@ import { PlayerScreen } from "./PlayerScreen";
  * pantalla completa. Es el mismo `<video>` todo el rato: no se corta ni se vuelve a pedir
  * el stream al cambiar de tamaño (regla R1).
  *
- * En iPhone y iPad no aplica: allí reproduce VLC en una pantalla nativa. */
+ * En iPhone y iPad reproduce VLC en una pantalla nativa, que se encoge ella misma en su
+ * ventana pequeña; aquí se monta `NativePlayerScreen`, que habla con ella y sigue viva
+ * mientras tanto. */
 export function PlayerHost() {
   const { session, setSession } = usePlayerSession();
   const navigate = useNavigate();
@@ -66,7 +69,18 @@ export function PlayerHost() {
   }, [navigate, session]);
   const close = useCallback(() => setSession(null), [setSession]);
 
-  if (IS_IOS || !active) return null;
+  if (!active) return null;
+
+  if (IS_IOS) {
+    // Un solo reproductor para toda la sesión: los cambios de canal o de episodio que hace
+    // VLC por su cuenta no lo vuelven a montar (lo haría empezar de nuevo).
+    // Siempre dentro del mismo contenedor: cambiar de envoltorio lo volvería a montar.
+    return (
+      <div className={expanded ? "fixed inset-0 z-50 bg-black" : "hidden"}>
+        <NativePlayerScreen key="native" kind={active.kind} id={active.id} search={active.search} mini={!expanded} onNavigate={go} onExpand={expand} onClose={close} />
+      </div>
+    );
+  }
 
   // Cada título es un reproductor nuevo; el directo es uno solo aunque se cambie de canal
   // (zapping, número tecleado, «0» para el anterior...).

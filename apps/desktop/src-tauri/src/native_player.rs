@@ -164,6 +164,11 @@ pub enum NativePlayerEvent {
     Source { index: u32 },
     /// El usuario eligió otra lista de canales arriba de la lista (`id` de `categories`).
     Category { id: String },
+    /// El reproductor se encogió a una ventana pequeña y sigue sonando: la interfaz vuelve a
+    /// la pantalla de antes.
+    Minimized,
+    /// Se volvió a pantalla completa desde la ventana pequeña.
+    Expanded,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -367,6 +372,8 @@ mod tests {
         );
         assert_eq!(parse_event(r#"{"type":"source","index":1}"#), Some(NativePlayerEvent::Source { index: 1 }));
         assert_eq!(parse_event(r#"{"type":"category","id":"fav"}"#), Some(NativePlayerEvent::Category { id: "fav".into() }));
+        assert_eq!(parse_event(r#"{"type":"minimized"}"#), Some(NativePlayerEvent::Minimized));
+        assert_eq!(parse_event(r#"{"type":"expanded"}"#), Some(NativePlayerEvent::Expanded));
         assert_eq!(parse_event(r#"{"type":"otra_cosa"}"#), None);
     }
 

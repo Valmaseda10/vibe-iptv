@@ -145,6 +145,73 @@ private final class ControlsHostController: UIViewController {
     }
 }
 
+/// Raíz de la ventana pequeña del reproductor (al encogerlo): el vídeo de fondo, ✕ para
+/// cerrar, ⏯ para pausar, tocar para volver a pantalla completa y arrastrar para cambiarla
+/// de lado.
+private final class MiniHostController: UIViewController {
+    var onExpand: (() -> Void)?
+    var onClose: (() -> Void)?
+    var onTogglePlay: (() -> Void)?
+    var onRelayout: (() -> Void)?
+    var onDrag: ((UIPanGestureRecognizer) -> Void)?
+    let playButton = UIButton(type: .system)
+    private let closeButton = UIButton(type: .system)
+    private let expandButton = UIButton(type: .custom)
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .black
+        view.layer.cornerRadius = 14
+        view.layer.cornerCurve = .continuous
+        view.clipsToBounds = true
+
+        // Todo el vídeo es el botón de ampliar (para VoiceOver y las pruebas, con nombre).
+        expandButton.accessibilityLabel = "Ampliar el reproductor"
+        expandButton.addTarget(self, action: #selector(expandTapped), for: .touchUpInside)
+        expandButton.frame = view.bounds
+        expandButton.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        view.addSubview(expandButton)
+
+        let config = UIImage.SymbolConfiguration(pointSize: 13, weight: .bold)
+        for (button, symbol, label) in [(closeButton, "xmark", "Cerrar el reproductor"), (playButton, "pause.fill", "Reproducir o pausar")] {
+            button.setImage(UIImage(systemName: symbol, withConfiguration: config), for: .normal)
+            button.tintColor = .white
+            button.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+            button.layer.cornerRadius = 16
+            button.accessibilityLabel = label
+            button.translatesAutoresizingMaskIntoConstraints = false
+            view.addSubview(button)
+        }
+        closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
+        NSLayoutConstraint.activate([
+            closeButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 6),
+            closeButton.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -6),
+            closeButton.widthAnchor.constraint(equalToConstant: 32),
+            closeButton.heightAnchor.constraint(equalToConstant: 32),
+            playButton.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -6),
+            playButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 6),
+            playButton.widthAnchor.constraint(equalToConstant: 32),
+            playButton.heightAnchor.constraint(equalToConstant: 32),
+        ])
+        view.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(dragged(_:))))
+    }
+
+    func setPlaying(_ playing: Bool) {
+        playButton.setImage(UIImage(systemName: playing ? "pause.fill" : "play.fill", withConfiguration: UIImage.SymbolConfiguration(pointSize: 13, weight: .bold)), for: .normal)
+    }
+
+    override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: nil) { [weak self] _ in self?.onRelayout?() }
+    }
+
+    @objc private func expandTapped() { onExpand?() }
+    @objc private func closeTapped() { onClose?() }
+    @objc private func playTapped() { onTogglePlay?() }
+    @objc private func dragged(_ gesture: UIPanGestureRecognizer) { onDrag?(gesture) }
+}
+
 /// Fondo de los controles: oscuro arriba y abajo, transparente en el centro.
 private final class GradientView: UIView {
     override class var layerClass: AnyClass { CAGradientLayer.self }
@@ -207,9 +274,23 @@ private final class QaVlcLog: NSObject, VLCLibraryLogReceiverProtocol {
 
 final class VibePlayerController: UIViewController {
     private static weak var current: VibePlayerController?
+    /// Mientras está en pequeño ya no lo retiene nadie (no está presentado): se retiene aquí.
+    private static var minimized: VibePlayerController?
 
     /// Abre el reproductor, o cambia lo que reproduce si ya está abierto (zapping).
     fileprivate static func show(_ request: PlayRequest) {
+        // En pequeño: las actualizaciones se aplican sin más; algo nuevo que reproducir lo
+        // devuelve a pantalla completa.
+        if let controller = current, controller.isMini, !controller.closed {
+            if request.message != nil { return }
+            if request.update_only == true {
+                controller.update(request)
+            } else {
+                controller.expand()
+                controller.load(request)
+            }
+            return
+        }
         if let controller = current, controller.presentingViewController != nil {
             // Ya cerrado y saliendo de la pantalla: no se le vuelve a dar nada que reproducir
             // (se quedaba sonando sin verse, con el directo abierto con el proveedor).
@@ -321,6 +402,13 @@ final class VibePlayerController: UIViewController {
     fileprivate var hasLoaded = false
     /// Actualización llegada mientras el reproductor aún se estaba abriendo.
     fileprivate var pendingUpdate: PlayRequest?
+    /// Ventana pequeña abajo a la derecha (o a la izquierda, si se arrastra) cuando el
+    /// reproductor está encogido; `nil` a pantalla completa.
+    private var miniWindow: UIWindow?
+    private var miniHost: MiniHostController?
+    private var miniOnLeft = false
+    fileprivate var isMini: Bool { miniWindow != nil }
+    private let minimizeButton = UIButton(type: .system)
     private let listPanel = UIView()
     private let listTable = UITableView(frame: .zero, style: .plain)
     /// Selector de categoría arriba de la lista de canales (como el de la pantalla Directo).
@@ -695,8 +783,15 @@ final class VibePlayerController: UIViewController {
             state["lastAction"] = lastAction
             // Tamaño de la interfaz (en horizontal, el ancho es el lado largo): la prueba
             // lo necesita para girar sus toques y no depender de que idb devuelva la pantalla.
-            state["uiWidth"] = Int(controlsRoot.bounds.width)
-            state["uiHeight"] = Int(controlsRoot.bounds.height)
+            state["mini"] = isMini
+            if let screen = miniWindow?.windowScene?.coordinateSpace.bounds {
+                // En pequeño la app está como el usuario sujete el aparato, no en horizontal.
+                state["uiWidth"] = Int(screen.width)
+                state["uiHeight"] = Int(screen.height)
+            } else {
+                state["uiWidth"] = Int(controlsRoot.bounds.width)
+                state["uiHeight"] = Int(controlsRoot.bounds.height)
+            }
         }
         if let data = try? JSONSerialization.data(withJSONObject: state) {
             try? data.write(to: url, options: .atomic)
@@ -824,7 +919,132 @@ final class VibePlayerController: UIViewController {
         removeControlsWindow()
         clearRemoteCommands()
         sendEvent(["type": "closed", "position_s": position, "duration_s": duration, "ended": ended, "id": current?.id ?? NSNull()])
+        if let window = miniWindow {
+            // En pequeño ya no está presentado: solo se quita su ventana.
+            window.isHidden = true
+            window.rootViewController = nil
+            miniWindow = nil
+            miniHost = nil
+            VibePlayerController.minimized = nil
+            UIApplication.shared.isIdleTimerDisabled = false
+            return
+        }
         dismiss(animated: true) { VibePlayerController.restoreOrientation() }
+    }
+
+    // MARK: - En pequeño
+
+    @objc private func minimizeTapped() { minimize() }
+
+    /// Encoge el reproductor a una ventana pequeña y deja ver la app: el mismo vídeo sigue
+    /// (la vista en la que pinta VLC cambia de sitio, no se vuelve a abrir nada, regla R1).
+    private func minimize() {
+        guard !closed, miniWindow == nil, let scene = view.window?.windowScene else { return }
+        hideList()
+        hideOverlay()
+        let host = MiniHostController()
+        host.onExpand = { [weak self] in self?.expand() }
+        host.onClose = { [weak self] in self?.close(ended: false) }
+        host.onTogglePlay = { [weak self] in
+            guard let self = self else { return }
+            self.togglePlay()
+            self.miniHost?.setPlaying(self.player.isPlaying)
+        }
+        host.onRelayout = { [weak self] in self?.layoutMini(animated: false) }
+        host.onDrag = { [weak self] gesture in self?.dragMini(gesture) }
+        let window = UIWindow(windowScene: scene)
+        window.windowLevel = .normal + 2
+        window.backgroundColor = .clear
+        window.rootViewController = host
+        window.layer.shadowColor = UIColor.black.cgColor
+        window.layer.shadowOpacity = 0.55
+        window.layer.shadowRadius = 14
+        window.layer.shadowOffset = CGSize(width: 0, height: 6)
+        miniWindow = window
+        miniHost = host
+        VibePlayerController.minimized = self
+        layoutMini(animated: false)
+        window.isHidden = false
+        attachVideo(to: host.view, autoLayout: false)
+        host.setPlaying(player.isPlaying)
+        removeControlsWindow()
+        dismiss(animated: true) {
+            VibePlayerController.restoreOrientation()
+            UIApplication.shared.isIdleTimerDisabled = true
+            // El giro a vertical llega un instante después: se recoloca entonces.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) { [weak self] in self?.layoutMini(animated: true) }
+        }
+        sendEvent(["type": "minimized"])
+    }
+
+    /// Vuelve a pantalla completa desde la ventana pequeña.
+    fileprivate func expand() {
+        guard let window = miniWindow, !closed, let presenter = VibePlayerController.topViewController() else { return }
+        window.isHidden = true
+        window.rootViewController = nil
+        miniWindow = nil
+        miniHost = nil
+        VibePlayerController.minimized = nil
+        attachVideo(to: view, autoLayout: true)
+        presenter.present(self, animated: true) {
+            VibePlayerController.forceLandscape()
+            self.showOverlay()
+        }
+        sendEvent(["type": "expanded"])
+    }
+
+    /// Mueve la vista en la que pinta VLC a otro sitio sin parar el vídeo.
+    private func attachVideo(to container: UIView, autoLayout: Bool) {
+        videoView.removeFromSuperview()
+        container.insertSubview(videoView, at: 0)
+        if autoLayout {
+            videoView.translatesAutoresizingMaskIntoConstraints = false
+            NSLayoutConstraint.activate([
+                videoView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                videoView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                videoView.topAnchor.constraint(equalTo: container.topAnchor),
+                videoView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
+        } else {
+            videoView.translatesAutoresizingMaskIntoConstraints = true
+            videoView.frame = container.bounds
+            videoView.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+        }
+        applyFill()
+    }
+
+    /// Abajo, a la derecha (o a la izquierda), por encima de la barra de pestañas del iPhone.
+    private func layoutMini(animated: Bool) {
+        guard let window = miniWindow, let scene = window.windowScene else { return }
+        let bounds = scene.coordinateSpace.bounds
+        let insets = scene.windows.first { $0 !== window }?.safeAreaInsets ?? .zero
+        let phone = UIDevice.current.userInterfaceIdiom == .phone
+        let width = phone ? min(bounds.width, bounds.height) * 0.52 : 340
+        let height = width * 9 / 16
+        let bottom = insets.bottom + (phone && bounds.height > bounds.width ? 84 : 20)
+        let x = miniOnLeft ? insets.left + 12 : bounds.width - insets.right - 12 - width
+        let frame = CGRect(x: x, y: bounds.height - bottom - height, width: width, height: height)
+        if animated {
+            UIView.animate(withDuration: 0.25) { window.frame = frame }
+        } else {
+            window.frame = frame
+        }
+    }
+
+    /// Arrastrar la ventana pequeña: al soltarla se queda en el lado más cercano.
+    private func dragMini(_ gesture: UIPanGestureRecognizer) {
+        guard let window = miniWindow, let scene = window.windowScene else { return }
+        let translation = gesture.translation(in: nil)
+        switch gesture.state {
+        case .changed:
+            window.center = CGPoint(x: window.center.x + translation.x, y: window.center.y + translation.y)
+            gesture.setTranslation(.zero, in: nil)
+        case .ended, .cancelled:
+            miniOnLeft = window.center.x < scene.coordinateSpace.bounds.midX
+            layoutMini(animated: true)
+        default:
+            break
+        }
     }
 
     /// En el iPhone el reproductor va en horizontal; al cerrarlo, la app vuelve a como se
@@ -1519,6 +1739,7 @@ final class VibePlayerController: UIViewController {
             button.translatesAutoresizingMaskIntoConstraints = false
         }
         style(closeButton, "xmark", "Cerrar")
+        style(minimizeButton, "pip.enter", "Reproductor en pequeño")
         style(listButton, "list.bullet", "Lista")
         style(audioButton, "speaker.wave.2", "Audio")
         style(subtitlesButton, "captions.bubble", "Subtítulos")
@@ -1536,6 +1757,7 @@ final class VibePlayerController: UIViewController {
         listButton.addTarget(self, action: #selector(listTapped), for: .touchUpInside)
         lockButton.addTarget(self, action: #selector(lockTapped), for: .touchUpInside)
         closeButton.addTarget(self, action: #selector(closeTapped), for: .touchUpInside)
+        minimizeButton.addTarget(self, action: #selector(minimizeTapped), for: .touchUpInside)
         playButton.addTarget(self, action: #selector(playTapped), for: .touchUpInside)
         backButton.addTarget(self, action: #selector(backTapped), for: .touchUpInside)
         forwardButton.addTarget(self, action: #selector(forwardTapped), for: .touchUpInside)
@@ -1609,7 +1831,8 @@ final class VibePlayerController: UIViewController {
         tools.spacing = 2
         tools.alignment = .center
         let toolsGlass = glassWrap(tools, cornerRadius: 22, insets: UIEdgeInsets(top: 0, left: 6, bottom: 0, right: 6))
-        let topBar = UIStackView(arrangedSubviews: [closeGlass, titles, liveBadge, goLiveButton, toolsGlass])
+        let minimizeGlass = glassCircle(minimizeButton, size: 44)
+        let topBar = UIStackView(arrangedSubviews: [closeGlass, minimizeGlass, titles, liveBadge, goLiveButton, toolsGlass])
         topBar.spacing = 14
         topBar.alignment = .center
         topBar.translatesAutoresizingMaskIntoConstraints = false
