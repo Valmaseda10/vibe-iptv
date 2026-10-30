@@ -784,6 +784,10 @@ final class VibePlayerController: UIViewController {
             // Tamaño de la interfaz (en horizontal, el ancho es el lado largo): la prueba
             // lo necesita para girar sus toques y no depender de que idb devuelva la pantalla.
             state["mini"] = isMini
+            if let frame = miniWindow?.frame {
+                // Dónde está la ventana pequeña: idb no ve dentro de ella.
+                state["miniFrame"] = [Int(frame.minX), Int(frame.minY), Int(frame.width), Int(frame.height)]
+            }
             if let screen = miniWindow?.windowScene?.coordinateSpace.bounds {
                 // En pequeño la app está como el usuario sujete el aparato, no en horizontal.
                 state["uiWidth"] = Int(screen.width)

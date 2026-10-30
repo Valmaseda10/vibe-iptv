@@ -539,10 +539,19 @@ player_tap "Reproductor en pequeño"; sleep 4
 check "directo: en pequeño sigue sonando y la app vuelve a la lista" '[ "$(player_field mini)" = "True" ] && [ "$(player_field playing)" = "True" ] && wait_visible "ruta:/live" exacta 8'
 shot directo-en-pequeno
 check "directo: en pequeño sigue habiendo una sola conexión" '[ "$(active_cons)" -le 1 ]'
-mini_xy=""
-for _ in 1 2 3; do a11y; mini_xy=$(find_label "Ampliar el reproductor" exacta); [ -n "$mini_xy" ] && break; sleep 1; done
-[ -n "$mini_xy" ] && tap_point $mini_xy; sleep 4
+# idb no ve dentro de la ventana pequeña (es otra ventana): se toca donde el reproductor
+# dice que está. Centro: ampliar; esquina de arriba a la derecha: su ✕.
+mini_tap() {
+  local frame
+  frame=$(player_field miniFrame | tr -d '[] ')
+  [ -n "$frame" ] || return 1
+  IFS=, read -r mx my mw mh <<< "$frame"
+  tap_point $((mx + mw * $1 / 100)) $((my + mh * $2 / 100))
+}
+mini_tap 50 50; sleep 4
 check "directo: tocar la ventana pequeña vuelve a pantalla completa" 'player_open && [ "$(player_field mini)" = "False" ] && wait_visible "ruta:/player/channel/" contiene 8'
+# Si se quedó en pequeño, se cierra con su ✕ para que no arrastre al resto de la prueba.
+if [ "$(player_field mini)" = "True" ]; then mini_tap 88 20; sleep 3; fi
 close_player; sleep 2
 check "directo: cerrar vuelve a la lista de canales" 'wait_player_closed 10 && wait_visible "ruta:/live" exacta 8'
 check "directo: al cerrar se suelta la conexión" 'wait_cons_zero'
