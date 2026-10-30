@@ -1917,6 +1917,13 @@ tests), recentrada en cada cambio de canal.
   cosa la amplía y la reproduce. En la interfaz, `NativePlayerScreen` ya no lo monta la ruta
   sino `PlayerHost` (como en el PC), para seguir escuchando a VLC (progreso, siguiente
   episodio, cierre) mientras está en pequeño; eventos nuevos `minimized` y `expanded`.
+- **Emparejamiento con TMDB, segunda vuelta (2026-10-30):** la búsqueda quita restos del
+  proveedor («V O», «(720 )», «1008p», «-2020», dos puntos sin espacio) y, si con el año no
+  sale nada, repite sin él aceptando solo un título casi idéntico (el año del proveedor a
+  veces es el de la temporada). Migración 024: 137 títulos más (quedan 485 series y 235
+  películas, casi todo documentales minoritarios que TMDB no tiene).
+- **«Ver todo ›» en las filas** de género, «Aclamadas» y «Novedades»: abre el catálogo
+  completo con ese filtro u orden.
 
 ## Deuda técnica conocida desde el diseño
 

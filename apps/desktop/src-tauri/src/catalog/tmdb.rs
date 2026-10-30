@@ -2,6 +2,8 @@
 //! de `tmdb_id` si el proveedor lo da, 5 peticiones concurrentes con reintento
 //! exponencial ante 429. Ver "Emparejamiento con TMDB" en `docs/DATA-MODEL.md`.
 
+use std::sync::LazyLock;
+use regex::Regex;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -359,6 +361,17 @@ pub fn choose_best_match<'a>(results: &'a [TmdbSearchHit], query: &str, year: Op
     })
 }
 
+/// Sin año: el primero de los primeros resultados cuyo título (traducido u original) sea
+/// casi idéntico al buscado.
+pub fn choose_close_match<'a>(results: &'a [TmdbSearchHit], query: &str) -> Option<&'a TmdbSearchHit> {
+    let queries = query_variants(query);
+    results.iter().take(CANDIDATES_CHECKED).find(|hit| {
+        std::iter::once(hit.title.as_str())
+            .chain(hit.original_title.as_deref())
+            .any(|name| queries.iter().any(|q| similarity(&comparable(name), q) >= NO_YEAR_SIMILARITY))
+    })
+}
+
 /// Título sin signos de puntuación ni espacios repetidos, para comparar «Thank You,
 /// Goodnight - The Bon Jovi Story» con «Thank You, Goodnight: The Bon Jovi Story».
 fn comparable(text: &str) -> String {
@@ -427,6 +440,43 @@ fn cache_key(kind: MediaKind, title: &str, year: Option<i32>) -> String {
     format!("{kind_str}:{}:{}", title.trim().to_lowercase(), year.map(|y| y.to_string()).unwrap_or_default())
 }
 
+/// Restos que el proveedor deja en algunos nombres y que hacen fallar la búsqueda: versión
+/// original («V O», «VOSE»), una calidad rota («(720 )», «1008p»), el año pegado al final
+/// («Utopia -2020») y los dos puntos sin espacio («Star Trek:LA SERIE ORIGINAL»).
+static QUERY_JUNK: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [
+        r"(?i)\s+v\.?\s?o\.?(?:\s?s\.?\s?e\.?)?\s*$",
+        r"\(\s*\d{3,4}\s*[pP]?\s*\)",
+        r"(?i)\s+\d{3,4}p\s*$",
+        r"\s*-\s*(?:19|20)\d{2}\s*$",
+    ]
+    .into_iter()
+    .filter_map(|pattern| Regex::new(pattern).ok())
+    .collect()
+});
+static COLON_SPACING: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"\s*:\s*").ok());
+
+/// El título listo para buscarlo en TMDB (ver `QUERY_JUNK`).
+pub fn tidy_query(title: &str) -> String {
+    let mut text = title.to_string();
+    for re in QUERY_JUNK.iter() {
+        text = re.replace_all(&text, "").into_owned();
+    }
+    if let Some(re) = COLON_SPACING.as_ref() {
+        text = re.replace_all(&text, ": ").into_owned();
+    }
+    let tidy = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if tidy.is_empty() {
+        title.trim().to_string()
+    } else {
+        tidy
+    }
+}
+
+/// Sin año, solo vale un título casi idéntico: un nombre corto («Éxodo») podría ser
+/// cualquier otra cosa.
+const NO_YEAR_SIMILARITY: f64 = 0.95;
+
 async fn search_with_fallback(client: &TmdbClient, kind: MediaKind, title: &str, year: Option<i32>) -> Result<Vec<TmdbSearchHit>> {
     let hits = match kind {
         MediaKind::Movie => client.search_movie(title, year, "es-ES").await?,
@@ -474,11 +524,21 @@ async fn match_title(
         }
     }
 
-    let hits = match search_with_fallback(client, kind, title, year).await {
+    let query = tidy_query(title);
+    let hits = match search_with_fallback(client, kind, &query, year).await {
         Ok(hits) => hits,
         Err(_) => return MatchOutcome { state: "error", data: None }, // transitorio: no se cachea
     };
-    let accepted = choose_best_match(&hits, title, year).cloned().map(TmdbMatch::from);
+    let mut accepted = choose_best_match(&hits, &query, year).cloned().map(TmdbMatch::from);
+    // El año del proveedor a veces es el de la temporada o el de la edición, no el del
+    // estreno: si con el año no sale, se busca sin él, pero solo vale un título casi igual.
+    if accepted.is_none() && year.is_some() {
+        let hits = match search_with_fallback(client, kind, &query, None).await {
+            Ok(hits) => hits,
+            Err(_) => return MatchOutcome { state: "error", data: None },
+        };
+        accepted = choose_close_match(&hits, &query).cloned().map(TmdbMatch::from);
+    }
 
     let cached_form = match &accepted {
         Some(m) => CachedOutcome::Matched(m.clone()),
@@ -987,6 +1047,24 @@ mod tests {
     fn choose_best_match_accepts_the_alternative_title_in_brackets() {
         let family = hit("The Family", Some(2016));
         assert!(choose_best_match(&[family], "La familia (The Family)", None).is_some());
+    }
+
+    #[test]
+    fn junk_left_by_the_provider_is_removed_before_searching() {
+        assert_eq!(tidy_query("The Clearing V O"), "The Clearing");
+        assert_eq!(tidy_query("The Good Fight(720 )"), "The Good Fight");
+        assert_eq!(tidy_query("¿Qué culpa tiene Fatmagül? 1008p"), "¿Qué culpa tiene Fatmagül?");
+        assert_eq!(tidy_query("Utopia -2020"), "Utopia");
+        assert_eq!(tidy_query("Star Trek:LA SERIE ORIGINAL"), "Star Trek: LA SERIE ORIGINAL");
+        assert_eq!(tidy_query("Power Rangers :Furia dino"), "Power Rangers: Furia dino");
+        assert_eq!(tidy_query("Blade Runner 2049"), "Blade Runner 2049", "un número que es parte del título se queda");
+        assert_eq!(tidy_query("55"), "55");
+    }
+
+    #[test]
+    fn without_a_year_only_an_almost_identical_title_is_accepted() {
+        assert!(choose_close_match(&[hit("La casa que construyeron los dragones", Some(2024))], "La casa que construyeron los dragones").is_some());
+        assert!(choose_close_match(&[hit("Éxodo: Dioses y reyes", Some(2014))], "Éxodo").is_none());
     }
 
     #[test]
