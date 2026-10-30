@@ -209,11 +209,18 @@ const NOT_ACCLAIMED_GENRES: [i64; 6] = [99, 10402, 10764, 10770, 10763, 10767];
 /// Por encima de esto, en TMDB casi siempre es una nota con un puñado de votos.
 const MAX_CREDIBLE_RATING: f64 = 9.3;
 
-/// Nota que se puede creer: entre `min` y `MAX_CREDIBLE_RATING`, con fondo y sinopsis (lo
-/// que tiene datos completos en TMDB suele tener votos de verdad) y fuera de los géneros
-/// de nota poco fiable.
+/// Votos de TMDB para fiarse de una nota.
+const MIN_CREDIBLE_VOTES: i64 = 80;
+
+/// Nota que se puede creer: con votos de sobra en TMDB (si ya se saben) o, mientras no, a
+/// ojo: entre `min` y `MAX_CREDIBLE_RATING` y con fondo y sinopsis. Siempre fuera de los
+/// géneros de nota poco fiable.
 fn credible(entry: &BrowseIndexRow, min: f64) -> bool {
-    entry.hero_ready && entry.rating.is_some_and(|r| r >= min && r <= MAX_CREDIBLE_RATING) && !entry.genres.iter().any(|g| NOT_ACCLAIMED_GENRES.contains(g))
+    let rating_ok = match entry.votes {
+        Some(votes) => votes >= MIN_CREDIBLE_VOTES && entry.rating.is_some_and(|r| r >= min),
+        None => entry.rating.is_some_and(|r| r >= min && r <= MAX_CREDIBLE_RATING),
+    };
+    entry.hero_ready && rating_ok && !entry.genres.iter().any(|g| NOT_ACCLAIMED_GENRES.contains(g))
 }
 
 /// Nombre de un género para una fila. TMDB da algunos de series sin traducir.
@@ -250,7 +257,11 @@ fn genre_label(kind: &str, genre: i64, name: &str, home: bool) -> String {
 /// Peso de un título en una fila de descubrimiento: su nota, los géneros del perfil y si
 /// es reciente.
 fn discovery_weight(entry: &BrowseIndexRow, taste: &Taste, now_year: i32) -> f64 {
-    let quality = entry.rating.filter(|r| *r <= MAX_CREDIBLE_RATING).map(|r| ((r - 4.0) / 5.0).clamp(0.1, 1.2)).unwrap_or(0.3);
+    let trusted = match entry.votes {
+        Some(votes) => entry.rating.filter(|_| votes >= MIN_CREDIBLE_VOTES / 4),
+        None => entry.rating.filter(|r| *r <= MAX_CREDIBLE_RATING),
+    };
+    let quality = trusted.map(|r| ((r - 4.0) / 5.0).clamp(0.1, 1.2)).unwrap_or(0.3);
     let affinity = entry.genres.iter().filter_map(|g| taste.affinity.get(g)).cloned().fold(0.0, f64::max);
     let aversion = entry.genres.iter().filter_map(|g| taste.aversion.get(g)).cloned().fold(0.0, f64::max);
     let fresh = if entry.year.is_some_and(|y| y >= now_year - 3) { 1.15 } else { 1.0 };
@@ -661,7 +672,7 @@ mod tests {
     use super::*;
 
     fn entry(id: i64, rating: f64, year: i32, genres: &[i64]) -> BrowseIndexRow {
-        BrowseIndexRow { id, rating: Some(rating), year: Some(year), genres: genres.to_vec(), hero_ready: true }
+        BrowseIndexRow { id, rating: Some(rating), year: Some(year), genres: genres.to_vec(), hero_ready: true, votes: None }
     }
 
     /// 200 títulos: géneros 28 (acción), 35 (comedia) y 18 (drama), notas y años variados.
@@ -818,6 +829,19 @@ mod tests {
         for genre in [28, 35, 18] {
             assert!(movie_ids.iter().any(|id| index.iter().any(|e| e.id == *id && e.genres.contains(&genre))), "género {genre}");
         }
+    }
+
+    #[test]
+    fn a_high_rating_with_few_votes_is_not_acclaimed() {
+        let mut few = entry(1, 9.6, 2020, &[18]);
+        few.votes = Some(3);
+        let mut many = entry(2, 8.4, 2020, &[18]);
+        many.votes = Some(12_000);
+        let mut unknown_but_plausible = entry(3, 8.0, 2020, &[18]);
+        unknown_but_plausible.votes = None;
+        assert!(!credible(&few, 7.5));
+        assert!(credible(&many, 7.5));
+        assert!(credible(&unknown_but_plausible, 7.5));
     }
 
     #[test]

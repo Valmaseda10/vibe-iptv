@@ -1756,6 +1756,8 @@ pub struct BrowseIndexRow {
     pub genres: Vec<i64>,
     /// Tiene fondo y sinopsis: puede ir en la portada.
     pub hero_ready: bool,
+    /// Votos en TMDB (`None` mientras no se han completado, ver migración 025).
+    pub votes: Option<i64>,
 }
 
 fn title_table(kind: &str) -> &'static str {
@@ -1771,11 +1773,11 @@ fn title_table(kind: &str) -> &'static str {
 pub fn browse_index(conn: &Connection, kind: &str) -> Result<Vec<BrowseIndexRow>> {
     let table = title_table(kind);
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, rating, year, genres, backdrop_path IS NOT NULL AND overview IS NOT NULL FROM {table}
+        "SELECT id, rating, year, genres, backdrop_path IS NOT NULL AND overview IS NOT NULL, vote_count FROM {table}
          WHERE tmdb_state = 'matched' AND COALESCE(poster_path, provider_poster_url) IS NOT NULL"
     ))?;
     let rows = stmt.query_map([], |row| {
-        Ok(BrowseIndexRow { id: row.get(0)?, rating: row.get(1)?, year: row.get(2)?, genres: parse_genres(row.get(3)?), hero_ready: row.get::<_, i64>(4)? != 0 })
+        Ok(BrowseIndexRow { id: row.get(0)?, rating: row.get(1)?, year: row.get(2)?, genres: parse_genres(row.get(3)?), hero_ready: row.get::<_, i64>(4)? != 0, votes: row.get(5)? })
     })?;
     rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
 }

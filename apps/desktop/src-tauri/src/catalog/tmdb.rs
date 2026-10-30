@@ -57,6 +57,9 @@ pub struct TmdbMatch {
     pub genre_ids: Vec<i64>,
     /// Solo se rellena vía `movie_details` (la búsqueda no lo trae). Ver docs/DECISIONS.md.
     pub runtime_min: Option<i32>,
+    /// Votos en TMDB: lo fiable que es `rating`. `None` en lo guardado antes de tenerlo.
+    #[serde(default)]
+    pub vote_count: Option<i64>,
 }
 
 /// Resultado crudo de `search/movie` o `search/tv`, antes de decidir si se acepta.
@@ -72,6 +75,7 @@ pub struct TmdbSearchHit {
     pub backdrop_path: Option<String>,
     pub rating: Option<f64>,
     pub genre_ids: Vec<i64>,
+    pub vote_count: Option<i64>,
 }
 
 impl From<TmdbSearchHit> for TmdbMatch {
@@ -84,6 +88,7 @@ impl From<TmdbSearchHit> for TmdbMatch {
             rating: hit.rating,
             genre_ids: hit.genre_ids,
             runtime_min: None,
+            vote_count: hit.vote_count,
         }
     }
 }
@@ -174,6 +179,7 @@ impl TmdbClient {
             rating: response.vote_average,
             genre_ids: response.genres.into_iter().map(|g| g.id).collect(),
             runtime_min: response.runtime,
+            vote_count: response.vote_count,
         })
     }
 
@@ -187,6 +193,7 @@ impl TmdbClient {
             rating: response.vote_average,
             genre_ids: response.genres.into_iter().map(|g| g.id).collect(),
             runtime_min: None,
+            vote_count: response.vote_count,
         })
     }
 
@@ -644,12 +651,50 @@ async fn store_outcome(conn: &AsyncMutex<Connection>, kind: MediaKind, id: i64, 
         rating: outcome.data.as_ref().and_then(|m| m.rating),
         genres_json: genres_json.as_deref(),
         runtime_min: outcome.data.as_ref().and_then(|m| m.runtime_min),
+        vote_count: outcome.data.as_ref().and_then(|m| m.vote_count),
     };
     let conn = conn.lock().await;
     let _ = match kind {
         MediaKind::Movie => queries::update_movie_tmdb_result(&conn, id, &db_outcome),
         _ => queries::update_series_tmdb_result(&conn, id, &db_outcome),
     };
+}
+
+/// Títulos emparejados sin votos que se completan en cada arranque, los mejor valorados
+/// primero (son los que salen en «Aclamadas» y en la portada).
+const VOTES_BACKFILL_PER_RUN: i64 = 3000;
+
+/// Completa los votos de TMDB de lo emparejado antes de guardarlos (migración 025): una
+/// consulta por título, unos pocos miles por arranque. Lo que TMDB ya no conoce se marca
+/// con 0 para no volver a pedirlo; un fallo de red queda para la próxima vez.
+pub async fn run_votes_pass(conn: Connection, client: Arc<TmdbClient>) -> Result<u32> {
+    let pending = queries::list_titles_without_votes(&conn, VOTES_BACKFILL_PER_RUN)?;
+    let conn = Arc::new(AsyncMutex::new(conn));
+    let stored = Arc::new(AtomicU32::new(0));
+    let mut handles = Vec::with_capacity(pending.len());
+    for (table, id, tmdb_id) in pending {
+        let conn = Arc::clone(&conn);
+        let client = Arc::clone(&client);
+        let stored = Arc::clone(&stored);
+        handles.push(tokio::spawn(async move {
+            let details = if table == "series" { client.tv_details(tmdb_id, "es-ES").await } else { client.movie_details(tmdb_id, "es-ES").await };
+            let votes = match details {
+                Ok(m) => Some(m.vote_count.unwrap_or(0)),
+                Err(TmdbError::InvalidResponse(_)) => Some(0),
+                Err(_) => None,
+            };
+            if let Some(votes) = votes {
+                let conn = conn.lock().await;
+                if queries::set_vote_count(&conn, table, id, votes).is_ok() {
+                    stored.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }));
+    }
+    for handle in handles {
+        let _ = handle.await;
+    }
+    Ok(stored.load(Ordering::SeqCst))
 }
 
 /// Pide los nombres de género de película y de serie a TMDB — sin tocar la base de
@@ -767,6 +812,8 @@ struct MovieSearchHit {
     #[serde(default)]
     vote_average: Option<f64>,
     #[serde(default)]
+    vote_count: Option<i64>,
+    #[serde(default)]
     genre_ids: Vec<i64>,
 }
 
@@ -782,6 +829,7 @@ impl MovieSearchHit {
             backdrop_path: self.backdrop_path,
             rating: self.vote_average,
             genre_ids: self.genre_ids,
+            vote_count: self.vote_count,
         }
     }
 }
@@ -809,6 +857,8 @@ struct TvSearchHit {
     #[serde(default)]
     vote_average: Option<f64>,
     #[serde(default)]
+    vote_count: Option<i64>,
+    #[serde(default)]
     genre_ids: Vec<i64>,
 }
 
@@ -824,6 +874,7 @@ impl TvSearchHit {
             backdrop_path: self.backdrop_path,
             rating: self.vote_average,
             genre_ids: self.genre_ids,
+            vote_count: self.vote_count,
         }
     }
 }
@@ -848,6 +899,8 @@ struct MovieDetailsResponse {
     backdrop_path: Option<String>,
     #[serde(default)]
     vote_average: Option<f64>,
+    #[serde(default)]
+    vote_count: Option<i64>,
     #[serde(default)]
     genres: Vec<GenreObj>,
     #[serde(default)]
@@ -881,6 +934,8 @@ struct TvDetailsResponse {
     backdrop_path: Option<String>,
     #[serde(default)]
     vote_average: Option<f64>,
+    #[serde(default)]
+    vote_count: Option<i64>,
     #[serde(default)]
     genres: Vec<GenreObj>,
 }
@@ -989,7 +1044,7 @@ mod tests {
     }
 
     fn hit(title: &str, year: Option<i32>) -> TmdbSearchHit {
-        TmdbSearchHit { id: 1, title: title.to_string(), original_title: None, year, overview: None, poster_path: None, backdrop_path: None, rating: None, genre_ids: vec![] }
+        TmdbSearchHit { id: 1, title: title.to_string(), original_title: None, year, overview: None, poster_path: None, backdrop_path: None, rating: None, genre_ids: vec![], vote_count: None }
     }
 
     #[test]

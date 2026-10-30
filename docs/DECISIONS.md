@@ -1924,6 +1924,11 @@ tests), recentrada en cada cambio de canal.
   películas, casi todo documentales minoritarios que TMDB no tiene).
 - **«Ver todo ›» en las filas** de género, «Aclamadas» y «Novedades»: abre el catálogo
   completo con ese filtro u orden.
+- **Votos de TMDB (migración 025):** se guardan al emparejar (la búsqueda los trae) y, para
+  lo ya emparejado, 3.000 por arranque (mitad películas, mitad series, las mejor valoradas
+  primero). Una nota cuenta para «Aclamadas», «Joyas», «Clásicos» y la portada con 80 votos
+  o más; sin votos todavía, sigue el filtro a ojo. En el catálogo real, 930 de las 3.000
+  películas mejor puntuadas tenían menos de 80 votos (algún 10 con cero).
 
 ## Deuda técnica conocida desde el diseño
 

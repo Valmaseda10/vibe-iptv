@@ -510,9 +510,20 @@ fn spawn_tmdb_matching(app: AppHandle) {
                 return;
             }
         };
-        match tmdb::run_extras_pass(conn, client, Arc::new(AtomicBool::new(false)), on_progress).await {
+        match tmdb::run_extras_pass(conn, Arc::clone(&client), Arc::new(AtomicBool::new(false)), on_progress).await {
             Ok(stored) => tracing::info!(stored, "clasificación por edad y extras de TMDB al día"),
             Err(err) => tracing::error!(error = %err, "paso de extras de TMDB fallido"),
+        }
+
+        // Y los votos de lo que se emparejó antes de guardarlos (migración 025), poco a poco.
+        let Ok(conn) = schema::open_connection(&app) else { return };
+        match tmdb::run_votes_pass(conn, client).await {
+            Ok(stored) if stored > 0 => {
+                tracing::info!(stored, "votos de TMDB completados");
+                crate::catalog::browse::clear_index_cache();
+            }
+            Ok(_) => {}
+            Err(err) => tracing::error!(error = %err, "paso de votos de TMDB fallido"),
         }
     });
 }

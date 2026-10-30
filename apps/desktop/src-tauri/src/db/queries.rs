@@ -467,12 +467,13 @@ pub struct TmdbOutcome<'a> {
     pub rating: Option<f64>,
     pub genres_json: Option<&'a str>,
     pub runtime_min: Option<i32>,
+    pub vote_count: Option<i64>,
 }
 
 pub fn update_movie_tmdb_result(conn: &Connection, movie_id: i64, outcome: &TmdbOutcome) -> Result<()> {
     conn.execute(
         "UPDATE movies SET tmdb_state=?1, tmdb_id=?2, overview=?3, poster_path=?4, backdrop_path=?5, rating=?6,
-            genres=?7, runtime_min=?8 WHERE id=?9",
+            genres=?7, runtime_min=?8, vote_count=?9 WHERE id=?10",
         params![
             outcome.state,
             outcome.tmdb_id,
@@ -482,6 +483,7 @@ pub fn update_movie_tmdb_result(conn: &Connection, movie_id: i64, outcome: &Tmdb
             outcome.rating,
             outcome.genres_json,
             outcome.runtime_min,
+            outcome.vote_count,
             movie_id
         ],
     )?;
@@ -491,7 +493,7 @@ pub fn update_movie_tmdb_result(conn: &Connection, movie_id: i64, outcome: &Tmdb
 pub fn update_series_tmdb_result(conn: &Connection, series_id: i64, outcome: &TmdbOutcome) -> Result<()> {
     conn.execute(
         "UPDATE series SET tmdb_state=?1, tmdb_id=?2, overview=?3, poster_path=?4, backdrop_path=?5, rating=?6,
-            genres=?7 WHERE id=?8",
+            genres=?7, vote_count=?8 WHERE id=?9",
         params![
             outcome.state,
             outcome.tmdb_id,
@@ -500,9 +502,34 @@ pub fn update_series_tmdb_result(conn: &Connection, series_id: i64, outcome: &Tm
             outcome.backdrop_path,
             outcome.rating,
             outcome.genres_json,
+            outcome.vote_count,
             series_id
         ],
     )?;
+    Ok(())
+}
+
+/// Emparejados sin votos de TMDB (`(tabla, id, tmdb_id)`), los mejor valorados primero.
+pub fn list_titles_without_votes(conn: &Connection, limit: i64) -> Result<Vec<(&'static str, i64, i64)>> {
+    let mut out = Vec::new();
+    for table in ["movies", "series"] {
+        let mut stmt = conn.prepare(&format!(
+            "SELECT id, tmdb_id FROM {table} WHERE tmdb_state = 'matched' AND tmdb_id IS NOT NULL AND vote_count IS NULL
+             ORDER BY rating DESC NULLS LAST, id LIMIT ?1"
+        ))?;
+        // Mitad y mitad: si no, las series esperaban a que acabaran todas las películas.
+        let rows = stmt.query_map(params![(limit + 1) / 2], |row| Ok((table, row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)))?;
+        for row in rows {
+            out.push(row?);
+        }
+    }
+    Ok(out)
+}
+
+/// Guarda los votos de TMDB de un título (`table`: `movies` o `series`).
+pub fn set_vote_count(conn: &Connection, table: &str, id: i64, votes: i64) -> Result<()> {
+    let table = if table == "series" { "series" } else { "movies" };
+    conn.execute(&format!("UPDATE {table} SET vote_count = ?1 WHERE id = ?2"), params![votes, id])?;
     Ok(())
 }
 
@@ -1164,6 +1191,7 @@ mod tests {
             rating: Some(7.8),
             genres_json: Some("[28,80]"),
             runtime_min: Some(118),
+            vote_count: Some(4200),
         };
         update_movie_tmdb_result(&conn, pending[0].id, &outcome).unwrap();
 
