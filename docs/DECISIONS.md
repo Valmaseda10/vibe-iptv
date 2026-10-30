@@ -1975,6 +1975,11 @@ tests), recentrada en cada cambio de canal.
   veces contra un panel que bloquea por país). Ahora se apunta la hora del intento en
   `app_settings` y no se repite hasta pasadas 2 h, aunque se reinicie. Sincronizar a mano
   desde Ajustes no cambia.
+- **Arranque medido (2026-10-30, versión 0.2.0 compilada).** Desde lanzar el `.exe` hasta:
+  interfaz pintada ≈ 0,5 s, Inicio con portada y filas ≈ 0,63 s, primeras portadas
+  cargadas ≈ 0,8 s (cuatro arranques, catálogo real de ~24.000 títulos, WebView con su
+  propia carpeta de datos). El objetivo de R4 (< 2 s) se cumple con margen; no se
+  optimiza nada más. Medido con Playwright por CDP (`--remote-debugging-port`).
 
 ## Deuda técnica conocida desde el diseño
 
