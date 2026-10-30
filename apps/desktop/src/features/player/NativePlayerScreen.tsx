@@ -71,6 +71,9 @@ function episodeLabel(episode: EpisodeSummary): string {
  * contenedor); el directo, desde la grabación del núcleo para poder pausarlo. */
 /** Datos que cambian al ver algo: fichas («Continuar», «Quedan»), Inicio («Continuar
  * viendo»), el progreso y los canales recientes. */
+/** Cierre del reproductor nativo pendiente (ver el efecto de desmontaje). */
+let pendingNativeClose: number | undefined;
+
 const WATCH_DEPENDENT_QUERY_KEYS = ["movie", "series", "home", "browse", "progress", "live-recent", "player-series", "player-movie"];
 
 type NativePlayerScreenProps = {
@@ -342,6 +345,17 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
     invoke("native_player_play", { request: { ...request, update_only: true } }).catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [itemsKey]);
+
+  // Si la sesión se acaba sin que VLC se haya cerrado (cambio de perfil con el reproductor
+  // en pequeño), se cierra: si no, seguiría sonando sin nadie que lo escuche. Programado y
+  // cancelable: en desarrollo, el modo estricto de React desmonta y vuelve a montar al
+  // instante, y eso no debe cerrar lo que se acaba de abrir.
+  useEffect(() => {
+    window.clearTimeout(pendingNativeClose);
+    return () => {
+      if (!closedRef.current) pendingNativeClose = window.setTimeout(() => void invoke("native_player_close").catch(() => {}), 0);
+    };
+  }, []);
 
   const goBack = useCallback(() => {
     if (kind === "movie") navigate({ to: "/movies/$movieId", params: { movieId: id } });

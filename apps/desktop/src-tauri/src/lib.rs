@@ -110,6 +110,7 @@ pub fn run() {
             get_server_port,
             ensure_server,
             native_player::native_player_play,
+            native_player::native_player_close,
             native_player::network_is_metered,
             native_player::reduce_transparency,
             commands::qa_e2e_enabled,

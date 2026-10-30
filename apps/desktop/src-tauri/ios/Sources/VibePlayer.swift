@@ -130,6 +130,12 @@ public func vibePlayerPresent(_ json: UnsafePointer<CChar>) {
     }
 }
 
+/// Cierra el reproductor si está abierto (también en pequeño): p. ej. al cambiar de perfil.
+@_cdecl("vibe_player_close")
+public func vibePlayerClose() {
+    DispatchQueue.main.async { VibePlayerController.closeCurrent() }
+}
+
 /// Raíz de la ventana de los controles (ver `VibePlayerController.controlsWindow`): misma
 /// orientación que el reproductor y transparente, para que se vea el vídeo de debajo.
 private final class ControlsHostController: UIViewController {
@@ -276,6 +282,11 @@ final class VibePlayerController: UIViewController {
     private static weak var current: VibePlayerController?
     /// Mientras está en pequeño ya no lo retiene nadie (no está presentado): se retiene aquí.
     private static var minimized: VibePlayerController?
+
+    fileprivate static func closeCurrent() {
+        guard let controller = minimized ?? current, !controller.closed else { return }
+        controller.close(ended: false)
+    }
 
     /// Abre el reproductor, o cambia lo que reproduce si ya está abierto (zapping).
     fileprivate static func show(_ request: PlayRequest) {

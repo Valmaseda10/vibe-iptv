@@ -199,6 +199,13 @@ pub fn native_player_play(request: NativePlayRequest) -> Result<(), NativePlayer
     platform::present(&request)
 }
 
+/// Comando Tauri: cierra el reproductor nativo si está abierto (también en pequeño), p. ej.
+/// al cambiar de perfil. En escritorio no hace nada.
+#[tauri::command]
+pub fn native_player_close() {
+    platform::close();
+}
+
 /// Comando Tauri: si la conexión actual gasta datos (móvil) o no hay red. En escritorio
 /// siempre `false`. Con `true` no se reproduce el tráiler de fondo de las fichas.
 #[tauri::command]
@@ -225,6 +232,7 @@ mod platform {
 
     extern "C" {
         fn vibe_player_present(json: *const c_char);
+        fn vibe_player_close();
         fn vibe_network_start();
         fn vibe_network_is_metered() -> bool;
         fn vibe_reduce_transparency() -> bool;
@@ -284,6 +292,11 @@ mod platform {
         }
     }
 
+    pub fn close() {
+        // SAFETY: función de Swift sin argumentos; cierra en el hilo principal.
+        unsafe { vibe_player_close() };
+    }
+
     pub fn present(request: &NativePlayRequest) -> Result<(), NativePlayerError> {
         let json = serde_json::to_string(request).map_err(|_| NativePlayerError::InvalidRequest)?;
         let json = CString::new(json).map_err(|_| NativePlayerError::InvalidRequest)?;
@@ -332,6 +345,8 @@ mod platform {
     pub fn present(_request: &NativePlayRequest) -> Result<(), NativePlayerError> {
         Err(NativePlayerError::Unsupported)
     }
+
+    pub fn close() {}
 }
 
 pub use platform::install;
