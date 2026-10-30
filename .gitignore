@@ -12,3 +12,6 @@ apps/desktop/src-tauri/binaries/*
 .firebase/
 firebase-debug.log
 firestore-debug.log
+
+# Instaladores generados por tools/publicar-version.mjs.
+target-release/

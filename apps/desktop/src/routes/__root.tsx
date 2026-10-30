@@ -5,6 +5,7 @@ import { ActiveProfileGate } from "../features/profiles/ActiveProfileGate";
 import { PlayerHost } from "../features/player/PlayerHost";
 import { PlayerSessionProvider } from "../lib/playerSession";
 import { RatePrompt } from "../components/RatePrompt";
+import { UpdateToast } from "../components/UpdateToast";
 
 export const rootRoute = createRootRoute({
   component: () => (
@@ -18,6 +19,7 @@ export const rootRoute = createRootRoute({
           <PlayerHost />
           {/* «¿Te ha gustado?» al terminar algo. */}
           <RatePrompt />
+          <UpdateToast />
         </PlayerSessionProvider>
       </ActiveProfileGate>
     </AccountGate>

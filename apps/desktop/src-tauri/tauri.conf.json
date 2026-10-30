@@ -23,6 +23,15 @@
       "csp": null
     }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkxNkM5RDE5RUEzNzU4MEUKUldRT1dEZnFHWjFza1RiZzlzbytsbEZwbFJrb1lYUXNQSHVnbGJaYlRwWEQ0d21COE1pb2JFaUgK",
+      "endpoints": ["https://github.com/Valmaseda10/vibe-iptv/releases/latest/download/latest.json"],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  },
   "bundle": {
     "active": false,
     "icon": [

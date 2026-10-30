@@ -10,6 +10,11 @@ mod native_player;
 mod server;
 mod sources;
 mod sync;
+#[cfg(desktop)]
+mod updater;
+#[cfg(mobile)]
+#[path = "updater_mobile.rs"]
+mod updater;
 mod util;
 
 use std::net::TcpListener as StdTcpListener;
@@ -63,10 +68,14 @@ pub fn run() {
 
     let server_control = Arc::new(ServerControl::new(port));
 
-    tauri::Builder::default()
+    let builder = tauri::Builder::default();
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         .manage(Arc::clone(&server_control))
         .manage(stream_guard.clone())
         .manage(diagnostics_log)
+        .manage(updater::PendingUpdate::default())
         .setup(move |app| {
             let app_data_dir = app.path().app_data_dir().expect("no se pudo resolver el directorio de datos");
             let image_cache_dir = app_data_dir.join("images");
@@ -103,6 +112,7 @@ pub fn run() {
             #[cfg(debug_assertions)]
             commands::seed_qa_e2e(app.handle().clone(), stream_guard.clone());
             native_player::install(app.handle().clone());
+            updater::start(app.handle().clone(), stream_guard.clone());
 
             let app_handle_for_autosync = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -132,6 +142,8 @@ pub fn run() {
             has_tmdb_api_key,
             match_tmdb,
             export_diagnostics_log,
+            updater::update_ready,
+            updater::install_update,
         ])
         .run(tauri::generate_context!())
         .expect("error al arrancar VIBE IPTV");
