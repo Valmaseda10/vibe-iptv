@@ -367,9 +367,11 @@ fn new_temp_file() -> std::io::Result<PathBuf> {
     Ok(dir.join(format!("{}-{suffix}.ts", std::process::id())))
 }
 
-/// Borra grabaciones que quedaran de una ejecución anterior (cierre a la fuerza).
+/// Borra grabaciones que quedaran de una ejecución anterior (cierre a la fuerza). Solo las
+/// de otros procesos: las de este pueden estar en uso (en los tests, varios servidores
+/// arrancan a la vez y uno borraba la grabación que otro estaba leyendo).
 pub fn clear_temp_root() {
-    let _ = std::fs::remove_dir_all(temp_root());
+    crate::util::temp_files::remove_other_processes_entries(&temp_root());
 }
 
 #[cfg(test)]

@@ -5,5 +5,6 @@ pub mod keychain;
 pub mod parental;
 pub mod redact;
 pub mod stream_guard;
+pub mod temp_files;
 
 pub use redact::redact;

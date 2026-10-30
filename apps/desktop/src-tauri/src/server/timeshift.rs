@@ -79,7 +79,7 @@ pub fn temp_root() -> PathBuf {
 }
 
 pub fn clear_temp_root() {
-    let _ = std::fs::remove_dir_all(temp_root());
+    crate::util::temp_files::remove_other_processes_entries(&temp_root());
 }
 
 /// Carpeta nueva para una grabación. Nombre aleatorio, sin nada del canal ni del
