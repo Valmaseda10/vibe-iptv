@@ -359,6 +359,7 @@ mod tests {
                         cover_url: None,
                         plot: None,
                         release_date: None,
+                        last_modified: None,
                     })
                     .collect(),
             }

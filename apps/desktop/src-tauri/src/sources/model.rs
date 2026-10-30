@@ -63,6 +63,9 @@ pub struct RawSeries {
     pub cover_url: Option<String>,
     pub plot: Option<String>,
     pub release_date: Option<String>,
+    /// Cuándo cambió por última vez en el proveedor (epoch): sube al añadir episodios
+    /// (`last_modified` de `get_series`, ver docs/XTREAM-API.md). `None` en M3U.
+    pub last_modified: Option<i64>,
 }
 
 /// Duración y códecs de una película, sin abrir ningún stream (F "premium": informe de

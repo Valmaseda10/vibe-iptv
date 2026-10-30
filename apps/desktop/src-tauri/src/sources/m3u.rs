@@ -135,6 +135,7 @@ impl M3uSource {
                         cover_url: entry.tvg_logo.clone(),
                         plot: None,
                         release_date: None,
+                        last_modified: None,
                     });
 
                     series_episodes.entry(key).or_default().push(RawEpisode {

@@ -318,14 +318,18 @@ pub fn upsert_series(conn: &Connection, provider_id: i64, category_map: &HashMap
 
     let category_id = series.category_remote_id.as_ref().and_then(|id| category_map.get(id).copied());
     conn.execute(
-        "INSERT INTO series_sources (series_id, provider_id, remote_id, category_id, raw_title)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO series_sources (series_id, provider_id, remote_id, category_id, raw_title, last_modified)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(provider_id, remote_id) DO UPDATE SET
             series_id = excluded.series_id,
             category_id = excluded.category_id,
-            raw_title = excluded.raw_title",
-        params![series_id, provider_id, series.remote_id, category_id, series.raw_title],
+            raw_title = excluded.raw_title,
+            last_modified = excluded.last_modified",
+        params![series_id, provider_id, series.remote_id, category_id, series.raw_title, series.last_modified],
     )?;
+    if let Some(changed) = series.last_modified {
+        conn.execute("UPDATE series SET updated_at = MAX(COALESCE(updated_at, 0), ?1) WHERE id = ?2", params![changed, series_id])?;
+    }
     Ok(())
 }
 
@@ -1034,6 +1038,7 @@ mod tests {
             cover_url: None,
             plot: None,
             release_date: None,
+            last_modified: None,
         };
         let fields = TitleFields { clean_title: "Serie de Ejemplo", year: None, match_key: "serie-de-ejemplo-0000", quality: None, language: None };
         let empty_map = HashMap::new();
@@ -1061,6 +1066,7 @@ mod tests {
             cover_url: None,
             plot: None,
             release_date: None,
+            last_modified: None,
         };
         let fields = TitleFields { clean_title: "Otra Serie", year: None, match_key: "otra-serie-0000", quality: None, language: None };
         upsert_series(&conn, provider_id, &category_map, &series, &fields).unwrap();

@@ -2136,7 +2136,7 @@ mod tests {
             conn.execute("UPDATE series SET tmdb_state = 'matched', tmdb_id = 999 WHERE id = ?1", rusqlite::params![series_id]).unwrap();
             write_queries::set_series_extras(&conn, series_id, None, None, &[999, 1396]).unwrap();
 
-            let series_raw = crate::sources::model::RawSeries { remote_id: "s2".into(), raw_title: "Otra Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+            let series_raw = crate::sources::model::RawSeries { remote_id: "s2".into(), raw_title: "Otra Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
             let fields = TitleFields { clean_title: "Otra Serie", year: None, match_key: "otra-serie-0000", quality: None, language: None };
             write_queries::upsert_series(&conn, write_queries::insert_provider(&conn, ProviderKind::Xtream, "P3", "http://z", None, 1, None).unwrap(), &HashMap::new(), &series_raw, &fields).unwrap();
             let other_series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = 'otra-serie-0000'", [], |r| r.get(0)).unwrap();
@@ -2357,7 +2357,7 @@ mod tests {
     fn seed_series_with_two_seasons(conn: &rusqlite::Connection) -> i64 {
         use crate::sources::model::{RawEpisode, RawSeries};
         let provider_id = write_queries::insert_provider(conn, ProviderKind::Xtream, "P2", "http://y", None, 1, None).unwrap();
-        let series_raw = RawSeries { remote_id: "s1".into(), raw_title: "Serie de Prueba".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "s1".into(), raw_title: "Serie de Prueba".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
         let fields = TitleFields { clean_title: "Serie de Prueba", year: None, match_key: "serie-de-prueba-0000", quality: None, language: None };
         write_queries::upsert_series(conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
         let series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = 'serie-de-prueba-0000'", [], |r| r.get(0)).unwrap();

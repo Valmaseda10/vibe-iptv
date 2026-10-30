@@ -271,6 +271,42 @@ fn continue_row(conn: &rusqlite::Connection, kind: &str, profile_id: i64, access
     Ok((!items.is_empty()).then(|| BrowseRowResponse { key: "continue".into(), title: "Continuar viendo".into(), style: "continue".into(), items }))
 }
 
+/// Cuánto se mira atrás para «Nuevos episodios».
+const NEW_EPISODES_WINDOW_DAYS: i64 = 30;
+
+/// «Nuevos episodios»: las series que sigue el perfil (en su lista o empezadas) que han
+/// recibido episodios desde lo último que hizo con ellas.
+fn new_episodes_row(conn: &rusqlite::Connection, profile_id: i64, access: reads::ProfileAccess, now: i64) -> crate::db::Result<Option<BrowseRowResponse>> {
+    let found = reads::series_with_new_episodes(conn, profile_id, now, NEW_EPISODES_WINDOW_DAYS, 20)?;
+    if found.is_empty() {
+        return Ok(None);
+    }
+    let ids: Vec<i64> = found.iter().map(|r| r.series_id).collect();
+    let cards = reads::browse_cards(conn, "series", &ids)?;
+    let mut items = Vec::new();
+    for id in ids {
+        let Some(card) = cards.get(&id) else { continue };
+        if !reads::item_allowed(conn, "series", id, access)? {
+            continue;
+        }
+        items.push(BrowseItem {
+            kind: "series".into(),
+            id,
+            series_id: None,
+            clean_title: card.clean_title.clone(),
+            year: card.year,
+            poster_path: card.poster_path.clone(),
+            subtitle: Some("Episodios nuevos".into()),
+            progress: None,
+            is_new: true,
+            rating: card.rating,
+            backdrop_path: card.backdrop_path.clone(),
+            genres: Vec::new(),
+        });
+    }
+    Ok((!items.is_empty()).then(|| BrowseRowResponse { key: "new-episodes".into(), title: "Nuevos episodios de tus series".into(), style: "poster".into(), items }))
+}
+
 /// Rellena el plan con títulos y portadas, quitando lo que el perfil no puede ver y las
 /// filas que se quedan cortas.
 fn hydrate(conn: &rusqlite::Connection, plan: Plan, access: reads::ProfileAccess, now: i64, genre_names: &HashMap<&'static str, &HashMap<i64, String>>) -> crate::db::Result<BrowseResponse> {
@@ -385,6 +421,13 @@ async fn get_browse(State(state): State<BrowseState>, AxumPath(page): AxumPath<S
         if let [one] = data.as_slice() {
             if let Some(row) = continue_row(&conn, one.kind, profile_id, access)? {
                 response.rows.insert(0, row);
+            }
+        }
+        // Series e Inicio: lo que ha recibido episodios, arriba (en Series tras «Continuar viendo»).
+        if kinds.contains(&"series") {
+            if let Some(row) = new_episodes_row(&conn, profile_id, access, now)? {
+                let at = usize::from(response.rows.first().is_some_and(|r| r.key == "continue"));
+                response.rows.insert(at, row);
             }
         }
         Ok(response)

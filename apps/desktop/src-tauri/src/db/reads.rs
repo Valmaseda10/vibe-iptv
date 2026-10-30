@@ -1576,6 +1576,34 @@ pub fn list_continue_watching(conn: &Connection, profile_id: i64, limit: i64) ->
     Ok(items)
 }
 
+/// Una serie que sigue el perfil y que ha recibido episodios desde la última vez.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NewEpisodesRow {
+    pub series_id: i64,
+    pub updated_at: i64,
+}
+
+/// «Nuevos episodios»: series en la lista del perfil o de las que ha visto algún episodio
+/// que han cambiado en el proveedor (`updated_at`) después de lo último que hizo con ellas,
+/// en los últimos `window_days`. De lo más reciente a lo más viejo.
+pub fn series_with_new_episodes(conn: &Connection, profile_id: i64, now: i64, window_days: i64, limit: i64) -> Result<Vec<NewEpisodesRow>> {
+    let mut stmt = conn.prepare(
+        "WITH followed AS (
+             SELECT f.item_id AS series_id, f.added_at AS at FROM favorites f
+             WHERE f.profile_id = ?1 AND f.item_kind = 'series'
+             UNION ALL
+             SELECT ss.series_id, MAX(ps.played_at) FROM playback_state ps
+             JOIN episodes e ON e.id = ps.item_id JOIN series_sources ss ON ss.id = e.series_source_id
+             WHERE ps.profile_id = ?1 AND ps.item_kind = 'episode' GROUP BY ss.series_id
+         )
+         SELECT s.id, s.updated_at FROM series s JOIN (SELECT series_id, MAX(at) AS last_at FROM followed GROUP BY series_id) f ON f.series_id = s.id
+         WHERE s.updated_at IS NOT NULL AND s.updated_at > f.last_at AND s.updated_at >= ?2
+         ORDER BY s.updated_at DESC LIMIT ?3",
+    )?;
+    let rows = stmt.query_map(params![profile_id, now - window_days * 86_400, limit], |row| Ok(NewEpisodesRow { series_id: row.get(0)?, updated_at: row.get(1)? }))?;
+    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+}
+
 /// Serie a la que pertenece un episodio.
 pub fn series_id_of_episode(conn: &Connection, episode_id: i64) -> Result<Option<i64>> {
     conn.query_row(
@@ -2298,7 +2326,7 @@ mod tests {
 
         let conn = memory_conn();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
-        let series = RawSeries { remote_id: "s1".into(), raw_title: "La Casa de Papel".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let series = RawSeries { remote_id: "s1".into(), raw_title: "La Casa de Papel".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
         let fields = TitleFields { clean_title: "La Casa de Papel", year: None, match_key: "la-casa-de-papel-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series, &fields).unwrap();
         let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources WHERE remote_id = 's1'", [], |r| r.get(0)).unwrap();
@@ -2466,7 +2494,7 @@ mod tests {
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
         seed_movie(&conn, provider_id, "Aventura Espacial", Some(2020), None, None);
 
-        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Aventura Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Aventura Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
         let fields = TitleFields { clean_title: "Aventura Serie", year: None, match_key: "aventura-serie-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
 
@@ -2611,7 +2639,7 @@ mod tests {
         let profile_id = ensure_default_profile(&conn).unwrap();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
 
-        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
         let fields = TitleFields { clean_title: "Serie", year: None, match_key: "serie-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
         let series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = 'serie-0000'", [], |r| r.get(0)).unwrap();
@@ -2640,7 +2668,7 @@ mod tests {
         let conn = memory_conn();
         let profile_id = ensure_default_profile(&conn).unwrap();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
-        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
         let fields = TitleFields { clean_title: "Serie", year: None, match_key: "serie-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
         let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources WHERE remote_id = '1'", [], |r| r.get(0)).unwrap();
@@ -2693,7 +2721,7 @@ mod tests {
         let conn = memory_conn();
         let profile_id = ensure_default_profile(&conn).unwrap();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
-        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
         let fields = TitleFields { clean_title: "Serie", year: None, match_key: "serie-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
         let series_id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = 'serie-0000'", [], |r| r.get(0)).unwrap();
@@ -2824,7 +2852,7 @@ mod tests {
         let conn = memory_conn();
         let profile_id = ensure_default_profile(&conn).unwrap();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
-        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Mi Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "1".into(), raw_title: "Mi Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
         let fields = TitleFields { clean_title: "Mi Serie", year: None, match_key: "mi-serie-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
         let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources", [], |r| r.get(0)).unwrap();
@@ -2851,7 +2879,7 @@ mod tests {
     }
 
     fn seed_series_with_episodes(conn: &Connection, provider_id: i64, title: &str, episodes: &[(i64, i64)]) -> (i64, Vec<i64>) {
-        let series_raw = RawSeries { remote_id: title.into(), raw_title: title.into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: title.into(), raw_title: title.into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
         let match_key = format!("{}-0000", title.to_lowercase().replace(' ', "-"));
         let fields = TitleFields { clean_title: title, year: None, match_key: &match_key, quality: None, language: None };
         queries::upsert_series(conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
@@ -3065,6 +3093,7 @@ mod tests {
             cover_url: None,
             plot: None,
             release_date: None,
+            last_modified: None,
         };
         let fields = TitleFields { clean_title: "Serie Adulta", year: None, match_key: "serie-adulta-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &map, &series, &fields).unwrap();
@@ -3089,6 +3118,7 @@ mod tests {
             cover_url: None,
             plot: None,
             release_date: None,
+            last_modified: None,
         };
         let fields = TitleFields { clean_title: "Serie Sin Categoría", year: None, match_key: "serie-sin-categoria-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series, &fields).unwrap();
@@ -3110,6 +3140,7 @@ mod tests {
                 cover_url: None,
                 plot: None,
                 release_date: None,
+                last_modified: None,
             };
             let fields = TitleFields { clean_title: title, year: None, match_key: &format!("serie-{i}"), quality: None, language: None };
             queries::upsert_series(&conn, provider_id, &HashMap::new(), &series, &fields).unwrap();
@@ -3197,7 +3228,7 @@ mod tests {
     fn resolve_episode_stream_joins_series_sources_for_provider_id() {
         let conn = memory_conn();
         let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
-        let series_raw = RawSeries { remote_id: "9001".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None };
+        let series_raw = RawSeries { remote_id: "9001".into(), raw_title: "Serie".into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: None };
         let fields = TitleFields { clean_title: "Serie", year: None, match_key: "serie-0000", quality: None, language: None };
         queries::upsert_series(&conn, provider_id, &HashMap::new(), &series_raw, &fields).unwrap();
         let series_source_id: i64 = conn.query_row("SELECT id FROM series_sources", [], |r| r.get(0)).unwrap();
@@ -3308,6 +3339,27 @@ mod tests {
         let other = ChannelScope { category_id: None, favorites_of: Some(profile_id + 1) };
         assert!(list_channels_page(&conn, other, None, None, 50, true).unwrap().is_empty());
         assert_eq!(numbers(&list_channels_around(&conn, scope, ids["4"], 10, true).unwrap()), ["2", "4"]);
+    }
+
+    #[test]
+    fn new_episodes_are_series_followed_that_changed_after_the_last_visit() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let profile_id = ensure_default_profile(&conn).unwrap();
+        let now = 100 * 86_400;
+        let mut ids = HashMap::new();
+        for (remote, title, changed) in [("1", "Seguida y cambiada", Some(now - 86_400)), ("2", "Seguida sin cambios", Some(now - 20 * 86_400)), ("3", "No seguida", Some(now - 86_400)), ("4", "Cambio antiguo", Some(now - 60 * 86_400))] {
+            let raw = RawSeries { remote_id: remote.into(), raw_title: title.into(), category_remote_id: None, cover_url: None, plot: None, release_date: None, last_modified: changed };
+            let fields = TitleFields { clean_title: title, year: None, match_key: title, quality: None, language: None };
+            queries::upsert_series(&conn, provider_id, &HashMap::new(), &raw, &fields).unwrap();
+            let id: i64 = conn.query_row("SELECT id FROM series WHERE match_key = ?1", params![title], |r| r.get(0)).unwrap();
+            ids.insert(remote, id);
+        }
+        for remote in ["1", "2", "4"] {
+            conn.execute("INSERT INTO favorites (profile_id, item_kind, item_id, added_at) VALUES (?1, 'series', ?2, ?3)", params![profile_id, ids[remote], now - 10 * 86_400]).unwrap();
+        }
+        let found: Vec<i64> = series_with_new_episodes(&conn, profile_id, now, 30, 20).unwrap().into_iter().map(|r| r.series_id).collect();
+        assert_eq!(found, vec![ids["1"]], "solo la seguida que cambió después y hace poco");
     }
 
     #[test]

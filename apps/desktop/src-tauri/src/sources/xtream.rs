@@ -473,6 +473,8 @@ struct SeriesWire {
     release_date: Option<String>,
     #[serde(default, deserialize_with = "lenient_id_opt")]
     category_id: Option<String>,
+    #[serde(default, deserialize_with = "lenient_i64")]
+    last_modified: Option<i64>,
 }
 
 impl SeriesWire {
@@ -484,6 +486,7 @@ impl SeriesWire {
             cover_url: self.cover,
             plot: self.plot,
             release_date: self.release_date,
+            last_modified: self.last_modified,
         })
     }
 }
