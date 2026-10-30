@@ -376,8 +376,8 @@ La misma app de Tauri compilada para iOS. Lee docs/IOS.md y docs/CLOUD-SYNC.md.
   el stream sin tocar (`?passthrough=true`) por el mismo proxy y StreamGuard (R1, R5)
 - El iPhone habla con el proveedor directamente: credenciales en el llavero del iPhone
 - Interfaz táctil: pestañas abajo en iPhone, zonas seguras, sin zoom al escribir
-- Compilación sin firmar en GitHub Actions (macOS); se instala con Sideloadly desde
-  Windows con un Apple ID gratuito (firma de 7 días)
+- Compilación sin firmar en GitHub Actions (macOS); se instala desde Windows con un Apple
+  ID gratuito (firma de 7 días): con iloader, ver docs/IOS.md
 
 Criterio de aceptación: empiezo una película en el PC y la continúo en el iPhone desde
 el mismo minuto, con el PC apagado.

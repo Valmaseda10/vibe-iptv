@@ -31,6 +31,15 @@ EPG) es el mismo código.
 
 ## Instalar o renovar la app
 
+**Lo que se usa de verdad (2026-10):** **iloader** desde Windows, instalando
+`VIBE-IPTV.ipa` directamente por cable con el Apple ID. SideStore no sirve en este caso:
+su inicio de sesión con Apple falla con el error -80045. La firma gratuita sigue durando
+7 días: para renovarla se vuelve a instalar el mismo `.ipa` con iloader (los datos de la
+app se conservan). El `.ipa` sale del artefacto **VIBE-IPTV-ipa** de la ejecución de
+**iOS** en GitHub Actions (ver los pasos 1 y 2 de abajo).
+
+Alternativas documentadas (por si cambian las cosas):
+
 Una sola vez en el PC: **Sideloadly** (sideloadly.io) e **iTunes e iCloud descargados de
 apple.com** (las versiones de la Microsoft Store no le valen).
 
