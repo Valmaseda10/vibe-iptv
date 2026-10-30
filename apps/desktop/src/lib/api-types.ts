@@ -53,12 +53,20 @@ subtitle: string | null,
 /**
  * Cuánto se ha visto (0–1), en «Continuar viendo».
  */
-progress: number | null, is_new: boolean, };
+progress: number | null, is_new: boolean, 
+/**
+ * Nota de TMDB, para la tarjeta ampliada al pasar el ratón.
+ */
+rating: number | null, 
+/**
+ * Hasta tres géneros, con nombre.
+ */
+genres: Array<string>, };
 
 export type BrowseResponse = { featured: BrowseFeatured | null, rows: Array<BrowseRowResponse>, 
 /**
- * Las recomendaciones del perfil se están calculando por primera vez: conviene volver a
- * pedir la pantalla en unos segundos.
+ * Se están calculando las recomendaciones del perfil (las primeras, o tras valorar algo):
+ * conviene volver a pedir la pantalla en unos segundos.
  */
 pending: boolean, };
 
@@ -534,5 +542,14 @@ error: string | null, channels: number, movies: number, series: number, };
 export type SyncProgress = { provider_id: number, stage: string, current: number, total: number, };
 
 export type SyncSummary = { provider_id: number, categories: number, channels: number, movies: number, series: number, duration_ms: number, };
+
+/**
+ * «Elige lo que te gusta»: si el perfil aún no tiene gustos y qué títulos ofrecerle.
+ */
+export type TasteCandidatesResponse = { 
+/**
+ * Sin valoraciones y con menos de tres señales de gusto: conviene preguntarle.
+ */
+needed: boolean, items: Array<BrowseItem>, };
 
 export type XtreamSuggestion = { base_url: string, username: string, password: string, };

@@ -1668,7 +1668,7 @@ async fn post_rating(State(state): State<CatalogState>, Json(input): Json<Rating
         outbox::enqueue_rating(conn, input.profile_id, &input.item_kind, input.item_id)
     })
     .await?;
-    crate::catalog::recommendations::invalidate(input.profile_id).await;
+    crate::catalog::recommendations::invalidate_now(input.profile_id).await;
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
@@ -1680,7 +1680,7 @@ async fn delete_rating(State(state): State<CatalogState>, Query(query): Query<De
         outbox::enqueue_rating(conn, query.profile_id, &query.item_kind, query.item_id)
     })
     .await?;
-    crate::catalog::recommendations::invalidate(profile_id).await;
+    crate::catalog::recommendations::invalidate_now(profile_id).await;
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }

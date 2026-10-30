@@ -9,6 +9,7 @@ import { PosterCard, PosterCardSkeleton } from "../../components/PosterCard";
 import { ProviderStatusPill } from "./ProviderStatusPill";
 import { FavoriteChannelsRow } from "../../components/FavoriteChannelsRow";
 import { BrowseScreen } from "../browse/BrowseScreen";
+import { TasteOnboarding } from "../profiles/TasteOnboarding";
 
 export function HomeScreen() {
   const navigate = useNavigate();
@@ -70,72 +71,76 @@ export function HomeScreen() {
   // Lo personal va arriba, debajo de la portada; la portada y el resto de filas (una mezcla
   // de películas y series que cambia en cada visita) las da `GET /api/browse/home`.
   return (
-    <BrowseScreen
-      page="home"
-      title="Inicio"
-      actions={
-        <div className="ml-auto">
-          <ProviderStatusPill />
-        </div>
-      }
-      before={
-        <>
-          {isError && <p className="px-4 text-red-400 sm:px-10">No se pudo cargar el inicio. ¿Hay algún proveedor sincronizado?</p>}
+    <>
+      {/* Perfil sin gustos todavía: «Elige lo que te gusta» por encima de todo. */}
+      <TasteOnboarding />
+      <BrowseScreen
+        page="home"
+        title="Inicio"
+        actions={
+          <div className="ml-auto">
+            <ProviderStatusPill />
+          </div>
+        }
+        before={
+          <>
+            {isError && <p className="px-4 text-red-400 sm:px-10">No se pudo cargar el inicio. ¿Hay algún proveedor sincronizado?</p>}
 
-          {isPending ? (
-            <SkeletonRow title="Continuar viendo" />
-          ) : data && data.continue_watching.length > 0 ? (
-            <Row title="Continuar viendo">
-              {data.continue_watching.map((item) => (
-                <PosterCard
-                  key={`${item.item_kind}-${item.item_id}`}
-                  title={item.title}
-                  subtitle={item.subtitle ?? progressLabel(item.position_s, item.duration_s)}
-                  posterPath={item.poster_path}
-                  progressPercent={progressPercent(item.position_s, item.duration_s)}
-                  onOpen={() => openContinueWatching(item.item_kind, item.item_id)}
-                  onRemove={() => removeMutation.mutate({ item_kind: item.item_kind, item_id: item.item_id })}
-                />
-              ))}
-            </Row>
-          ) : null}
+            {isPending ? (
+              <SkeletonRow title="Continuar viendo" />
+            ) : data && data.continue_watching.length > 0 ? (
+              <Row title="Continuar viendo">
+                {data.continue_watching.map((item) => (
+                  <PosterCard
+                    key={`${item.item_kind}-${item.item_id}`}
+                    title={item.title}
+                    subtitle={item.subtitle ?? progressLabel(item.position_s, item.duration_s)}
+                    posterPath={item.poster_path}
+                    progressPercent={progressPercent(item.position_s, item.duration_s)}
+                    onOpen={() => openContinueWatching(item.item_kind, item.item_id)}
+                    onRemove={() => removeMutation.mutate({ item_kind: item.item_kind, item_id: item.item_id })}
+                  />
+                ))}
+              </Row>
+            ) : null}
 
-          {!isPending && data && data.next_episodes.length > 0 && (
-            <Row title="Siguiente episodio">
-              {data.next_episodes.map((item) => (
-                <PosterCard
-                  key={`next-${item.episode_id}`}
-                  title={item.series_title}
-                  subtitle={`T${item.season} E${item.number}${item.episode_title ? ` · ${item.episode_title}` : ""}`}
-                  posterPath={item.still_path ?? item.poster_path}
-                  onOpen={() => navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(item.episode_id) }, search: { seriesId: String(item.series_id) } })}
-                />
-              ))}
-            </Row>
-          )}
+            {!isPending && data && data.next_episodes.length > 0 && (
+              <Row title="Siguiente episodio">
+                {data.next_episodes.map((item) => (
+                  <PosterCard
+                    key={`next-${item.episode_id}`}
+                    title={item.series_title}
+                    subtitle={`T${item.season} E${item.number}${item.episode_title ? ` · ${item.episode_title}` : ""}`}
+                    posterPath={item.still_path ?? item.poster_path}
+                    onOpen={() => navigate({ to: "/player/$kind/$id", params: { kind: "episode", id: String(item.episode_id) }, search: { seriesId: String(item.series_id) } })}
+                  />
+                ))}
+              </Row>
+            )}
 
-          <FavoriteChannelsRow />
+            <FavoriteChannelsRow />
 
-          {myList.length > 0 && (
-            <Row title="Mi lista">
-              {myList.map((item) => (
-                <PosterCard
-                  key={`fav-${item.item_kind}-${item.item_id}`}
-                  title={item.title}
-                  posterPath={item.poster_path}
-                  menuItem={{ kind: item.item_kind === "movie" ? "movie" : "series", id: item.item_id }}
-                  onOpen={() =>
-                    item.item_kind === "movie"
-                      ? navigate({ to: "/movies/$movieId", params: { movieId: String(item.item_id) } })
-                      : navigate({ to: "/series/$seriesId", params: { seriesId: String(item.item_id) } })
-                  }
-                />
-              ))}
-            </Row>
-          )}
-        </>
-      }
-    />
+            {myList.length > 0 && (
+              <Row title="Mi lista">
+                {myList.map((item) => (
+                  <PosterCard
+                    key={`fav-${item.item_kind}-${item.item_id}`}
+                    title={item.title}
+                    posterPath={item.poster_path}
+                    menuItem={{ kind: item.item_kind === "movie" ? "movie" : "series", id: item.item_id }}
+                    onOpen={() =>
+                      item.item_kind === "movie"
+                        ? navigate({ to: "/movies/$movieId", params: { movieId: String(item.item_id) } })
+                        : navigate({ to: "/series/$seriesId", params: { seriesId: String(item.item_id) } })
+                    }
+                  />
+                ))}
+              </Row>
+            )}
+          </>
+        }
+      />
+    </>
   );
 }
 

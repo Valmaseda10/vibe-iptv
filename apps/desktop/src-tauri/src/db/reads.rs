@@ -1801,13 +1801,14 @@ pub struct BrowseCardRow {
     pub overview: Option<String>,
     pub rating: Option<f64>,
     pub added_at: Option<i64>,
+    pub genres: Vec<i64>,
 }
 
 /// Títulos por id, para rellenar las filas que `catalog::browse` ya decidió.
 pub fn browse_cards(conn: &Connection, kind: &str, ids: &[i64]) -> Result<HashMap<i64, BrowseCardRow>> {
     let table = title_table(kind);
     let mut stmt = conn.prepare(&format!(
-        "SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url), backdrop_path, overview, rating, added_at FROM {table} WHERE id = ?1"
+        "SELECT id, clean_title, year, COALESCE(poster_path, provider_poster_url), backdrop_path, overview, rating, added_at, genres FROM {table} WHERE id = ?1"
     ))?;
     let mut found = HashMap::new();
     for id in ids {
@@ -1825,6 +1826,7 @@ pub fn browse_cards(conn: &Connection, kind: &str, ids: &[i64]) -> Result<HashMa
                     overview: r.get(5)?,
                     rating: r.get(6)?,
                     added_at: r.get(7)?,
+                    genres: parse_genres(r.get(8)?),
                 })
             })
             .optional()?;

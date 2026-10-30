@@ -49,7 +49,19 @@ impl IntoResponse for BrowseError {
 }
 
 pub fn browse_router(state: BrowseState) -> Router {
-    Router::new().route("/api/browse/:page", get(get_browse)).with_state(state)
+    Router::new()
+        .route("/api/browse/:page", get(get_browse))
+        .route("/api/taste/candidates", get(get_taste_candidates))
+        .with_state(state)
+}
+
+/// «Elige lo que te gusta»: si el perfil aún no tiene gustos y qué títulos ofrecerle.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct TasteCandidatesResponse {
+    /// Sin valoraciones y con menos de tres señales de gusto: conviene preguntarle.
+    pub needed: bool,
+    pub items: Vec<BrowseItem>,
 }
 
 /// Un título en una fila.
@@ -71,6 +83,10 @@ pub struct BrowseItem {
     /// Cuánto se ha visto (0–1), en «Continuar viendo».
     pub progress: Option<f64>,
     pub is_new: bool,
+    /// Nota de TMDB, para la tarjeta ampliada al pasar el ratón.
+    pub rating: Option<f64>,
+    /// Hasta tres géneros, con nombre.
+    pub genres: Vec<String>,
 }
 
 #[derive(Serialize, TS)]
@@ -107,8 +123,8 @@ pub struct BrowseFeatured {
 pub struct BrowseResponse {
     pub featured: Option<BrowseFeatured>,
     pub rows: Vec<BrowseRowResponse>,
-    /// Las recomendaciones del perfil se están calculando por primera vez: conviene volver a
-    /// pedir la pantalla en unos segundos.
+    /// Se están calculando las recomendaciones del perfil (las primeras, o tras valorar algo):
+    /// conviene volver a pedir la pantalla en unos segundos.
     pub pending: bool,
 }
 
@@ -148,6 +164,8 @@ struct KindData {
     because: Vec<(String, Vec<i64>)>,
     recent: Vec<i64>,
     my_list: Vec<i64>,
+    /// Títulos con los que el perfil ha hecho algo que cuenta a favor.
+    positives: usize,
 }
 
 impl KindData {
@@ -192,6 +210,7 @@ fn gather(conn: &rusqlite::Connection, kind: &'static str, profile_id: i64, reco
         .map(|row| (row.row_title.clone(), row.items.iter().map(|t| t.id).collect()))
         .collect();
     let my_list = reads::list_favorites(conn, profile_id)?.into_iter().filter(|f| f.item_kind == kind).map(|f| f.item_id).collect();
+    let positives = signals.iter().filter(|s| crate::catalog::recommendations::seed_weight(s, kind, now) > 0.0).count();
     Ok(KindData {
         kind,
         index: browse::cached_index(conn, kind)?,
@@ -203,6 +222,7 @@ fn gather(conn: &rusqlite::Connection, kind: &'static str, profile_id: i64, reco
         because,
         recent: reads::recent_title_ids(conn, kind, 80)?,
         my_list,
+        positives,
     })
 }
 
@@ -214,13 +234,13 @@ fn continue_row(conn: &rusqlite::Connection, kind: &str, profile_id: i64, access
     for row in reads::list_continue_watching(conn, profile_id, 40)? {
         let progress = row.duration_s.filter(|d| *d > 0).map(|d| (row.position_s as f64 / d as f64).clamp(0.0, 1.0));
         if kind == "movie" && row.item_kind == "movie" && reads::item_allowed(conn, "movie", row.item_id, access)? {
-            items.push(BrowseItem { kind: "movie".into(), id: row.item_id, series_id: None, clean_title: row.title, year: None, poster_path: row.poster_path, subtitle: None, progress, is_new: false });
+            items.push(BrowseItem { kind: "movie".into(), id: row.item_id, series_id: None, clean_title: row.title, year: None, poster_path: row.poster_path, subtitle: None, progress, is_new: false, rating: None, genres: Vec::new() });
         } else if kind == "series" && row.item_kind == "episode" && reads::item_allowed(conn, "episode", row.item_id, access)? {
             let series_id = reads::series_id_of_episode(conn, row.item_id)?;
             if let Some(id) = series_id {
                 series_seen.insert(id);
             }
-            items.push(BrowseItem { kind: "episode".into(), id: row.item_id, series_id, clean_title: row.title, year: None, poster_path: row.poster_path, subtitle: row.subtitle, progress, is_new: false });
+            items.push(BrowseItem { kind: "episode".into(), id: row.item_id, series_id, clean_title: row.title, year: None, poster_path: row.poster_path, subtitle: row.subtitle, progress, is_new: false, rating: None, genres: Vec::new() });
         }
     }
     if kind == "series" {
@@ -239,6 +259,8 @@ fn continue_row(conn: &rusqlite::Connection, kind: &str, profile_id: i64, access
                 subtitle: Some(subtitle),
                 progress: None,
                 is_new: false,
+                rating: None,
+                genres: Vec::new(),
             });
         }
     }
@@ -248,7 +270,7 @@ fn continue_row(conn: &rusqlite::Connection, kind: &str, profile_id: i64, access
 
 /// Rellena el plan con títulos y portadas, quitando lo que el perfil no puede ver y las
 /// filas que se quedan cortas.
-fn hydrate(conn: &rusqlite::Connection, plan: Plan, access: reads::ProfileAccess, now: i64) -> crate::db::Result<BrowseResponse> {
+fn hydrate(conn: &rusqlite::Connection, plan: Plan, access: reads::ProfileAccess, now: i64, genre_names: &HashMap<&'static str, &HashMap<i64, String>>) -> crate::db::Result<BrowseResponse> {
     let mut wanted: HashMap<&'static str, Vec<i64>> = HashMap::new();
     for card in plan.rows.iter().flat_map(|r| r.cards.iter()) {
         wanted.entry(card.kind).or_default().push(card.id);
@@ -301,6 +323,8 @@ fn hydrate(conn: &rusqlite::Connection, plan: Plan, access: reads::ProfileAccess
             subtitle: card.reason.clone().or_else(|| row.year.map(|y| y.to_string())),
             progress: None,
             is_new: row.added_at.is_some_and(|t| now - t < NEW_BADGE_WINDOW_SECONDS),
+            rating: row.rating,
+            genres: genre_names.get(card.kind).map(|names| row.genres.iter().filter_map(|g| names.get(g).cloned()).take(3).collect()).unwrap_or_default(),
         })
     };
     let rows = plan
@@ -338,7 +362,7 @@ async fn get_browse(State(state): State<BrowseState>, AxumPath(page): AxumPath<S
     // Ninguna de las dos espera a TMDB: lo que haya en caché (ver sus módulos).
     let recommendations = crate::catalog::recommendations::get_cached_or_refresh(state.db_path.clone(), profile_id).await;
     let trending = crate::catalog::trending::get_cached_or_refresh(state.db_path.clone()).await;
-    let pending = crate::catalog::recommendations::first_computation_pending(profile_id).await;
+    let pending = crate::catalog::recommendations::refresh_pending(profile_id).await;
     let db_path = state.db_path;
     let response = tokio::task::spawn_blocking(move || -> crate::db::Result<BrowseResponse> {
         let conn = schema::open_readonly_at(&db_path)?;
@@ -351,7 +375,8 @@ async fn get_browse(State(state): State<BrowseState>, AxumPath(page): AxumPath<S
             [one] => browse::plan_kind(&one.inputs(now_year), seed, &avoid, false),
             _ => Plan::default(),
         };
-        let mut response = hydrate(&conn, plan, access, now)?;
+        let names: HashMap<&'static str, &HashMap<i64, String>> = data.iter().map(|d| (d.kind, &d.genre_names)).collect();
+        let mut response = hydrate(&conn, plan, access, now, &names)?;
         response.pending = pending;
         if let [one] = data.as_slice() {
             if let Some(row) = continue_row(&conn, one.kind, profile_id, access)? {
@@ -359,6 +384,37 @@ async fn get_browse(State(state): State<BrowseState>, AxumPath(page): AxumPath<S
             }
         }
         Ok(response)
+    })
+    .await
+    .map_err(|_| BrowseError::Internal)??;
+    Ok(Json(response))
+}
+
+/// Títulos que se ofrecen en «Elige lo que te gusta».
+const TASTE_CANDIDATES: usize = 36;
+
+async fn get_taste_candidates(State(state): State<BrowseState>, Query(query): Query<BrowseQuery>) -> Result<Json<TasteCandidatesResponse>, BrowseError> {
+    let profile_id = query.profile_id;
+    let seed = query.seed.unwrap_or(0);
+    let recommendations = crate::catalog::recommendations::get_cached_or_refresh(state.db_path.clone(), profile_id).await;
+    let trending = crate::catalog::trending::get_cached_or_refresh(state.db_path.clone()).await;
+    let db_path = state.db_path;
+    let response = tokio::task::spawn_blocking(move || -> crate::db::Result<TasteCandidatesResponse> {
+        let conn = schema::open_readonly_at(&db_path)?;
+        let access = reads::profile_access(&conn, profile_id)?;
+        let now = now_epoch();
+        let movies = gather(&conn, "movie", profile_id, &recommendations, &trending, now)?;
+        let series = gather(&conn, "series", profile_id, &recommendations, &trending, now)?;
+        let needed = reads::list_ratings(&conn, profile_id)?.is_empty() && movies.positives + series.positives < 3;
+        if !needed {
+            return Ok(TasteCandidatesResponse { needed, items: Vec::new() });
+        }
+        let now_year = current_year();
+        let cards = browse::taste_candidates(&movies.inputs(now_year), &series.inputs(now_year), seed, TASTE_CANDIDATES);
+        let plan = Plan { featured: None, rows: vec![browse::PlannedRow { key: "taste".into(), title: String::new(), style: RowStyle::Poster, cards }] };
+        let names: HashMap<&'static str, &HashMap<i64, String>> = [("movie", &movies.genre_names), ("series", &series.genre_names)].into_iter().collect();
+        let items = hydrate(&conn, plan, access, now, &names)?.rows.into_iter().next().map(|row| row.items).unwrap_or_default();
+        Ok(TasteCandidatesResponse { needed, items })
     })
     .await
     .map_err(|_| BrowseError::Internal)??;

@@ -524,6 +524,68 @@ pub fn plan_kind(input: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i
     Plan { featured, rows }
 }
 
+/// «Elige lo que te gusta» (perfil sin gustos todavía): títulos variados para marcar los
+/// que gustan. Películas y series alternadas; de cada tipo, la mitad de lo popular (Top 10
+/// y tendencias) y el resto lo mejor valorado de los géneros con más títulos, por turnos,
+/// para que haya de todo (acción, comedia, drama, animación...).
+pub fn taste_candidates(movies: &KindInputs, series: &KindInputs, seed: u64, take: usize) -> Vec<Card> {
+    let mut rng = Rng::new(seed ^ 0x7A57E);
+    let movie_share = take * 5 / 9;
+    let movie_cards = taste_pool(&mut rng, movies, movie_share);
+    let series_cards = taste_pool(&mut rng, series, take - movie_share);
+    interleave(movie_cards, series_cards, take)
+}
+
+fn taste_pool(rng: &mut Rng, input: &KindInputs, take: usize) -> Vec<Card> {
+    let by_id: HashMap<i64, &BrowseIndexRow> = input.index.iter().map(|e| (e.id, e)).collect();
+    let fresh = |id: &i64| by_id.contains_key(id) && !input.taste.known.contains(id) && !input.taste.disliked.contains(id);
+    let mut seen = HashSet::new();
+    let mut picked = Vec::new();
+    let popular: Vec<(i64, f64)> = input
+        .top
+        .iter()
+        .chain(input.trending.iter().take(20))
+        .filter(|id| fresh(id))
+        .enumerate()
+        .map(|(rank, id)| (*id, 1.0 / (1.0 + 0.05 * rank as f64)))
+        .collect();
+    for id in weighted_sample(rng, &popular, take / 2) {
+        if seen.insert(id) {
+            picked.push(id);
+        }
+    }
+    let mut counts: HashMap<i64, usize> = HashMap::new();
+    for entry in input.index {
+        for genre in &entry.genres {
+            *counts.entry(*genre).or_default() += 1;
+        }
+    }
+    let mut genres: Vec<(i64, usize)> = counts.into_iter().filter(|(g, _)| !SKIPPED_GENRES.contains(g) && !NOT_ACCLAIMED_GENRES.contains(g)).collect();
+    genres.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    let per_genre: Vec<Vec<i64>> = genres
+        .iter()
+        .take(10)
+        .map(|(genre, _)| {
+            let mut best: Vec<&BrowseIndexRow> = input.index.iter().filter(|e| e.genres.contains(genre) && credible(e, 6.8) && fresh(&e.id)).collect();
+            best.sort_by(|a, b| b.rating.partial_cmp(&a.rating).unwrap_or(std::cmp::Ordering::Equal).then(a.id.cmp(&b.id)));
+            let pool: Vec<(i64, f64)> = best.into_iter().take(12).map(|e| (e.id, 1.0)).collect();
+            weighted_sample(rng, &pool, 4)
+        })
+        .collect();
+    let mut round = 0;
+    while picked.len() < take && per_genre.iter().any(|ids| round < ids.len()) {
+        for ids in &per_genre {
+            if let Some(id) = ids.get(round) {
+                if picked.len() < take && seen.insert(*id) {
+                    picked.push(*id);
+                }
+            }
+        }
+        round += 1;
+    }
+    cards(input.kind, picked)
+}
+
 /// Mezcla dos listas alternando (película, serie, película...), sin pasar de `take`.
 fn interleave(a: Vec<Card>, b: Vec<Card>, take: usize) -> Vec<Card> {
     let mut out = Vec::new();
@@ -739,6 +801,23 @@ mod tests {
         assert_eq!(row.title, "Populares ahora");
         assert!(row.cards.iter().all(|c| c.reason.is_none()), "sin «Porque te gustó» inventado");
         assert!(row.cards.iter().filter(|c| [1, 2, 3, 4, 5, 10, 11, 12].contains(&c.id)).count() >= 5, "lo popular manda");
+    }
+
+    #[test]
+    fn taste_candidates_mix_popular_titles_and_every_big_genre() {
+        let index = catalog();
+        let (taste, names) = (Taste::default(), names());
+        let movies = inputs(&index, &taste, &names, &[]);
+        let series = KindInputs { kind: "series", ..inputs(&index, &taste, &names, &[]) };
+        let picked = taste_candidates(&movies, &series, 5, 18);
+        assert_eq!(picked.len(), 18);
+        assert_eq!(picked[0].kind, "movie");
+        assert_eq!(picked[1].kind, "series");
+        let movie_ids: HashSet<i64> = picked.iter().filter(|c| c.kind == "movie").map(|c| c.id).collect();
+        assert!(movie_ids.iter().any(|id| [1, 2, 3, 4, 5, 10, 11, 12].contains(id)), "algo popular");
+        for genre in [28, 35, 18] {
+            assert!(movie_ids.iter().any(|id| index.iter().any(|e| e.id == *id && e.genres.contains(&genre))), "género {genre}");
+        }
     }
 
     #[test]

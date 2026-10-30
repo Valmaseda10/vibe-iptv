@@ -112,6 +112,8 @@ struct CacheEntry {
     refreshing: bool,
     /// El perfil cambió de gustos desde el último cálculo.
     stale: bool,
+    /// Y lo dijo él mismo (valoró algo): se recalcula ya, sin esperar el minuto.
+    urgent: bool,
 }
 
 static CACHE: LazyLock<AsyncMutex<HashMap<i64, CacheEntry>>> = LazyLock::new(|| AsyncMutex::new(HashMap::new()));
@@ -123,14 +125,14 @@ pub async fn get_cached_or_refresh(db_path: PathBuf, profile_id: i64) -> Recomme
     let (current, should_refresh) = match cache.get_mut(&profile_id) {
         Some(entry) => {
             let age = entry.computed_at.elapsed();
-            let should_refresh = !entry.refreshing && (age >= CACHE_TTL || (entry.stale && age >= MIN_RECOMPUTE));
+            let should_refresh = !entry.refreshing && (age >= CACHE_TTL || (entry.stale && (entry.urgent || age >= MIN_RECOMPUTE)));
             if should_refresh {
                 entry.refreshing = true;
             }
             (entry.recommendations.clone(), should_refresh)
         }
         None => {
-            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), recommendations: Recommendations::default(), refreshing: true, stale: false });
+            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), recommendations: Recommendations::default(), refreshing: true, stale: false, urgent: false });
             (Recommendations::default(), true)
         }
     };
@@ -140,7 +142,7 @@ pub async fn get_cached_or_refresh(db_path: PathBuf, profile_id: i64) -> Recomme
         tokio::spawn(async move {
             let recommendations = compute(db_path, profile_id).await;
             let mut cache = CACHE.lock().await;
-            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), recommendations, refreshing: false, stale: false });
+            cache.insert(profile_id, CacheEntry { computed_at: Instant::now(), recommendations, refreshing: false, stale: false, urgent: false });
         });
     }
     current
@@ -155,10 +157,20 @@ pub async fn invalidate_all() {
     }
 }
 
-/// Se está calculando la primera vez para este perfil (todavía no hay nada que enseñar).
-pub async fn first_computation_pending(profile_id: i64) -> bool {
+/// Se están calculando unas recomendaciones que la pantalla debería esperar: las primeras
+/// del perfil, o las de justo después de que valorase algo.
+pub async fn refresh_pending(profile_id: i64) -> bool {
     let cache = CACHE.lock().await;
-    cache.get(&profile_id).is_some_and(|entry| entry.refreshing && entry.recommendations == Recommendations::default())
+    cache.get(&profile_id).is_some_and(|entry| entry.refreshing && (entry.urgent || entry.recommendations == Recommendations::default()))
+}
+
+/// El perfil dijo lo que le gusta (valoró algo): la próxima visita recalcula ya.
+pub async fn invalidate_now(profile_id: i64) {
+    let mut cache = CACHE.lock().await;
+    if let Some(entry) = cache.get_mut(&profile_id) {
+        entry.stale = true;
+        entry.urgent = true;
+    }
 }
 
 /// El perfil cambió de gusto (valoró algo, cambió su lista o terminó algo): la próxima
