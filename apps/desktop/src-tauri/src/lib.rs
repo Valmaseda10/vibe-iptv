@@ -70,6 +70,13 @@ pub fn run() {
         .setup(move |app| {
             let app_data_dir = app.path().app_data_dir().expect("no se pudo resolver el directorio de datos");
             let image_cache_dir = app_data_dir.join("images");
+            let cache_to_trim = image_cache_dir.clone();
+            tauri::async_runtime::spawn_blocking(move || {
+                let removed = server::routes::trim_image_cache(&cache_to_trim);
+                if removed > 0 {
+                    tracing::info!(removed, "caché de imágenes recortada");
+                }
+            });
             let db_path = db::schema::resolve_db_path(app.handle()).expect("no se pudo resolver la ruta de la base de datos");
 
             let listener = listener

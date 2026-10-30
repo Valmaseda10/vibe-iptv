@@ -34,7 +34,7 @@ async fn serve_image(State(cache_dir): State<PathBuf>, AxumPath((size, image_id)
     let cache_path = cache_dir.join(format!("{size}_{image_id}"));
 
     if let Ok(bytes) = tokio::fs::read(&cache_path).await {
-        return ([(header::CONTENT_TYPE, content_type_for(&image_id))], bytes).into_response();
+        return image_response(&image_id, bytes);
     }
 
     let url = format!("https://image.tmdb.org/t/p/{size}/{image_id}");
@@ -48,10 +48,68 @@ async fn serve_image(State(cache_dir): State<PathBuf>, AxumPath((size, image_id)
     };
 
     if tokio::fs::create_dir_all(&cache_dir).await.is_ok() {
-        let _ = tokio::fs::write(&cache_path, &bytes).await;
+        // Primero a un temporal y luego se renombra: una petición simultánea de la misma
+        // imagen nunca lee un fichero a medio escribir.
+        let partial = cache_dir.join(format!("{size}_{image_id}.{}.part", std::process::id()));
+        if tokio::fs::write(&partial, &bytes).await.is_ok() && tokio::fs::rename(&partial, &cache_path).await.is_err() {
+            let _ = tokio::fs::remove_file(&partial).await;
+        }
     }
 
-    ([(header::CONTENT_TYPE, content_type_for(&image_id))], bytes).into_response()
+    image_response(&image_id, bytes.to_vec())
+}
+
+/// Las imágenes de TMDB no cambian nunca para un mismo nombre: la WebView puede guardarlas
+/// sin volver a preguntar (las listas virtualizadas montan y desmontan portadas sin parar).
+fn image_response(image_id: &str, bytes: Vec<u8>) -> Response {
+    ([(header::CONTENT_TYPE, content_type_for(image_id)), (header::CACHE_CONTROL, "public, max-age=31536000, immutable")], bytes).into_response()
+}
+
+/// Tope de la caché de imágenes en disco: por encima, se borran las más antiguas hasta
+/// quedar en `IMAGE_CACHE_TARGET`. Un catálogo de 100.000 títulos (R4) llenaría gigas.
+const IMAGE_CACHE_LIMIT: u64 = 600 * 1024 * 1024;
+const IMAGE_CACHE_TARGET: u64 = 450 * 1024 * 1024;
+
+/// Recorta la caché de imágenes al arrancar (y borra temporales sueltos). Devuelve cuántos
+/// ficheros ha quitado.
+pub fn trim_image_cache(dir: &std::path::Path) -> usize {
+    trim_image_cache_to(dir, IMAGE_CACHE_LIMIT, IMAGE_CACHE_TARGET)
+}
+
+fn trim_image_cache_to(dir: &std::path::Path, limit: u64, target: u64) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    let mut files = Vec::new();
+    let mut total = 0u64;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "part") {
+            if std::fs::remove_file(&path).is_ok() {
+                removed += 1;
+            }
+            continue;
+        }
+        let Ok(meta) = entry.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        total += meta.len();
+        files.push((meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH), meta.len(), path));
+    }
+    if total <= limit {
+        return removed;
+    }
+    files.sort_by_key(|(modified, _, _)| *modified);
+    for (_, len, path) in files {
+        if total <= target {
+            break;
+        }
+        if std::fs::remove_file(&path).is_ok() {
+            total = total.saturating_sub(len);
+            removed += 1;
+        }
+    }
+    removed
 }
 
 fn content_type_for(filename: &str) -> &'static str {
@@ -79,9 +137,9 @@ pub fn build_router(image_cache_dir: PathBuf, db_path: PathBuf) -> Router {
 
 #[cfg(test)]
 mod tests {
-    use super::build_router;
+    use super::{build_router, trim_image_cache_to};
     use axum::body::Body;
-    use axum::http::{Request, StatusCode};
+    use axum::http::{header, Request, StatusCode};
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
@@ -109,6 +167,28 @@ mod tests {
         assert_ne!(response.status(), StatusCode::OK);
     }
 
+    #[test]
+    fn image_cache_trim_removes_the_oldest_until_under_target() {
+        let dir = std::env::temp_dir().join(format!("vibe-iptv-img-trim-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, name) in ["w500_a.jpg", "w500_b.jpg", "w500_c.jpg", "w500_d.jpg"].iter().enumerate() {
+            let path = dir.join(name);
+            std::fs::write(&path, vec![0u8; 100]).unwrap();
+            let when = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000 + i as u64);
+            std::fs::File::options().write(true).open(&path).unwrap().set_modified(when).unwrap();
+        }
+        std::fs::write(dir.join("w500_x.jpg.1.part"), b"half").unwrap();
+        // 400 bytes con tope 350: se borran las dos más viejas hasta quedar en 200.
+        assert_eq!(trim_image_cache_to(&dir, 350, 200), 3);
+        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().into_string().unwrap()).collect();
+        left.sort();
+        assert_eq!(left, vec!["w500_c.jpg", "w500_d.jpg"]);
+        // Por debajo del tope no se toca nada.
+        assert_eq!(trim_image_cache_to(&dir, 350, 200), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[tokio::test]
     async fn image_route_serves_from_cache_when_present() {
         let dir = std::env::temp_dir().join(format!("vibe-iptv-img-test-{}", std::process::id()));
@@ -121,6 +201,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()[header::CACHE_CONTROL], "public, max-age=31536000, immutable");
         let body = response.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(&body[..], b"fake-jpeg-bytes");
 
