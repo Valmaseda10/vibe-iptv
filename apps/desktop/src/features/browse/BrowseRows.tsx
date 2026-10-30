@@ -52,6 +52,19 @@ export function BrowseRows({ rows }: { rows: BrowseRowResponse[] }) {
               onOpen={() => open(item, row.style === "continue")}
               onRemove={row.style === "continue" && item.progress != null ? () => void removeFromContinue(item) : undefined}
               menuItem={item.kind === "movie" || item.kind === "series" ? { kind: item.kind, id: item.id } : undefined}
+              preview={
+                item.kind === "movie" || item.kind === "series"
+                  ? {
+                      kind: item.kind,
+                      id: item.id,
+                      year: item.year,
+                      rating: item.rating,
+                      genres: item.genres,
+                      backdropPath: item.backdrop_path,
+                      onPlay: item.kind === "movie" ? () => open(item, true) : undefined,
+                    }
+                  : undefined
+              }
             />
           ))}
         </Row>

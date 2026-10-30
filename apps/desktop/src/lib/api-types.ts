@@ -59,6 +59,10 @@ progress: number | null, is_new: boolean,
  */
 rating: number | null, 
 /**
+ * Fondo apaisado, para la misma tarjeta.
+ */
+backdrop_path: string | null, 
+/**
  * Hasta tres géneros, con nombre.
  */
 genres: Array<string>, };

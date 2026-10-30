@@ -1,6 +1,8 @@
-import { useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useApiBase, imagePath } from "../lib/api-client";
+import { IS_IOS } from "../lib/platform";
 import { HeartIcon } from "./icons";
+import { HoverPreview, type PreviewInfo } from "./HoverPreview";
 import { PosterActionSheet } from "./PosterActionSheet";
 
 type PosterCardProps = {
@@ -33,14 +35,19 @@ type PosterCardProps = {
   menuItem?: { kind: "movie" | "series"; id: number };
   /** Puesto en un «Top 10»: número grande sobre la portada, como en Netflix. */
   rank?: number;
+  /** Datos de la tarjeta ampliada al dejar el ratón encima (PC). Sin ellos, no sale. */
+  preview?: PreviewInfo;
 };
+
+/** Lo que hay que dejar el ratón encima para que salga la tarjeta ampliada. */
+const PREVIEW_DELAY_MS = 550;
 
 /** Lo que tarda una pulsación en convertirse en "mantener pulsado" (como iOS). */
 const LONG_PRESS_MS = 450;
 
 /** Tarjeta de portada 2:3. Reserva el espacio siempre (aspect-ratio fijo) para no saltar
  * el layout mientras carga la imagen; accesible por teclado (Enter abre, foco visible). */
-export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew, onRemove, fluid, menuItem, rank }: PosterCardProps) {
+export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, favorite, progressPercent, isNew, onRemove, fluid, menuItem, rank, preview }: PosterCardProps) {
   const { data: base } = useApiBase();
   const src = imagePath(base, posterPath, "w342");
   const [loaded, setLoaded] = useState(false);
@@ -59,8 +66,39 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
     pressStart.current = null;
   }
 
+  // Tarjeta ampliada (solo con ratón, nunca en iPhone/iPad).
+  const wrapperRef = useRef<HTMLDivElement>(null);
+  const [previewRect, setPreviewRect] = useState<DOMRect | null>(null);
+  const hoverTimer = useRef<number | undefined>(undefined);
+  const leaveTimer = useRef<number | undefined>(undefined);
+  const closePreview = useCallback(() => {
+    window.clearTimeout(hoverTimer.current);
+    window.clearTimeout(leaveTimer.current);
+    setPreviewRect(null);
+  }, []);
+  const keepPreview = useCallback(() => window.clearTimeout(leaveTimer.current), []);
+  const leavePreview = useCallback(() => {
+    window.clearTimeout(hoverTimer.current);
+    window.clearTimeout(leaveTimer.current);
+    leaveTimer.current = window.setTimeout(() => setPreviewRect(null), 150);
+  }, []);
+  useEffect(() => closePreview, [closePreview]);
+
   return (
-    <div className={`group relative ${fluid ? "w-full min-w-0" : "w-40 shrink-0 sm:w-44 ios:max-sm:w-[7.5rem]"}`}>
+    <div
+      ref={wrapperRef}
+      className={`group relative ${fluid ? "w-full min-w-0" : "w-40 shrink-0 sm:w-44 ios:max-sm:w-[7.5rem]"}`}
+      onPointerEnter={(e) => {
+        if (!preview || IS_IOS || e.pointerType !== "mouse") return;
+        window.clearTimeout(leaveTimer.current);
+        window.clearTimeout(hoverTimer.current);
+        hoverTimer.current = window.setTimeout(() => {
+          const rect = wrapperRef.current?.getBoundingClientRect();
+          if (rect) setPreviewRect(rect);
+        }, PREVIEW_DELAY_MS);
+      }}
+      onPointerLeave={leavePreview}
+    >
       <button
         type="button"
         data-card
@@ -168,6 +206,22 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
         >
           ✕
         </button>
+      )}
+
+      {previewRect && preview && (
+        <HoverPreview
+          rect={previewRect}
+          title={title}
+          posterPath={posterPath}
+          info={preview}
+          onOpen={() => {
+            closePreview();
+            onOpen();
+          }}
+          onPointerEnter={keepPreview}
+          onPointerLeave={leavePreview}
+          onClose={closePreview}
+        />
       )}
 
       {menuOpen && (

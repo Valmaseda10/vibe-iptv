@@ -85,6 +85,8 @@ pub struct BrowseItem {
     pub is_new: bool,
     /// Nota de TMDB, para la tarjeta ampliada al pasar el ratón.
     pub rating: Option<f64>,
+    /// Fondo apaisado, para la misma tarjeta.
+    pub backdrop_path: Option<String>,
     /// Hasta tres géneros, con nombre.
     pub genres: Vec<String>,
 }
@@ -234,13 +236,13 @@ fn continue_row(conn: &rusqlite::Connection, kind: &str, profile_id: i64, access
     for row in reads::list_continue_watching(conn, profile_id, 40)? {
         let progress = row.duration_s.filter(|d| *d > 0).map(|d| (row.position_s as f64 / d as f64).clamp(0.0, 1.0));
         if kind == "movie" && row.item_kind == "movie" && reads::item_allowed(conn, "movie", row.item_id, access)? {
-            items.push(BrowseItem { kind: "movie".into(), id: row.item_id, series_id: None, clean_title: row.title, year: None, poster_path: row.poster_path, subtitle: None, progress, is_new: false, rating: None, genres: Vec::new() });
+            items.push(BrowseItem { kind: "movie".into(), id: row.item_id, series_id: None, clean_title: row.title, year: None, poster_path: row.poster_path, subtitle: None, progress, is_new: false, rating: None, backdrop_path: None, genres: Vec::new() });
         } else if kind == "series" && row.item_kind == "episode" && reads::item_allowed(conn, "episode", row.item_id, access)? {
             let series_id = reads::series_id_of_episode(conn, row.item_id)?;
             if let Some(id) = series_id {
                 series_seen.insert(id);
             }
-            items.push(BrowseItem { kind: "episode".into(), id: row.item_id, series_id, clean_title: row.title, year: None, poster_path: row.poster_path, subtitle: row.subtitle, progress, is_new: false, rating: None, genres: Vec::new() });
+            items.push(BrowseItem { kind: "episode".into(), id: row.item_id, series_id, clean_title: row.title, year: None, poster_path: row.poster_path, subtitle: row.subtitle, progress, is_new: false, rating: None, backdrop_path: None, genres: Vec::new() });
         }
     }
     if kind == "series" {
@@ -260,6 +262,7 @@ fn continue_row(conn: &rusqlite::Connection, kind: &str, profile_id: i64, access
                 progress: None,
                 is_new: false,
                 rating: None,
+                backdrop_path: None,
                 genres: Vec::new(),
             });
         }
@@ -324,6 +327,7 @@ fn hydrate(conn: &rusqlite::Connection, plan: Plan, access: reads::ProfileAccess
             progress: None,
             is_new: row.added_at.is_some_and(|t| now - t < NEW_BADGE_WINDOW_SECONDS),
             rating: row.rating,
+            backdrop_path: row.backdrop_path.clone(),
             genres: genre_names.get(card.kind).map(|names| row.genres.iter().filter_map(|g| names.get(g).cloned()).take(3).collect()).unwrap_or_default(),
         })
     };
