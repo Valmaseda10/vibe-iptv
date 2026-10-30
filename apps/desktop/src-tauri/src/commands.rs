@@ -291,6 +291,19 @@ pub fn qa_ui_snapshot(app: AppHandle, json: String) {
 /// tiempo, el catálogo y sobre todo el EPG envejecen en silencio si el usuario no
 /// pulsa "Sincronizar" a mano en Ajustes.
 const AUTO_SYNC_THRESHOLD_SECONDS: i64 = 12 * 3600;
+/// Entre dos intentos automáticos del mismo proveedor, aunque la app se haya reiniciado:
+/// si el primero falló (proveedor caído, bloqueo por país...), cada arranque volvía a
+/// llamar al panel, y los paneles bloquean la cuenta tras muchas consultas.
+const AUTO_SYNC_RETRY_SECONDS: i64 = 2 * 3600;
+
+fn auto_sync_attempt_key(provider_id: i64) -> String {
+    format!("auto_sync_attempt.{provider_id}")
+}
+
+/// Si ya toca otro intento automático, sabiendo cuándo fue el último (epoch).
+fn auto_sync_retry_due(last_attempt: Option<i64>, now: i64) -> bool {
+    last_attempt.is_none_or(|at| now - at >= AUTO_SYNC_RETRY_SECONDS || at > now)
+}
 
 /// Llamado una vez al arrancar la app (`main.rs`, `.setup()`): sincroniza en segundo
 /// plano cualquier proveedor habilitado que no se haya sincronizado nunca, o hace más
@@ -316,6 +329,7 @@ pub async fn auto_sync_stale_providers(app: AppHandle, stream_guard: Arc<StreamG
     };
 
     let now = crate::db::now_epoch();
+    let conn = schema::open_connection(&app).ok();
     for provider in providers {
         if !provider.enabled {
             continue;
@@ -325,6 +339,16 @@ pub async fn auto_sync_stale_providers(app: AppHandle, stream_guard: Arc<StreamG
             continue;
         }
         let provider_id = provider.id;
+        let Some(conn) = conn.as_ref() else { return };
+        let key = auto_sync_attempt_key(provider_id);
+        let last_attempt = crate::db::reads::get_setting(conn, &key).ok().flatten().and_then(|value| value.parse::<i64>().ok());
+        if !auto_sync_retry_due(last_attempt, now) {
+            continue;
+        }
+        if let Err(err) = queries::set_setting(conn, &key, &now.to_string()) {
+            tracing::warn!(provider_id, error = %err, "no se pudo apuntar el intento de sincronización automática");
+            continue;
+        }
         match build_source_for_provider(provider).await {
             Ok(source) => {
                 tracing::info!(provider_id, "sincronización automática (más de 12h sin sincronizar)");
@@ -560,6 +584,17 @@ async fn fetch_m3u_text(url: &str) -> CmdResult<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_failed_automatic_sync_is_not_retried_on_every_launch() {
+        let now = 1_000_000;
+        assert!(super::auto_sync_retry_due(None, now));
+        assert!(!super::auto_sync_retry_due(Some(now - 60), now));
+        assert!(!super::auto_sync_retry_due(Some(now - 2 * 3600 + 1), now));
+        assert!(super::auto_sync_retry_due(Some(now - 2 * 3600), now));
+        // Reloj cambiado hacia atrás: no se queda bloqueado para siempre.
+        assert!(super::auto_sync_retry_due(Some(now + 5000), now));
+    }
+
     use super::*;
     use axum::http::{HeaderMap, StatusCode};
     use axum::routing::get;

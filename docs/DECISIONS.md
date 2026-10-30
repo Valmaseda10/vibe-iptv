@@ -1951,6 +1951,30 @@ tests), recentrada en cada cambio de canal.
   vídeos en español y el 58 % de las películas se quedaba sin tráiler; ahora se piden en
   español, inglés y sin idioma, prefiriendo el español. La migración 028 vuelve a mirar los
   que no tenían, de más a menos votados.
+- **Caché de imágenes (2026-10-30).** `/img` responde con `Cache-Control: immutable` (los
+  nombres de TMDB no cambian de contenido): las listas virtualizadas montan y desmontan
+  portadas sin parar y antes cada una se volvía a pedir. La descarga se escribe en un
+  temporal y se renombra (una petición simultánea nunca lee media imagen) y al arrancar la
+  caché se recorta a 450 MB si pasa de 600 MB, borrando lo más antiguo.
+- **Actualizaciones automáticas en Windows (2026-10-30, cambia la decisión de F10).** En
+  F10 se decidió con el usuario actualizar a mano; ahora las ha pedido. Plugin oficial
+  `tauri-plugin-updater` (fijado a 2.12.x: el 2.13 obliga a subir Tauri a 2.12 y, con él,
+  los paquetes npm y la compilación de iOS). Las versiones se publican en GitHub Releases
+  con `tools/publicar-version.mjs`, que compila el instalador NSIS, lo firma y sube
+  `latest.json`; solo NSIS (el MSI duplicaba el tiempo de compilación sin aportar nada).
+  La clave privada de firma vive en `~/.tauri/vibe-iptv.key` de este PC, **nunca en el
+  repositorio**; la pública está en `tauri.conf.json`. Si la clave se pierde, las copias
+  instaladas no aceptarán versiones nuevas (habría que reinstalar a mano). La app mira a
+  los 45 s de abrirse y cada 6 h, descarga en segundo plano solo sin nada reproduciéndose
+  (R1) y ofrece «Reiniciar y actualizar»; nunca instala sola a mitad de algo. En
+  desarrollo no mira nada. Las notas de cada versión enlazan el código fuente de ffmpeg y
+  mpv (GPL), como pedía la nota de licencias de F10.
+- **Sincronización automática con espera tras un intento (2026-10-30).** Con más de 12 h
+  sin sincronizar, cada arranque de la app llamaba al panel aunque el intento anterior
+  hubiera fallado minutos antes (en desarrollo, con cada recompilación: hoy, decenas de
+  veces contra un panel que bloquea por país). Ahora se apunta la hora del intento en
+  `app_settings` y no se repite hasta pasadas 2 h, aunque se reinicie. Sincronizar a mano
+  desde Ajustes no cambia.
 
 ## Deuda técnica conocida desde el diseño
 
