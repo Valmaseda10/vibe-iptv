@@ -50,6 +50,7 @@ export function useRatings() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey });
       queryClient.invalidateQueries({ queryKey: ["home"] });
+      queryClient.invalidateQueries({ queryKey: ["browse"] });
     },
   });
 

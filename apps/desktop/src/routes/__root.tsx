@@ -4,6 +4,7 @@ import { AccountGate } from "../features/account/AccountGate";
 import { ActiveProfileGate } from "../features/profiles/ActiveProfileGate";
 import { PlayerHost } from "../features/player/PlayerHost";
 import { PlayerSessionProvider } from "../lib/playerSession";
+import { RatePrompt } from "../components/RatePrompt";
 
 export const rootRoute = createRootRoute({
   component: () => (
@@ -15,6 +16,8 @@ export const rootRoute = createRootRoute({
           </AppLayout>
           {/* Fuera del layout: el reproductor sigue en pequeño al cambiar de pantalla. */}
           <PlayerHost />
+          {/* «¿Te ha gustado?» al terminar algo. */}
+          <RatePrompt />
         </PlayerSessionProvider>
       </ActiveProfileGate>
     </AccountGate>

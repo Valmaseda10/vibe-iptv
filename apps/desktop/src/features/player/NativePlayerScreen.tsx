@@ -25,6 +25,7 @@ import type {
 import { findNextEpisode } from "./episodes";
 import { feedLabels } from "../../lib/channels";
 import type { PlayerSearch, PlayerSession } from "../../lib/playerSession";
+import { askToRate, WATCHED_RATIO, type RateCandidate } from "../../lib/ratePrompt";
 
 type Kind = "channel" | "movie" | "episode";
 
@@ -375,9 +376,18 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
     [channelFeeds, itemId, listChannelId, onNavigate, search],
   );
 
-  const latestRef = useRef({ kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose });
+  const rateTarget: RateCandidate | null =
+    profileId === null
+      ? null
+      : kind === "movie" && movieQuery.data
+        ? { profileId, kind: "movie", id: itemId, title: movieQuery.data.clean_title, posterPath: movieQuery.data.poster_path }
+        : kind === "episode" && seriesQuery.data && search.seriesId
+          ? { profileId, kind: "series", id: Number(search.seriesId), title: seriesQuery.data.clean_title, posterPath: seriesQuery.data.poster_path }
+          : null;
+
+  const latestRef = useRef({ rateTarget, kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose });
   useEffect(() => {
-    latestRef.current = { kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose };
+    latestRef.current = { rateTarget, kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose };
   });
 
   useEffect(() => {
@@ -424,6 +434,8 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
           }
           closedRef.current = true;
           lastRequestRef.current = null;
+          // Visto (casi) entero: «¿Te ha gustado?» al volver.
+          if (payload.ended || (payload.duration_s && payload.position_s / payload.duration_s >= WATCHED_RATIO)) askToRate(latest.rateTarget);
           // La grabación del directo la suelta el propio reproductor (VibePlayer.swift) en
           // cuanto VLC ha parado: pedirlo desde aquí, antes, hacía que VLC reconectara.
           // Cerrado desde la ventana pequeña: el usuario ya está en otra pantalla.

@@ -20,6 +20,7 @@ import { ArrowDownIcon, ArrowUpIcon, BackIcon, FullscreenIcon, ListIcon, MuteIco
 import { feedLabels } from "../../lib/channels";
 import type { PlayerKind, PlayerSearch, PlayerSession } from "../../lib/playerSession";
 import { ChannelPanel } from "./ChannelPanel";
+import { askToRate, WATCHED_RATIO, type RateCandidate } from "../../lib/ratePrompt";
 import { MiniPlayerOverlay } from "./MiniPlayerOverlay";
 import { useLiveTimeshift } from "./useLiveTimeshift";
 import { SUBTITLE_SIZES, subtitleCueCss, useSubtitleStyle } from "../../lib/subtitleStyle";
@@ -467,9 +468,18 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
   // pasaría si dependiera directamente de `displayCurrentTime`), el intervalo de guardado
   // de abajo se reiniciaría antes de completar sus 10 s y nunca llegaría a disparar. Por
   // eso lee los valores actuales de una ref en vez de cerrarlos por clausura.
-  const latestRef = useRef({ kind, itemId, profileId, displayCurrentTime, displayDuration, resumeReady });
+  // Por qué preguntar «¿Te ha gustado?» al terminar: la película, o la serie del episodio.
+  const rateTarget: RateCandidate | null =
+    profileId === null
+      ? null
+      : kind === "movie" && movieQuery.data
+        ? { profileId, kind: "movie", id: itemId, title: movieQuery.data.clean_title, posterPath: movieQuery.data.poster_path }
+        : kind === "episode" && seriesQuery.data && search.seriesId
+          ? { profileId, kind: "series", id: Number(search.seriesId), title: seriesQuery.data.clean_title, posterPath: seriesQuery.data.poster_path }
+          : null;
+  const latestRef = useRef({ kind, itemId, profileId, displayCurrentTime, displayDuration, resumeReady, rateTarget });
   useEffect(() => {
-    latestRef.current = { kind, itemId, profileId, displayCurrentTime, displayDuration, resumeReady };
+    latestRef.current = { kind, itemId, profileId, displayCurrentTime, displayDuration, resumeReady, rateTarget };
   });
 
   const saveProgress = useCallback((finishedHint?: boolean) => {
@@ -493,7 +503,12 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
   }, [kind, saveProgress]);
 
   useEffect(() => {
-    return () => saveProgress();
+    return () => {
+      saveProgress();
+      // Se cierra habiéndolo visto (casi) entero: «¿Te ha gustado?» al volver.
+      const { displayCurrentTime, displayDuration, rateTarget } = latestRef.current;
+      if (displayDuration && displayCurrentTime / displayDuration >= WATCHED_RATIO) askToRate(rateTarget);
+    };
   }, [saveProgress]);
 
   // Siguiente episodio con cuenta atrás cancelable, en los últimos segundos.
@@ -534,13 +549,17 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
   }, [resetHideTimer]);
 
   // Volver deja lo que se ve sonando en pequeño (`PlayerHost`). Si no se estaba viendo nada
-  // (error, o se abrió en mpv), se cierra.
+  // (error, se abrió en mpv o ya terminó), se cierra.
+  const endedRef = useRef(false);
+  useEffect(() => {
+    endedRef.current = false;
+  }, [kind, itemId]);
   const goBack = useCallback(() => {
     saveProgress();
     if (kind === "movie") navigate({ to: "/movies/$movieId", params: { movieId: id } });
     else if (kind === "episode" && search.seriesId) navigate({ to: "/series/$seriesId", params: { seriesId: search.seriesId } });
     else navigate({ to: "/live" });
-    if (errorMessage || playingInMpv) onClose();
+    if (errorMessage || playingInMpv || endedRef.current) onClose();
   }, [kind, id, search.seriesId, navigate, saveProgress, errorMessage, playingInMpv, onClose]);
 
   const zapChannel = useCallback(
@@ -947,6 +966,13 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
           onCanPlay={() => setBuffering(false)}
           onVolumeChange={(e) => setMuted(e.currentTarget.muted)}
           onError={handleVideoError}
+          onEnded={() => {
+            askToRate(latestRef.current.rateTarget);
+            // Terminado: no hay nada que seguir viendo en pequeño (un episodio con siguiente
+            // ya pasa solo al siguiente antes de llegar aquí).
+            endedRef.current = true;
+            if (mini) onClose();
+          }}
         />
       ) : (
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-700 border-t-red-600" aria-label="Cargando" />
