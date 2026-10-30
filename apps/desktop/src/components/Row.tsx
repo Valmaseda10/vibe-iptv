@@ -4,6 +4,8 @@ import { HorizontalScroller } from "./HorizontalScroller";
 type RowProps = {
   title: string;
   children: ReactNode;
+  /** Enlace junto al título («Ver todo ›»). */
+  action?: { label: string; onClick: () => void };
 };
 
 /** Marca cada pista de fila para que las flechas arriba/abajo puedan saltar entre filas
@@ -46,7 +48,7 @@ function focusVerticalNeighbor(currentTrack: HTMLElement, currentIndex: number, 
  * misma fila; arriba/abajo salta a la fila anterior/siguiente de la pantalla (además del
  * scroll nativo por rueda/touch en ambos ejes). Cada hijo debe ser un elemento enfocable
  * (un `<button>`, como `PosterCard`). */
-export function Row({ title, children }: RowProps) {
+export function Row({ title, children, action }: RowProps) {
   const trackRef = useRef<HTMLDivElement>(null);
 
   function onKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
@@ -69,7 +71,18 @@ export function Row({ title, children }: RowProps) {
 
   return (
     <section className="flex flex-col gap-3">
-      <h2 className="px-4 text-lg font-semibold text-neutral-200 sm:px-10 ios:text-[20px] ios:font-bold ios:tracking-tight ios:text-white">{title}</h2>
+      <div className="flex items-baseline gap-3 px-4 sm:px-10">
+        <h2 className="text-lg font-semibold text-neutral-200 ios:text-[20px] ios:font-bold ios:tracking-tight ios:text-white">{title}</h2>
+        {action && (
+          <button
+            type="button"
+            onClick={action.onClick}
+            className="rounded text-sm text-neutral-400 outline-none transition-colors hover:text-white focus-visible:text-white focus-visible:ring-2 focus-visible:ring-red-600 ios:text-[15px] ios:text-ios-label-2"
+          >
+            {action.label}
+          </button>
+        )}
+      </div>
       <HorizontalScroller
         trackRef={trackRef}
         data-row-track

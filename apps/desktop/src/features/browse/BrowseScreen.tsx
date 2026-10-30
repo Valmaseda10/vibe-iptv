@@ -63,7 +63,7 @@ export function BrowseScreen({ page, title, actions, before }: BrowseScreenProps
           </section>
         ))
       ) : (
-        <BrowseRows rows={query.data?.rows ?? []} />
+        <BrowseRows rows={query.data?.rows ?? []} page={page} />
       )}
     </div>
   );
