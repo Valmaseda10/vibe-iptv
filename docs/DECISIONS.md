@@ -1999,6 +1999,12 @@ tests), recentrada en cada cambio de canal.
   guarda ahora el nombre de cada pista y si es de forzados, y el selector dice «Español
   (forzados)». La migración 029 borra las sondas con subtítulos para repetirlas. Sin
   confirmar contra el fichero real (el proveedor bloquea desde aquí).
+- **La actualización no se instalaba (2026-10-31, versión 0.2.2).** Al pulsar «Reiniciar y
+  actualizar» la app se cerraba y no pasaba nada: el instalador lo lanza la propia app, nacía
+  dentro del job que mata a los hijos al cerrarse (F10, R1) y Windows lo mataba en cuanto la
+  app salía. Ahora, justo antes, el job deja que los procesos nuevos nazcan fuera
+  (`JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`); ffmpeg y mpv, ya dentro, siguen muriendo con la
+  app. Las copias 0.2.0 y 0.2.1 tienen el fallo: hay que instalar la 0.2.2 a mano una vez.
 
 ## Deuda técnica conocida desde el diseño
 

@@ -105,6 +105,7 @@ pub fn install_update(app: AppHandle, pending: tauri::State<'_, PendingUpdate>) 
     let Some((update, bytes)) = taken else {
         return Err("No hay ninguna versión nueva descargada.".into());
     };
+    crate::util::child_processes::let_new_processes_outlive_app();
     update.install(bytes).map_err(|err| format!("No se pudo instalar la versión nueva: {err}"))?;
     app.restart();
 }
