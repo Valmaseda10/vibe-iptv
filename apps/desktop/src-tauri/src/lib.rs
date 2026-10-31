@@ -44,7 +44,9 @@ pub fn run() {
     // URL de proveedor sin redactar antes, así que no hace falta redactar otra vez aquí
     // (ver `util::diag_log`).
     tracing_subscriber::registry()
-        .with(tracing_subscriber::EnvFilter::from_default_env())
+        // Sin RUST_LOG (la app instalada): avisos de todo y lo informativo de la app, que es
+        // lo que se exporta desde Ajustes → Diagnóstico (antes, solo errores: sin tiempos).
+        .with(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn,vibe_iptv_lib=info")))
         .with(tracing_subscriber::fmt::layer())
         .with(tracing_subscriber::fmt::layer().with_ansi(false).with_writer(diagnostics_log.clone()))
         .init();

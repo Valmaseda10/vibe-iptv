@@ -2029,6 +2029,15 @@ tests), recentrada en cada cambio de canal.
   cola apunta solo que hay que subirla y el valor se lee del llavero al enviar. Al llegar a
   un aparato se guarda en su llavero y empieza el emparejamiento con TMDB. Una clave
   guardada antes de esto se sube sola al arrancar.
+- **Películas: una sola conexión con el proveedor (2026-10-31).** El usuario esperaba ~10 s
+  al retomar una película ya analizada. Para empezar un MKV, ffmpeg hace 4 peticiones
+  (principio, índice al final, vuelta y punto pedido; medido con el proveedor de pruebas) y
+  cada una era una conexión nueva, lenta con un panel tras VPN. Con `-multiple_requests 1`
+  (remux y sonda de VOD, no en directo) van por la misma conexión, y desde el principio es
+  una sola petición. Además la app instalada registra ya lo informativo (antes solo
+  errores): cuánto tarda el primer fragmento y la espera a cerrar la sesión anterior, para
+  diagnosticar con «Exportar diagnóstico». Y el selector de subtítulos ignora nombres de
+  pista que son firmas («[www.newpct1.com]»).
 
 ## Deuda técnica conocida desde el diseño
 

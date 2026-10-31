@@ -104,6 +104,13 @@ pub struct SubtitleTrack {
     pub forced: bool,
 }
 
+/// Un nombre de pista que dice algo («Castellano», «SDH»), no la firma de quien subió el
+/// fichero («[www.newpct1.com]», «by Grupo»).
+pub fn useful_track_title(title: &str) -> bool {
+    let t = title.trim().to_lowercase();
+    !t.is_empty() && !t.contains("www.") && !t.contains("http") && !t.contains(".com") && !t.contains(".net") && !t.contains(".org") && !t.starts_with('[') && !t.starts_with("by ")
+}
+
 /// Si una pista de subtítulos es de forzados: por la marca del fichero o por su nombre.
 fn is_forced_subtitle(disposition_forced: bool, title: Option<&str>) -> bool {
     disposition_forced || title.is_some_and(|t| {
@@ -155,6 +162,8 @@ pub async fn probe_url(ffprobe_path: &Path, url: &str, user_agent: &str) -> Resu
             "-user_agent",
             user_agent,
         ])
+        // Misma conexión para todas sus peticiones (ver `media::ffmpeg`).
+        .args(if crate::media::ffmpeg::is_http(url) { &["-multiple_requests", "1"][..] } else { &[][..] })
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -277,7 +286,7 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
         .filter(|s| s.codec_type.as_deref() == Some("subtitle"))
         .enumerate()
         .map(|(index, s)| {
-            let title = s.tags.as_ref().and_then(|t| t.title.clone()).filter(|t| !t.trim().is_empty());
+            let title = s.tags.as_ref().and_then(|t| t.title.clone()).filter(|t| useful_track_title(t));
             SubtitleTrack {
                 index: index as i64,
                 language: s.tags.as_ref().and_then(|t| t.language.clone()),
@@ -537,6 +546,8 @@ mod tests {
         }"#;
         let tracks = parse_ffprobe_json(json).unwrap().subtitle_tracks;
         assert_eq!(tracks.iter().map(|t| (t.title.as_deref(), t.forced)).collect::<Vec<_>>(), vec![(Some("Forzados"), true), (Some("Castellano"), false), (None, true)]);
+        // La firma de quien subió el fichero no es un nombre de pista.
+        assert!(!useful_track_title("[www.newpct1.com]") && !useful_track_title("by Grupo") && useful_track_title("Latino"));
         // Lo guardado antes de existir estos campos se sigue leyendo.
         let old: Vec<SubtitleTrack> = serde_json::from_str(r#"[{"index":0,"language":"spa","codec_name":"subrip","text":true}]"#).unwrap();
         assert!(!old[0].forced && old[0].title.is_none());

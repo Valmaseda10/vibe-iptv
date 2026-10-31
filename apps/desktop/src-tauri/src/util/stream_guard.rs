@@ -65,11 +65,16 @@ impl StreamGuard {
     /// se mata y se espera su terminación real antes de devolver el permiso nuevo; si
     /// tenía una conexión con el proveedor abierta, se le pide cerrarla y se espera.
     pub async fn acquire(self: &Arc<Self>) -> StreamPermit {
+        let started = std::time::Instant::now();
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
         self.active.store(true, Ordering::SeqCst);
         self.generation_tx.send_replace(generation);
         self.kill_current_process().await;
         self.wait_upstreams_closed().await;
+        let waited = started.elapsed();
+        if waited.as_millis() >= 200 {
+            tracing::info!(ms = waited.as_millis() as u64, "espera a que se cerrara la sesión anterior");
+        }
         StreamPermit { guard: Arc::clone(self), generation }
     }
 

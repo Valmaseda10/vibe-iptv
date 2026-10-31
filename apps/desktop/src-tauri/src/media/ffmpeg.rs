@@ -36,6 +36,11 @@ pub struct RemuxOptions<'a> {
     pub timeshift_window_seconds: u32,
 }
 
+/// Si la entrada es una URL (en las pruebas son ficheros, que no aceptan opciones de HTTP).
+pub fn is_http(url: &str) -> bool {
+    url.starts_with("http://") || url.starts_with("https://")
+}
+
 /// Construye el comando ffmpeg de remux, sin lanzarlo todavía. Separado de
 /// [`spawn_remux`] para poder probar los flags exactos sin depender de tener ffmpeg
 /// instalado.
@@ -67,6 +72,14 @@ pub fn build_remux_command(ffmpeg_path: &Path, url: &str, user_agent: &str, opti
     // que decodificar para llegar exactamente al segundo pedido.
     if let Some(seconds) = start_seconds {
         command.args(["-ss", &seconds.to_string()]);
+    }
+
+    // VOD: la misma conexión para todas las peticiones. Para empezar un MKV, ffmpeg pide el
+    // principio, salta al final a leer el índice y vuelve (4 peticiones; medido con el
+    // proveedor de pruebas). Cada una era una conexión nueva con el proveedor, segundos con
+    // un panel lento o tras una VPN; así es una sola, y desde el principio, una petición.
+    if !live && is_http(url) {
+        command.args(["-multiple_requests", "1"]);
     }
 
     command.args(["-i", url]);
@@ -194,6 +207,18 @@ mod tests {
 
     fn args_of(command: &Command) -> Vec<String> {
         command.as_std().get_args().map(|a| a.to_string_lossy().to_string()).collect()
+    }
+
+    #[test]
+    fn vod_reuses_one_connection_with_the_provider_but_live_and_files_do_not_ask_for_it() {
+        let vod = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", &RemuxOptions { start_seconds: Some(780.0), ..Default::default() }));
+        let multiple = vod.iter().position(|a| a == "-multiple_requests").expect("VOD sin conexión persistente");
+        assert_eq!(vod[multiple + 1], "1");
+        assert!(multiple < vod.iter().position(|a| a == "-i").unwrap(), "es una opción de entrada: va antes de -i");
+        let live = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, ..Default::default() }));
+        assert!(!live.iter().any(|a| a == "-multiple_requests"));
+        let file = args_of(&build_remux_command(Path::new("ffmpeg"), "C:/tmp/peli.mkv", "ua", &RemuxOptions::default()));
+        assert!(!file.iter().any(|a| a == "-multiple_requests"));
     }
 
     #[test]

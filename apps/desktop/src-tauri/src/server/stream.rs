@@ -255,7 +255,7 @@ async fn get_playback_tier(
                 subtitle_tracks: subtitle_tracks
                     .into_iter()
                     .filter(|t| t.text)
-                    .map(|t| SubtitleTrackSummary { index: t.index, language: t.language, codec_name: t.codec_name, title: t.title, forced: t.forced })
+                    .map(|t| SubtitleTrackSummary { index: t.index, language: t.language, codec_name: t.codec_name, title: t.title.filter(|title| probe::useful_track_title(title)), forced: t.forced })
                     .collect(),
                 intro_start_s: row.intro_start_s,
                 intro_end_s: row.intro_end_s,
@@ -1235,6 +1235,7 @@ async fn start_remux(
     permit: &StreamPermit,
     guard: &Arc<StreamGuard>,
 ) -> Result<(Bytes, ReaderStream<tokio::process::ChildStdout>), StreamError> {
+    let started = std::time::Instant::now();
     let mut child = ffmpeg::spawn_remux(ffmpeg_path, url, DEFAULT_USER_AGENT, options).map_err(|err| {
         tracing::error!(error = %err, "no se pudo lanzar ffmpeg para el remux");
         StreamError::BinariesMissing
@@ -1245,7 +1246,10 @@ async fn start_remux(
 
     let mut reader = ReaderStream::new(stdout);
     match tokio::time::timeout(FIRST_DATA_TIMEOUT, reader.next()).await {
-        Ok(Some(Ok(bytes))) => Ok((bytes, reader)),
+        Ok(Some(Ok(bytes))) => {
+            tracing::info!(ms = started.elapsed().as_millis() as u64, live = options.live, start = ?options.start_seconds, "remux: primer fragmento");
+            Ok((bytes, reader))
+        }
         Ok(_) => {
             // ffmpeg terminó sin sacar nada: el proveedor rechazó o cortó la conexión.
             guard.release_process(generation).await;
