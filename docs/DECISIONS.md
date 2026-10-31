@@ -2005,6 +2005,8 @@ tests), recentrada en cada cambio de canal.
   app salía. Ahora, justo antes, el job deja que los procesos nuevos nazcan fuera
   (`JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`); ffmpeg y mpv, ya dentro, siguen muriendo con la
   app. Las copias 0.2.0 y 0.2.1 tienen el fallo: hay que instalar la 0.2.2 a mano una vez.
+  Verificado con el usuario: de la 0.2.2 instalada a la 0.2.3 publicada, el aviso salió,
+  se instaló y la app se volvió a abrir sola.
 
 ## Deuda técnica conocida desde el diseño
 
