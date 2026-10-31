@@ -30,9 +30,30 @@ private func applyWebviewFullScreen(attempt: Int) {
         scrollView.contentInsetAdjustmentBehavior = .never
         scrollView.contentInset = .zero
         scrollView.scrollIndicatorInsets = .zero
+        relayout(webView)
     }
     if webViews.isEmpty, attempt < 40 {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { applyWebviewFullScreen(attempt: attempt + 1) }
+    } else if attempt >= 0 {
+        // La primera página puede terminar de cargar después: se vuelve a encajar entonces.
+        for delay in [0.8, 2.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { applyWebviewFullScreen(attempt: -1) }
+        }
+    }
+}
+
+/// Quitar los márgenes no hace que WebKit recoloque la página: en un iPhone de verdad, al
+/// abrir la app la barra de pestañas se quedaba subida con una franja negra debajo, hasta
+/// que el giro del reproductor la recolocaba. Un cambio de tamaño de un punto, deshecho al
+/// momento, lo fuerza igual que el giro.
+private func relayout(_ webView: WKWebView) {
+    let frame = webView.frame
+    guard frame.height > 1 else { return }
+    webView.frame = CGRect(x: frame.minX, y: frame.minY, width: frame.width, height: frame.height - 1)
+    webView.layoutIfNeeded()
+    DispatchQueue.main.async {
+        webView.frame = frame
+        webView.layoutIfNeeded()
     }
 }
 

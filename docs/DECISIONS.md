@@ -2012,6 +2012,16 @@ tests), recentrada en cada cambio de canal.
   PC y en el iPhone: la clave es el nombre del canal sin calidad (el mismo con el que se
   agrupan sus versiones, con índice) más la calidad elegida; en el otro aparato se busca
   esa versión o, si no está, la primera. Ver docs/CLOUD-SYNC.md.
+- **Películas que arrancan antes (2026-10-31).** La primera vez que se abre una película,
+  ffprobe la inspecciona antes de reproducirla; sin tope, en un MKV con subtítulos leía
+  hasta 5 MB del proveedor esperando paquetes de pistas ya descritas en la cabecera. Ahora
+  `-probesize 2M -analyzeduration 2M`, como el remux; con la película de pruebas (dos
+  audios, dos subtítulos, capítulos) se ven las mismas pistas.
+- **iPhone: barra de pestañas subida al abrir la app (2026-10-31).** En un iPhone de verdad
+  quedaba una franja negra debajo hasta reproducir algo (el giro del reproductor recolocaba
+  la página). Tras quitar los márgenes automáticos, un cambio de tamaño de un punto,
+  deshecho al momento, obliga a WebKit a recolocarla; se repite al segundo y a los dos
+  segundos por si la página termina de cargar después. En el simulador no se veía.
 
 ## Deuda técnica conocida desde el diseño
 

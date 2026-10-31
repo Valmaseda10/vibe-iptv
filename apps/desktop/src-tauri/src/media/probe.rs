@@ -144,6 +144,14 @@ pub async fn probe_url(ffprobe_path: &Path, url: &str, user_agent: &str) -> Resu
             "-show_streams",
             "-show_format",
             "-show_chapters",
+            // Con lo que dice la cabecera basta (códecs, pistas, idiomas, capítulos). Sin
+            // tope, en un MKV con subtítulos ffprobe seguía leyendo hasta 5 MB del proveedor
+            // esperando paquetes de unas pistas ya descritas: segundos de más antes de
+            // empezar cada película nueva. El mismo tope que usa el remux de VOD.
+            "-probesize",
+            "2M",
+            "-analyzeduration",
+            "2M",
             "-user_agent",
             user_agent,
         ])
