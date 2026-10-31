@@ -435,6 +435,11 @@ fn cached_m3u_source(provider_id: i64) -> Option<Arc<dyn Source + Send + Sync>> 
 #[tauri::command]
 pub fn set_tmdb_api_key(app: AppHandle, api_key: String) -> CmdResult<()> {
     keychain::store_secret(TMDB_API_KEY_CREDENTIAL_REF, &api_key).map_err(|err| err.to_string())?;
+    // Viaja con la cuenta a los demás aparatos (`sync::tmdb_key`).
+    match schema::open_connection(&app).map_err(|err| err.to_string()).and_then(|conn| crate::sync::tmdb_key::mark_changed(&conn).map_err(|err| err.to_string())) {
+        Ok(()) => crate::sync::engine::wake(),
+        Err(err) => tracing::warn!(error = %err, "no se pudo encolar la clave de TMDB para la cuenta"),
+    }
     spawn_tmdb_matching(app);
     Ok(())
 }

@@ -9,7 +9,7 @@
 use rand::RngExt;
 use rusqlite::Connection;
 
-use super::backend::{RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating};
+use super::backend::{RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteSetting};
 use crate::db::{cloud, now_epoch, queries, reads, Result};
 
 /// El progreso se guarda cada 10 s mientras se reproduce; a la nube basta con mandarlo
@@ -39,6 +39,13 @@ pub fn ensure_profile_remote_id(conn: &Connection, profile_id: i64) -> Result<Op
 fn put(conn: &Connection, doc: &RemoteDoc, not_before: i64) -> Result<()> {
     let payload = serde_json::to_string(doc)?;
     cloud::enqueue(conn, &doc.target(), doc.collection().as_str(), &payload, not_before)
+}
+
+/// Un ajuste de la cuenta, sin su valor: lo pone quien envía (`sync::tmdb_key::fill_value`),
+/// para que nada secreto pase por la base de datos.
+pub fn enqueue_setting(conn: &Connection, key: &str, updated_at: i64) -> Result<()> {
+    let doc = RemoteDoc::Setting(RemoteSetting { key: key.to_string(), value: String::new(), updated_at, deleted: false });
+    put(conn, &doc, now_epoch())
 }
 
 /// Estado actual de un perfil (creado, renombrado, PIN cambiado...).

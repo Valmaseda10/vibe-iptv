@@ -2022,6 +2022,13 @@ tests), recentrada en cada cambio de canal.
   la página). Tras quitar los márgenes automáticos, un cambio de tamaño de un punto,
   deshecho al momento, obliga a WebKit a recolocarla; se repite al segundo y a los dos
   segundos por si la página termina de cargar después. En el simulador no se veía.
+- **La clave de TMDB viaja con la cuenta (2026-10-31, pedido por el usuario).** Sin ella no
+  hay Top 10, tendencias, aclamadas ni recomendaciones, y al reinstalar la app del iPhone
+  se perdía. Nueva colección `settings` en la nube (migración 030 amplía la cola de
+  salida); gana la puesta más reciente, en el aparato que sea. Nunca pasa por SQLite: la
+  cola apunta solo que hay que subirla y el valor se lee del llavero al enviar. Al llegar a
+  un aparato se guarda en su llavero y empieza el emparejamiento con TMDB. Una clave
+  guardada antes de esto se sube sola al arrancar.
 
 ## Deuda técnica conocida desde el diseño
 

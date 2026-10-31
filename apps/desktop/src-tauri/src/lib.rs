@@ -109,6 +109,9 @@ pub fn run() {
             // (la EPG solo trae siete días). La sincronización ya se pausa sola mientras
             // hay reproducción (R1).
             commands::resume_tmdb_matching(app.handle().clone());
+            // La clave de TMDB puesta en otro aparato llega por la cuenta: se empareja entonces.
+            let app_for_tmdb_key = app.handle().clone();
+            crate::sync::tmdb_key::on_arrived(move || commands::resume_tmdb_matching(app_for_tmdb_key.clone()));
             #[cfg(debug_assertions)]
             commands::seed_qa_e2e(app.handle().clone(), stream_guard.clone());
             native_player::install(app.handle().clone());

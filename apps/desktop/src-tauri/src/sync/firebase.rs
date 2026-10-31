@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use serde_json::{json, Map, Value};
 
 use super::backend::{
-    Changes, CloudBackend, CloudError, Collection, RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, Result, Session,
+    Changes, CloudBackend, CloudError, Collection, RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteSetting, Result, Session,
 };
 use crate::util::civil_time::{epoch_to_rfc3339, rfc3339_to_epoch};
 
@@ -398,6 +398,12 @@ fn encode_fields(doc: &RemoteDoc) -> Value {
             fields.insert("updated_at".into(), fs_int(r.updated_at));
             fields.insert("deleted".into(), fs_bool(r.deleted));
         }
+        RemoteDoc::Setting(s) => {
+            fields.insert("key".into(), fs_string(&s.key));
+            fields.insert("value".into(), fs_string(&s.value));
+            fields.insert("updated_at".into(), fs_int(s.updated_at));
+            fields.insert("deleted".into(), fs_bool(s.deleted));
+        }
     }
     Value::Object(fields)
 }
@@ -467,6 +473,12 @@ fn decode_doc(collection: Collection, name: &str, document: &Value) -> Option<Re
             item_kind: fields.string("item_kind")?,
             item_key: fields.string("item_key")?,
             rating: fields.int("rating")?,
+            updated_at,
+            deleted,
+        }),
+        Collection::Settings => RemoteDoc::Setting(RemoteSetting {
+            key: fields.string("key")?,
+            value: fields.string("value").unwrap_or_default(),
             updated_at,
             deleted,
         }),
@@ -736,6 +748,13 @@ mod tests {
         backend.write(&refreshed, &[RemoteDoc::Favorite(RemoteFavorite { deleted: true, ..fav })]).await.unwrap();
 
         assert_eq!(backend.sign_in(&email, "contraseña-equivocada").await, Err(CloudError::Rejected("Correo o contraseña incorrectos.".into())));
+    }
+
+    #[test]
+    fn an_account_setting_survives_the_trip_through_firestore() {
+        let setting = RemoteDoc::Setting(RemoteSetting { key: "tmdb_api_key".into(), value: "abc".into(), updated_at: 1_790_000_000, deleted: false });
+        let document = json!({ "fields": encode_fields(&setting) });
+        assert_eq!(decode_doc(Collection::Settings, "x/settings/1", &document), Some(setting));
     }
 
     #[test]

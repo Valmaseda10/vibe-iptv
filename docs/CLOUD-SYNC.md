@@ -12,6 +12,12 @@ límites que no se negocian:
   nombre sin calidad más la calidad («La 1» + «FHD»): el usuario tiene el mismo proveedor
   en el PC y en el iPhone y el nombre no identifica al proveedor. Si en el otro aparato no
   hay un canal con ese nombre, el favorito se ignora. El progreso de un canal no viaja.
+- **La clave de TMDB sí viaja** (desde 2026-10-31, pedido por el usuario), en
+  `users/{uid}/settings` (documento `tmdb_api_key`: `key`, `value`, `updated_at`,
+  `deleted`): se pone en un aparato y llega a los demás, y gana la más reciente. No es una
+  credencial del proveedor. En cada aparato sigue en el llavero; la cola de salida (SQLite)
+  apunta solo que hay que subirla y el valor se lee del llavero al enviar
+  (`sync::tmdb_key`).
 
 ---
 

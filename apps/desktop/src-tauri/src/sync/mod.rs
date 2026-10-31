@@ -11,3 +11,4 @@ pub mod firebase;
 pub mod memory;
 pub mod outbox;
 pub mod session;
+pub mod tmdb_key;

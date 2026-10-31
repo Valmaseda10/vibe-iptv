@@ -123,6 +123,7 @@ impl Engine {
         Some(
             async {
                 initial_merge_if_needed(&self.db_path, cloud, &session).await?;
+                with_db(&self.db_path, |conn| super::tmdb_key::stamp_legacy(conn)).await?;
                 flush_outbox(&self.db_path, cloud, &session).await?;
                 if last_pull.is_none_or(|t| t.elapsed() >= PULL_EVERY) {
                     pull_changes(&self.db_path, cloud, &session).await?;
@@ -217,11 +218,13 @@ async fn flush_outbox_at(db_path: &Path, cloud: &dyn CloudBackend, session: &Ses
         let mut sending = Vec::with_capacity(entries.len());
         let mut unreadable = Vec::new();
         for entry in entries {
-            match serde_json::from_str::<RemoteDoc>(&entry.payload) {
-                Ok(doc) => {
+            match serde_json::from_str::<RemoteDoc>(&entry.payload).map(super::tmdb_key::fill_value) {
+                Ok(Some(doc)) => {
                     docs.push(doc);
                     sending.push(entry);
                 }
+                // La clave ya no está en el llavero: no hay nada que mandar.
+                Ok(None) => unreadable.push((entry.id, entry.revision)),
                 Err(_) => {
                     // Nunca debería pasar (lo escribe `sync::outbox`); si pasa, una entrada
                     // ilegible no puede bloquear para siempre a las demás.
@@ -282,6 +285,7 @@ pub async fn pull_changes(db_path: &Path, cloud: &dyn CloudBackend, session: &Se
         })
         .await?;
     }
+    super::tmdb_key::notify_if_arrived();
     Ok(())
 }
 
@@ -319,6 +323,7 @@ pub async fn initial_merge_if_needed(db_path: &Path, cloud: &dyn CloudBackend, s
         Ok(())
     })
     .await?;
+    super::tmdb_key::notify_if_arrived();
     tracing::info!("primera fusión con la nube completada");
     Ok(())
 }
@@ -328,6 +333,16 @@ pub async fn initial_merge_if_needed(db_path: &Path, cloud: &dyn CloudBackend, s
 /// más nuevo, así que también se sube.
 fn enqueue_local_missing_from_cloud(conn: &Connection, remote: &[RemoteDoc]) -> crate::db::Result<()> {
     let by_target: HashMap<String, &RemoteDoc> = remote.iter().map(|doc| (doc.target(), doc)).collect();
+
+    let remote_key = match by_target.get(&RemoteDoc::setting_target(super::tmdb_key::SETTING_KEY)) {
+        Some(RemoteDoc::Setting(s)) => Some(s),
+        _ => None,
+    };
+    if super::tmdb_key::needs_upload(conn, remote_key)? {
+        if let Some(local_at) = super::tmdb_key::local_updated_at(conn)? {
+            outbox::enqueue_setting(conn, super::tmdb_key::SETTING_KEY, local_at)?;
+        }
+    }
 
     for profile in cloud::sync_profiles(conn)? {
         let Some(remote_id) = outbox::ensure_profile_remote_id(conn, profile.id)? else { continue };
@@ -421,6 +436,9 @@ fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
                 cloud::put_playback_from_remote(conn, profile.id, &p.item_kind, item_id, p.position_s, p.duration_s, p.finished, p.played_at)?;
             }
         }
+        RemoteDoc::Setting(s) => {
+            super::tmdb_key::apply_remote(conn, s)?;
+        }
         RemoteDoc::Rating(r) => {
             let Some(profile) = cloud::profile_by_remote_id(conn, &r.profile_id)? else { return Ok(()) };
             let Some(item_id) = reads::item_id_for_key(conn, &r.item_kind, &r.item_key)? else { return Ok(()) };
@@ -441,7 +459,7 @@ fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
 mod tests {
     use super::*;
     use rusqlite::OptionalExtension;
-    use crate::sync::backend::{RemoteFavorite, RemotePlayback};
+    use crate::sync::backend::{RemoteFavorite, RemotePlayback, RemoteSetting};
     use crate::sync::memory::MemoryBackend;
 
     /// Un "dispositivo": su propia base SQLite con el mismo catálogo mínimo (una
@@ -539,6 +557,36 @@ mod tests {
 
     fn local_profiles(device: &Device) -> i64 {
         device.conn().query_row("SELECT COUNT(*) FROM profiles", [], |r| r.get(0)).unwrap()
+    }
+
+    /// La clave de TMDB puesta en el PC llega al iPhone por la cuenta, sin pasar nunca por
+    /// la base de datos (la cola de salida solo apunta que hay que subirla).
+    #[tokio::test]
+    async fn the_tmdb_key_travels_with_the_account_but_never_through_sqlite() {
+        use crate::sync::tmdb_key::{self, TEST_KEYCHAIN};
+        let cloud = MemoryBackend::new();
+        let session = cloud.session();
+        let pc = Device::new("tmdb-pc");
+        let phone = Device::new("tmdb-movil");
+
+        // PC: se pone la clave.
+        *TEST_KEYCHAIN.lock().unwrap() = Some("clave-de-pruebas".into());
+        tmdb_key::mark_changed(&pc.conn()).unwrap();
+        let queued: Vec<String> = pc.conn().prepare("SELECT payload FROM sync_outbox").unwrap().query_map([], |r| r.get(0)).unwrap().map(Result::unwrap).collect();
+        assert!(!queued.is_empty() && queued.iter().all(|p| !p.contains("clave-de-pruebas")), "la clave llegó a SQLite");
+        flush_outbox_at(&pc.db, &cloud, &session, now_epoch() + 7_200).await.unwrap();
+        let uploaded = cloud.docs(Collection::Settings);
+        assert!(matches!(uploaded.as_slice(), [RemoteDoc::Setting(s)] if s.value == "clave-de-pruebas"));
+
+        // iPhone recién instalado, sin clave: le llega y la guarda en su llavero.
+        *TEST_KEYCHAIN.lock().unwrap() = None;
+        pull_changes(&phone.db, &cloud, &session).await.unwrap();
+        assert_eq!(TEST_KEYCHAIN.lock().unwrap().as_deref(), Some("clave-de-pruebas"));
+
+        // Una más vieja que la del aparato no la pisa.
+        let old = RemoteSetting { key: tmdb_key::SETTING_KEY.into(), value: "vieja".into(), updated_at: 1, deleted: false };
+        assert!(!tmdb_key::apply_remote(&phone.conn(), &old).unwrap());
+        assert_eq!(TEST_KEYCHAIN.lock().unwrap().as_deref(), Some("clave-de-pruebas"));
     }
 
     /// Lo que pasó en la app real: se cerró sesión en una cuenta, se entró con otra y la

@@ -66,6 +66,8 @@ export function SettingsScreen() {
       // concreto: películas y series ya no distinguen de qué proveedor vinieron).
       if (event.payload.stage === "tmdb") {
         setTmdbProgress(event.payload);
+        // La clave pudo llegar por la cuenta desde otro aparato: deja de pedirla.
+        if (queryClient.getQueryData(["tmdb-api-key-configured"]) !== true) queryClient.invalidateQueries({ queryKey: ["tmdb-api-key-configured"] });
       } else {
         setProgressByProvider((prev) => ({ ...prev, [event.payload.provider_id]: event.payload }));
       }
