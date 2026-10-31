@@ -502,6 +502,10 @@ echo "  retraso tras 12 s de pausa: $(player_field behind)s"
 # Algo menos que los 12 s de pausa: el simulador tarda en reanudar y se come parte.
 check "directo: tras la pausa va por detrás del directo" '[ "$(player_field behind)" -ge 4 ] && show_controls && wait_native "Ir al directo" 5'
 player_tap "Ir al directo" contiene; sleep 4
+if [ "$(player_field behind)" -ge 5 ]; then
+  echo "  («Ir al directo»: el toque no llegó, se repite)"
+  player_tap "Ir al directo" contiene; sleep 4
+fi
 # Reabrir la grabación en el directo tarda unos segundos (más en el simulador del iPhone).
 check "directo: «Ir al directo» vuelve al directo" 'for _ in $(seq 1 10); do [ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ] && break; sleep 1; done; [ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ]'
 before=$(player_titles)
