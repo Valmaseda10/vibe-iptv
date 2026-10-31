@@ -1980,6 +1980,14 @@ tests), recentrada en cada cambio de canal.
   cargadas ≈ 0,8 s (cuatro arranques, catálogo real de ~24.000 títulos, WebView con su
   propia carpeta de datos). El objetivo de R4 (< 2 s) se cumple con margen; no se
   optimiza nada más. Medido con Playwright por CDP (`--remote-debugging-port`).
+- **iPhone: volver de la ventana pequeña (2026-10-31).** Al tocarla, el reproductor no
+  volvía a pantalla completa y seguía sonando sin interfaz, con la conexión al proveedor
+  abierta (vista en la prueba de punta a punta). Al quitar la ventana de los controles, iOS
+  podía hacer principal a la ventana pequeña, y se intentaba presentar desde ella mientras
+  se retiraba. Ahora se presenta siempre desde la ventana de la app y, si en 1,5 s no se ha
+  presentado, se cierra el reproductor en vez de dejarlo huérfano (R1). La película del
+  proveedor falso pasa de 3 a 10 min: en el simulador lento pasaba del 90 % durante la
+  prueba y salía de «Continuar viendo».
 
 ## Deuda técnica conocida desde el diseño
 

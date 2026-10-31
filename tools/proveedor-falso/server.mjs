@@ -32,7 +32,9 @@ const MEDIA = {
   // Directo con audio AC3: obliga al remux a recodificar el audio a AAC.
   liveAc3: { file: "directo-ac3.ts", seconds: 300, args: ["-c:v", "libx264", "-preset", "ultrafast", "-g", "50", "-b:v", "600k", "-c:a", "ac3", "-b:a", "192k", "-f", "mpegts"] },
   // Película MP4 H.264 + AAC con moov al principio: nivel 1 (proxy con Range).
-  mp4: { file: "pelicula.mp4", seconds: 180, args: ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4"] },
+  // 10 min: con 3, en el simulador lento la película pasaba del 90 % durante la prueba y
+  // contaba como vista (fuera de «Continuar viendo»).
+  mp4: { file: "pelicula.mp4", seconds: 600, args: ["-c:v", "libx264", "-preset", "ultrafast", "-b:v", "800k", "-c:a", "aac", "-b:a", "128k", "-movflags", "+faststart", "-f", "mp4"] },
   // Película MKV con dos pistas de audio y dos de subtítulos SRT: nivel 2 (remux) y los
   // selectores de pista. `testsrc` pinta un contador de segundos, y cada frase dice en qué
   // segundo debería verse: así se comprueba a ojo que los subtítulos van a tiempo.
@@ -355,7 +357,7 @@ function playerApi(url, res) {
       const movie = movies.find((m) => String(m.stream_id) === params.get("vod_id"));
       const spec = movie?.container_extension === "mkv" ? MEDIA.mkv : MEDIA.mp4;
       return sendJson(res, {
-        info: { duration_secs: spec.seconds, duration: "00:03:00", video: { codec_name: "h264", width: 640, height: 360 }, audio: { codec_name: "aac" } },
+        info: { duration_secs: spec.seconds, duration: new Date(spec.seconds * 1000).toISOString().slice(11, 19), video: { codec_name: "h264", width: 640, height: 360 }, audio: { codec_name: "aac" } },
         movie_data: { stream_id: movie?.stream_id ?? 0, container_extension: movie?.container_extension ?? "mp4" },
       });
     }

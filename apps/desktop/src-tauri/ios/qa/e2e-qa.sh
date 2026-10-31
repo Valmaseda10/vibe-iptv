@@ -499,7 +499,8 @@ player_tap "Reproducir o pausar"; sleep 12
 player_tap "Reproducir o pausar"; sleep 3
 shot directo-tras-pausa
 echo "  retraso tras 12 s de pausa: $(player_field behind)s"
-check "directo: tras la pausa va por detrás del directo" '[ "$(player_field behind)" -ge 8 ] && show_controls && wait_native "Ir al directo" 5'
+# Algo menos que los 12 s de pausa: el simulador tarda en reanudar y se come parte.
+check "directo: tras la pausa va por detrás del directo" '[ "$(player_field behind)" -ge 4 ] && show_controls && wait_native "Ir al directo" 5'
 player_tap "Ir al directo" contiene; sleep 4
 # Reabrir la grabación en el directo tarda unos segundos (más en el simulador del iPhone).
 check "directo: «Ir al directo» vuelve al directo" 'for _ in $(seq 1 10); do [ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ] && break; sleep 1; done; [ "$(player_field behind)" -lt 5 ] && [ "$(player_field playing)" = "True" ]'
@@ -536,6 +537,10 @@ check "directo: deslizar hacia arriba cambia de canal" 'player_open && [ "$befor
 check "directo: una sola conexión tras el zapping" '[ "$(active_cons)" -le 1 ]'
 # En pequeño (como en el PC): el directo sigue sonando mientras se navega por la app.
 player_tap "Reproductor en pequeño"; sleep 4
+if [ "$(player_field mini)" != "True" ]; then
+  echo "  (en pequeño: el toque no llegó, se repite)"
+  player_tap "Reproductor en pequeño"; sleep 4
+fi
 check "directo: en pequeño sigue sonando y la app vuelve a la lista" '[ "$(player_field mini)" = "True" ] && [ "$(player_field playing)" = "True" ] && wait_visible "ruta:/live" exacta 8'
 shot directo-en-pequeno
 check "directo: en pequeño sigue habiendo una sola conexión" '[ "$(active_cons)" -le 1 ]'

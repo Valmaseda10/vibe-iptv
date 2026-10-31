@@ -335,10 +335,14 @@ final class VibePlayerController: UIViewController {
     }
 
     private static func topViewController() -> UIViewController? {
-        let window = UIApplication.shared.connectedScenes
+        // Solo la ventana de la app (nivel normal): la de los controles y la pequeña están
+        // por encima y, al quitar una, iOS puede hacer principal a la otra. Presentar desde
+        // la ventana pequeña mientras se retira fallaba sin avisar (visto en el iPhone).
+        let windows = UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .flatMap { $0.windows }
-            .first { $0.isKeyWindow }
+            .filter { $0.windowLevel == .normal && !$0.isHidden }
+        let window = windows.first { $0.isKeyWindow } ?? windows.first
         var top = window?.rootViewController
         while let presented = top?.presentedViewController { top = presented }
         return top
@@ -1001,9 +1005,18 @@ final class VibePlayerController: UIViewController {
         miniHost = nil
         VibePlayerController.minimized = nil
         attachVideo(to: view, autoLayout: true)
+        // Retenido hasta saber si se presentó: si no, nadie lo tendría y VLC seguiría
+        // sonando sin interfaz, con la conexión al proveedor abierta (R1).
+        VibePlayerController.minimized = self
         presenter.present(self, animated: true) {
+            VibePlayerController.minimized = nil
             VibePlayerController.forceLandscape()
             self.showOverlay()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self = self, !self.closed, self.presentingViewController == nil, self.miniWindow == nil else { return }
+            VibePlayerController.minimized = nil
+            self.close(ended: false)
         }
         sendEvent(["type": "expanded"])
     }
