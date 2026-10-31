@@ -2007,6 +2007,11 @@ tests), recentrada en cada cambio de canal.
   app. Las copias 0.2.0 y 0.2.1 tienen el fallo: hay que instalar la 0.2.2 a mano una vez.
   Verificado con el usuario: de la 0.2.2 instalada a la 0.2.3 publicada, el aviso salió,
   se instaló y la app se volvió a abrir sola.
+- **Canales favoritos en todos los aparatos (2026-10-31, pedido por el usuario).** Desde F11
+  no viajaban por no tener clave estable entre proveedores. El usuario usa el mismo en el
+  PC y en el iPhone: la clave es el nombre del canal sin calidad (el mismo con el que se
+  agrupan sus versiones, con índice) más la calidad elegida; en el otro aparato se busca
+  esa versión o, si no está, la primera. Ver docs/CLOUD-SYNC.md.
 
 ## Deuda técnica conocida desde el diseño
 

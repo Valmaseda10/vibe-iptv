@@ -1383,9 +1383,13 @@ pub fn profile_allows_adult(conn: &Connection, profile_id: i64) -> Result<bool> 
 // El `id` local (autoincremental de SQLite) depende del orden en que se sincronizó
 // ESTE PC — no significa nada en otro dispositivo con otro catálogo. `item_key` usa
 // `match_key` (F3, estable con independencia del proveedor) para que un favorito o un
-// progreso tengan sentido al bajarlos en otro PC. Los canales de directo no tienen
-// equivalente razonable (cada proveedor los numera distinto) y se quedan fuera: solo
-// locales, nunca se suben ni se bajan (ver `sync::engine`).
+// progreso tengan sentido al bajarlos en otro PC. Los canales (solo sus favoritos) usan
+// su nombre ya sin calidad («La 1») más la calidad elegida: cada proveedor los numera
+// distinto, pero el usuario tiene el mismo en el PC y en el iPhone, y el nombre no
+// identifica al proveedor (2026-10-31, ver docs/CLOUD-SYNC.md).
+
+/// Separa el nombre del canal de su calidad en el `item_key` de un canal.
+const CHANNEL_KEY_SEPARATOR: char = '\u{1f}';
 
 /// `item_key` estable para una película o serie ya sincronizada en este PC, o `None` si
 /// el id no existe (pudo borrarse).
@@ -1404,7 +1408,17 @@ pub fn item_key_for(conn: &Connection, item_kind: &str, item_id: i64) -> Result<
                 |r| r.get(0),
             )
             .optional(),
-        _ => Ok(None), // "channel": sin item_key portable a propósito, ver comentario de la sección.
+        "channel" => conn
+            .query_row("SELECT display_name, quality FROM channels WHERE id = ?1", params![item_id], |r| {
+                let name: String = r.get(0)?;
+                let quality: Option<String> = r.get(1)?;
+                Ok(match quality {
+                    Some(q) => format!("{name}{CHANNEL_KEY_SEPARATOR}{q}"),
+                    None => name,
+                })
+            })
+            .optional(),
+        _ => Ok(None),
     }
     .map_err(Into::into)
 }
@@ -1426,6 +1440,24 @@ pub fn item_id_for_key(conn: &Connection, item_kind: &str, item_key: &str) -> Re
                 |r| r.get(0),
             )
             .optional()
+        }
+        "channel" => {
+            // El mismo nombre (sin distinguir mayúsculas) y, si existe, la misma calidad;
+            // si no, la primera versión del canal.
+            let (name, quality) = match item_key.split_once(CHANNEL_KEY_SEPARATOR) {
+                Some((name, quality)) => (name, Some(quality)),
+                None => (item_key, None),
+            };
+            let mut stmt = conn.prepare(
+                "SELECT id, quality FROM channels WHERE display_name = ?1 COLLATE NOCASE
+                 ORDER BY sort_order IS NULL, sort_order, id LIMIT 50",
+            )?;
+            let candidates = stmt
+                .query_map(params![name], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?)))?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let wanted = quality.map(str::to_ascii_uppercase);
+            let same_quality = candidates.iter().find(|(_, q)| q.as_deref().map(str::to_ascii_uppercase) == wanted);
+            return Ok(same_quality.or(candidates.first()).map(|(id, _)| *id));
         }
         _ => Ok(None),
     }
@@ -2324,10 +2356,40 @@ mod tests {
     }
 
     #[test]
-    fn item_key_for_channel_is_always_none() {
-        // Sin item_key portable a propósito: cada proveedor numera/nombra distinto.
-        let conn = memory_conn();
-        assert_eq!(item_key_for(&conn, "channel", 1).unwrap(), None);
+    fn channel_item_key_finds_the_same_channel_and_quality_on_another_device() {
+        use crate::sources::model::RawChannel;
+        let insert = |conn: &Connection, provider_id: i64, n: i64, name: &str, quality: Option<&str>| -> i64 {
+            let channel = RawChannel {
+                remote_id: n.to_string(),
+                category_remote_id: None,
+                raw_name: name.into(),
+                logo_url: None,
+                epg_channel_id: None,
+                has_catchup: false,
+                catchup_days: 0,
+                sort_order: Some(n),
+            };
+            let fields = TitleFields { clean_title: name, year: None, match_key: "n/a", quality, language: None };
+            queries::upsert_channel(conn, provider_id, &HashMap::new(), &channel, &fields).unwrap();
+            conn.query_row("SELECT id FROM channels WHERE remote_id = ?1", params![n.to_string()], |r| r.get(0)).unwrap()
+        };
+        // PC: «La 1» en FHD marcada como favorita.
+        let pc = memory_conn();
+        let p = queries::insert_provider(&pc, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        insert(&pc, p, 1, "La 1", Some("HD"));
+        let fhd = insert(&pc, p, 2, "La 1", Some("FHD"));
+        let key = item_key_for(&pc, "channel", fhd).unwrap().unwrap();
+        // iPhone: mismo proveedor, ids distintos y otro orden.
+        let phone = memory_conn();
+        let p = queries::insert_provider(&phone, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        insert(&phone, p, 7, "La 2", None);
+        let phone_fhd = insert(&phone, p, 9, "LA 1", Some("FHD"));
+        let phone_hd = insert(&phone, p, 8, "La 1", Some("HD"));
+        assert_eq!(item_id_for_key(&phone, "channel", &key).unwrap(), Some(phone_fhd));
+        // Sin esa calidad, la primera versión del canal; con otro nombre, nada.
+        assert_eq!(item_id_for_key(&phone, "channel", "La 1\u{1f}4K").unwrap(), Some(phone_hd));
+        assert_eq!(item_id_for_key(&phone, "channel", "Cuatro").unwrap(), None);
+        assert_eq!(item_key_for(&phone, "channel", 9999).unwrap(), None);
     }
 
     #[test]

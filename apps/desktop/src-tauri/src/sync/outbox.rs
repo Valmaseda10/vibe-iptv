@@ -77,11 +77,9 @@ pub fn enqueue_profile_deleted(conn: &Connection, remote_id: &str) -> Result<()>
     put(conn, &doc, now)
 }
 
-/// Estado actual de un favorito (marcado o quitado). Los de canal no se sincronizan.
+/// Estado actual de un favorito (marcado o quitado), también de un canal (por su nombre,
+/// ver `reads::item_key_for`).
 pub fn enqueue_favorite(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64) -> Result<()> {
-    if item_kind == "channel" {
-        return Ok(());
-    }
     let Some(item_key) = reads::item_key_for(conn, item_kind, item_id)? else { return Ok(()) };
     let Some(profile_remote_id) = ensure_profile_remote_id(conn, profile_id)? else { return Ok(()) };
     let now = now_epoch();

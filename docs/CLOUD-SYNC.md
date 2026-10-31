@@ -8,8 +8,10 @@ límites que no se negocian:
   de stream ni nada que identifique al proveedor (R5).
 - **La app nunca depende de la nube para funcionar.** Sin red, con Firebase caído o con
   la cuenta sin conexión, todo sigue igual en el PC; los cambios esperan en una cola.
-- **Los canales de directo no se sincronizan** (ni favoritos ni progreso): no tienen una
-  clave estable entre proveedores distintos.
+- **De los canales de directo solo viajan los favoritos** (desde 2026-10-31), con su
+  nombre sin calidad más la calidad («La 1» + «FHD»): el usuario tiene el mismo proveedor
+  en el PC y en el iPhone y el nombre no identifica al proveedor. Si en el otro aparato no
+  hay un canal con ese nombre, el favorito se ignora. El progreso de un canal no viaja.
 
 ---
 
