@@ -56,8 +56,22 @@ execFileSync("npm", ["run", "build:installer"], {
   cwd: desktop,
   stdio: "inherit",
   shell: true,
-  env: { ...process.env, TAURI_SIGNING_PRIVATE_KEY: readFileSync(keyPath, "utf8"), TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "" },
+  env: {
+    ...process.env,
+    TAURI_SIGNING_PRIVATE_KEY: readFileSync(keyPath, "utf8"),
+    TAURI_SIGNING_PRIVATE_KEY_PASSWORD: "",
+    // Sin rutas de este PC dentro del programa (Rust guarda las de las fuentes para sus
+    // mensajes de error): llevaban el nombre de usuario de Windows.
+    RUSTFLAGS: `--remap-path-prefix=${homedir()}=~ --remap-path-prefix=${root}=vibe-iptv`,
+  },
 });
+
+// Antes de publicar nada: ni rutas de este PC ni la clave de firma dentro del programa.
+const exe = readFileSync(join(tauriDir, "target", "release", "vibe-iptv.exe"));
+const forbidden = [homedir(), readFileSync(keyPath, "utf8").trim().slice(0, 40)];
+for (const text of forbidden) {
+  if (exe.includes(Buffer.from(text))) throw new Error("El programa contiene datos de este PC (ruta de usuario o clave): no se publica.");
+}
 
 const bundleDir = join(tauriDir, "target", "release", "bundle", "nsis");
 const built = join(bundleDir, `VIBE IPTV_${version}_x64-setup.exe`);
