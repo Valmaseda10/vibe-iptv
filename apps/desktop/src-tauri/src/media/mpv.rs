@@ -24,6 +24,7 @@ use tokio::process::{Child, Command};
 /// coherente con cómo ya se le pasa a ffmpeg en el nivel 2 (regla R5).
 pub fn build_launch_command(mpv_path: &Path, url: &str, user_agent: &str, ipc_pipe_path: &str) -> Command {
     let mut command = Command::new(mpv_path);
+    crate::util::child_processes::without_console(&mut command);
     command
         .arg(format!("--input-ipc-server={ipc_pipe_path}"))
         .arg(format!("--user-agent={user_agent}"))

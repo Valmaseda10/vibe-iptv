@@ -118,6 +118,7 @@ pub fn stream_cache_key(url: &str) -> String {
 /// `stream_cache_key`).
 pub async fn probe_url(ffprobe_path: &Path, url: &str, user_agent: &str) -> Result<ProbeResult, ProbeError> {
     let mut command = Command::new(ffprobe_path);
+    crate::util::child_processes::without_console(&mut command);
     command
         .args([
             "-v",

@@ -65,6 +65,18 @@ mod windows_job {
     }
 }
 
+/// Sin ventana de consola en Windows: la app instalada no tiene consola propia, y cada
+/// ffmpeg/ffprobe abría una negra encima del vídeo (al cargar un canal, una película o
+/// unos subtítulos). En el resto de sistemas no hace nada.
+pub fn without_console(command: &mut tokio::process::Command) -> &mut tokio::process::Command {
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+}
+
 #[cfg(all(test, windows))]
 mod tests {
     use windows_sys::Win32::Foundation::{CloseHandle, BOOL};

@@ -43,6 +43,7 @@ pub fn build_remux_command(ffmpeg_path: &Path, url: &str, user_agent: &str, opti
     let RemuxOptions { audio_codec, client_audio, live, start_seconds, audio_track, subtitles, timeshift, timeshift_window_seconds } =
         *options;
     let mut command = Command::new(ffmpeg_path);
+    crate::util::child_processes::without_console(&mut command);
     command.args(["-hide_banner", "-loglevel", "error"]).args(["-user_agent", user_agent]);
     if subtitles.is_some() || timeshift.is_some() {
         // stdin está cerrado: si un fichero de salida existiera, ffmpeg preguntaría si
