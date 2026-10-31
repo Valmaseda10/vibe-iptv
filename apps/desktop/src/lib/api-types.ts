@@ -544,7 +544,15 @@ active: boolean, cues: Array<SubtitleCue>, };
  */
 export type SubtitleStyle = { size: string, look: string, color: string, font: string, };
 
-export type SubtitleTrackSummary = { index: number, language: string | null, codec_name: string | null, };
+export type SubtitleTrackSummary = { index: number, language: string | null, codec_name: string | null, 
+/**
+ * Nombre de la pista en el fichero («Castellano», «SDH»...), si lo tiene.
+ */
+title: string | null, 
+/**
+ * Solo frases en otro idioma (carteles...): se marca en el selector.
+ */
+forced: boolean, };
 
 /**
  * Final de una sincronización, con o sin éxito, para Ajustes (`sync://finished`).

@@ -1988,6 +1988,17 @@ tests), recentrada en cada cambio de canal.
   presentado, se cierra el reproductor en vez de dejarlo huérfano (R1). La película del
   proveedor falso pasa de 3 a 10 min: en el simulador lento pasaba del 90 % durante la
   prueba y salía de «Continuar viendo».
+- **Sin consola en Windows (2026-10-31, versión 0.2.1).** La app instalada no tiene
+  consola propia y cada ffmpeg/ffprobe abría una ventana negra encima del vídeo (al cargar
+  un canal, una película o unos subtítulos; en desarrollo no se veía). Se lanzan con
+  `CREATE_NO_WINDOW` (`util::child_processes::without_console`).
+- **Subtítulos forzados (2026-10-31).** El usuario eligió subtítulos en una película y no
+  salía nada; esa película trae «Español», «Español» e «Inglés». Con el proveedor falso los
+  subtítulos funcionan desde el principio y retomando, así que la causa más probable es
+  que eligiera la pista de forzados (solo carteles y frases en otro idioma). La sonda
+  guarda ahora el nombre de cada pista y si es de forzados, y el selector dice «Español
+  (forzados)». La migración 029 borra las sondas con subtítulos para repetirlas. Sin
+  confirmar contra el fichero real (el proveedor bloquea desde aquí).
 
 ## Deuda técnica conocida desde el diseño
 

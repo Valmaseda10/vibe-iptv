@@ -185,6 +185,10 @@ pub struct SubtitleTrackSummary {
     pub index: i64,
     pub language: Option<String>,
     pub codec_name: Option<String>,
+    /// Nombre de la pista en el fichero («Castellano», «SDH»...), si lo tiene.
+    pub title: Option<String>,
+    /// Solo frases en otro idioma (carteles...): se marca en el selector.
+    pub forced: bool,
 }
 
 /// Copia con derives de ts-rs de `media::probe::AudioTrack` — ese tipo vive en `media`,
@@ -251,7 +255,7 @@ async fn get_playback_tier(
                 subtitle_tracks: subtitle_tracks
                     .into_iter()
                     .filter(|t| t.text)
-                    .map(|t| SubtitleTrackSummary { index: t.index, language: t.language, codec_name: t.codec_name })
+                    .map(|t| SubtitleTrackSummary { index: t.index, language: t.language, codec_name: t.codec_name, title: t.title, forced: t.forced })
                     .collect(),
                 intro_start_s: row.intro_start_s,
                 intro_end_s: row.intro_end_s,

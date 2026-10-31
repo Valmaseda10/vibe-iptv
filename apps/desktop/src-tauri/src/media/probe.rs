@@ -94,6 +94,22 @@ pub struct SubtitleTrack {
     pub codec_name: Option<String>,
     /// `false` para los de imagen (PGS, DVD, DVB), que no se pueden pasar a WebVTT.
     pub text: bool,
+    /// Nombre que le da el fichero («Castellano», «Forzados», «SDH»...).
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Solo las frases en otro idioma (carteles, diálogos sueltos): casi nunca sale nada.
+    /// Las películas en español suelen traer una «Español» completa y otra así, y en el
+    /// selector se veían iguales.
+    #[serde(default)]
+    pub forced: bool,
+}
+
+/// Si una pista de subtítulos es de forzados: por la marca del fichero o por su nombre.
+fn is_forced_subtitle(disposition_forced: bool, title: Option<&str>) -> bool {
+    disposition_forced || title.is_some_and(|t| {
+        let t = t.to_lowercase();
+        t.contains("forz") || t.contains("forced")
+    })
 }
 
 /// Subtítulos de texto que ffmpeg sabe convertir a WebVTT.
@@ -184,10 +200,19 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
         channels: Option<i64>,
         #[serde(default)]
         tags: Option<FfprobeTags>,
+        #[serde(default)]
+        disposition: Option<FfprobeDisposition>,
     }
     #[derive(Debug, Deserialize)]
     struct FfprobeTags {
         language: Option<String>,
+        #[serde(default)]
+        title: Option<String>,
+    }
+    #[derive(Debug, Deserialize)]
+    struct FfprobeDisposition {
+        #[serde(default)]
+        forced: i64,
     }
     #[derive(Deserialize)]
     struct FfprobeChapter {
@@ -243,11 +268,16 @@ fn parse_ffprobe_json(bytes: &[u8]) -> Option<ProbeResult> {
         .iter()
         .filter(|s| s.codec_type.as_deref() == Some("subtitle"))
         .enumerate()
-        .map(|(index, s)| SubtitleTrack {
-            index: index as i64,
-            language: s.tags.as_ref().and_then(|t| t.language.clone()),
-            codec_name: s.codec_name.clone(),
-            text: is_text_subtitle(s.codec_name.as_deref()),
+        .map(|(index, s)| {
+            let title = s.tags.as_ref().and_then(|t| t.title.clone()).filter(|t| !t.trim().is_empty());
+            SubtitleTrack {
+                index: index as i64,
+                language: s.tags.as_ref().and_then(|t| t.language.clone()),
+                codec_name: s.codec_name.clone(),
+                text: is_text_subtitle(s.codec_name.as_deref()),
+                forced: is_forced_subtitle(s.disposition.as_ref().is_some_and(|d| d.forced == 1), title.as_deref()),
+                title,
+            }
         })
         .collect();
     let intro = find_intro(parsed.chapters.iter().filter_map(|c| {
@@ -478,11 +508,30 @@ mod tests {
         assert_eq!(
             result.subtitle_tracks,
             vec![
-                SubtitleTrack { index: 0, language: Some("spa".to_string()), codec_name: Some("subrip".to_string()), text: true },
-                SubtitleTrack { index: 1, language: Some("eng".to_string()), codec_name: Some("hdmv_pgs_subtitle".to_string()), text: false },
-                SubtitleTrack { index: 2, language: None, codec_name: Some("ass".to_string()), text: true },
+                SubtitleTrack { index: 0, language: Some("spa".to_string()), codec_name: Some("subrip".to_string()), text: true, title: None, forced: false },
+                SubtitleTrack { index: 1, language: Some("eng".to_string()), codec_name: Some("hdmv_pgs_subtitle".to_string()), text: false, title: None, forced: false },
+                SubtitleTrack { index: 2, language: None, codec_name: Some("ass".to_string()), text: true, title: None, forced: false },
             ]
         );
+    }
+
+    #[test]
+    fn forced_spanish_subtitles_are_told_apart_from_the_full_ones() {
+        // Como la película de los Minions: dos «Español», unos completos y otros forzados.
+        let json = br#"{
+            "streams": [
+                {"codec_type": "video", "codec_name": "h264"},
+                {"codec_type": "subtitle", "codec_name": "subrip", "tags": {"language": "spa", "title": "Forzados"}, "disposition": {"forced": 0}},
+                {"codec_type": "subtitle", "codec_name": "subrip", "tags": {"language": "spa", "title": "Castellano"}, "disposition": {"forced": 0}},
+                {"codec_type": "subtitle", "codec_name": "subrip", "tags": {"language": "eng"}, "disposition": {"forced": 1}}
+            ],
+            "format": {"format_name": "matroska,webm"}
+        }"#;
+        let tracks = parse_ffprobe_json(json).unwrap().subtitle_tracks;
+        assert_eq!(tracks.iter().map(|t| (t.title.as_deref(), t.forced)).collect::<Vec<_>>(), vec![(Some("Forzados"), true), (Some("Castellano"), false), (None, true)]);
+        // Lo guardado antes de existir estos campos se sigue leyendo.
+        let old: Vec<SubtitleTrack> = serde_json::from_str(r#"[{"index":0,"language":"spa","codec_name":"subrip","text":true}]"#).unwrap();
+        assert!(!old[0].forced && old[0].title.is_none());
     }
 
     #[test]

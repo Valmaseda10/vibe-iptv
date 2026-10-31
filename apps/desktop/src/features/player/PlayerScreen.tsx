@@ -15,6 +15,7 @@ import type {
   StreamFailure,
   SeriesDetailResponse,
   SubtitleCuesResponse,
+  SubtitleTrackSummary,
 } from "../../lib/api-types";
 import { ArrowDownIcon, ArrowUpIcon, BackIcon, FullscreenIcon, ListIcon, MuteIcon, PauseIcon, PictureInPictureIcon, PlayIcon, VolumeIcon } from "../../components/icons";
 import { feedLabels } from "../../lib/channels";
@@ -1258,7 +1259,7 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
                 <option value={-1}>No</option>
                 {tierQuery.data!.subtitle_tracks.map((track) => (
                   <option key={track.index} value={track.index}>
-                    {track.language ? languageName(track.language) : `Pista ${track.index + 1}`}
+                    {subtitleLabel(track)}
                   </option>
                 ))}
               </select>
@@ -1491,4 +1492,13 @@ function formatTime(totalSeconds: number): string {
   const mm = String(m).padStart(h > 0 ? 2 : 1, "0");
   const ss = String(sec).padStart(2, "0");
   return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+/** «Español», «Español (forzados)», «Inglés (SDH)»: dos pistas del mismo idioma ya no se
+ * ven iguales (los forzados casi nunca enseñan nada). */
+function subtitleLabel(track: SubtitleTrackSummary): string {
+  const language = track.language ? languageName(track.language) : `Pista ${track.index + 1}`;
+  const title = track.title?.trim();
+  const extra = track.forced ? "forzados" : title && title.toLowerCase() !== language.toLowerCase() ? title : null;
+  return extra ? `${language} (${extra})` : language;
 }
