@@ -7,12 +7,14 @@ import { ReminderNotifier } from "./ReminderNotifier";
 import { MobileTabBar } from "./MobileTabBar";
 import { apiGetOrNull } from "../lib/api-client";
 import type { RandomTitleResponse } from "../lib/api-types";
-import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon, DiceIcon } from "./icons";
+import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon, DiceIcon, TrophyIcon } from "./icons";
+import { NotificationScheduler } from "./NotificationScheduler";
 
 const NAV_ITEMS = [
   { to: "/", label: "Inicio", icon: HomeIcon },
   { to: "/live", label: "Directo", icon: LiveIcon },
   { to: "/guide", label: "Guía", icon: GuideIcon },
+  { to: "/sports", label: "Deportes", icon: TrophyIcon },
   { to: "/movies", label: "Películas", icon: MovieIcon },
   { to: "/series", label: "Series", icon: SeriesIcon },
   { to: "/search", label: "Buscar", icon: SearchIcon },
@@ -167,6 +169,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <MobileTabBar onSurprise={surpriseMe} surprising={surprising} />
       <SyncStatusBanner />
       <ReminderNotifier />
+      <NotificationScheduler />
     </div>
   );
 }

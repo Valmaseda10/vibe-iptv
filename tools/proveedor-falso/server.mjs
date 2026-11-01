@@ -230,19 +230,48 @@ function escapeXml(text) {
   return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/** Partidos de prueba (F17) en los canales de deportes, con la guía al estilo Movistar Plus
+ * («DIRECTO …», «Deportes,Fútbol» en la descripción): un Madrid - Barça en juego en dos
+ * canales a la vez (sale en la portada de Inicio), un partido de tenis dentro de unas horas,
+ * otro de fútbol mañana, y un resumen y una repetición que no deben salir. */
+function sportsSchedule() {
+  const date = new Date(now * 1000);
+  const yy = date.getFullYear() % 100;
+  const season = date.getMonth() >= 6 ? `T${yy}/${yy + 1}` : `T${yy - 1}/${yy}`;
+  const old = date.getMonth() >= 6 ? `T${yy - 1}/${yy}` : `T${yy - 2}/${yy - 1}`;
+  const hour = Math.floor(now / 3600) * 3600;
+  const clasico = { start: now - 20 * 60, stop: now + 100 * 60, title: `DIRECTO Jornada 12: Real Madrid - Barcelona ${season} · LALIGA EA SPORTS`, desc: "Deportes,Fútbol | 2026 | TP\n· El Clásico." };
+  return {
+    "futbol.es": [clasico, { start: hour + 4 * 3600, stop: hour + 5 * 3600, title: `Resúmenes LALIGA EA SPORTS ${season} · Jornada 12: Getafe - Sevilla`, desc: "Deportes,Fútbol | 2026 | TP" }],
+    "dep2.es": [clasico, { start: hour + 26 * 3600, stop: hour + 28 * 3600, title: `DIRECTO Jornada 12: Sevilla - Betis ${season} · LALIGA EA SPORTS`, desc: "Deportes,Fútbol | 2026 | TP" }],
+    "dep1.es": [
+      { start: hour + 3 * 3600, stop: hour + 5 * 3600, title: `DIRECTO Semifinales: Alcaraz - Sinner T${date.getFullYear()} · Torneo de París`, desc: "Deportes,Tenis | 2026 | TP" },
+      { start: hour + 6 * 3600, stop: hour + 8 * 3600, title: `LALIGA EA SPORTS ${old} · Jornada 30: Real Madrid - Atlético de Madrid`, desc: "Deportes,Fútbol | 2025 | TP" },
+    ],
+  };
+}
+
 function buildXmltv() {
   const epgIds = [...new Set(channels.map((c) => c.epg_channel_id).filter(Boolean))];
   const start = Math.floor((now - DAY) / 3600) * 3600;
   const end = now + 2 * DAY;
   let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<tv generator-info-name="proveedor-falso">\n';
   for (const id of epgIds) xml += `  <channel id="${id}"><display-name>${id}</display-name></channel>\n`;
+  const sports = sportsSchedule();
   epgIds.forEach((id, channelIndex) => {
+    const events = sports[id] ?? [];
+    for (const e of events) {
+      xml += `  <programme start="${xmltvTime(e.start)}" stop="${xmltvTime(e.stop)}" channel="${id}"><title>${escapeXml(e.title)}</title><desc>${escapeXml(e.desc)}</desc></programme>\n`;
+    }
     let t = start;
     let n = channelIndex;
     while (t < end) {
       const length = (n % 3 === 0 ? 60 : 30) * 60;
       const title = programmeTitles[n % programmeTitles.length];
-      xml += `  <programme start="${xmltvTime(t)}" stop="${xmltvTime(t + length)}" channel="${id}"><title>${escapeXml(title)}</title><desc>Programa de prueba en ${id}.</desc></programme>\n`;
+      // En los canales de deportes, nada encima de un partido.
+      if (!events.some((e) => t < e.stop && t + length > e.start)) {
+        xml += `  <programme start="${xmltvTime(t)}" stop="${xmltvTime(t + length)}" channel="${id}"><title>${escapeXml(title)}</title><desc>Programa de prueba en ${id}.</desc></programme>\n`;
+      }
       t += length;
       n++;
     }

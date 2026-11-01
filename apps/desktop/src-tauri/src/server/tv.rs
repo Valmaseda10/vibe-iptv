@@ -8,6 +8,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -192,8 +193,12 @@ async fn post_reminder(State(state): State<TvState>, Json(input): Json<ReminderI
     if input.stop_ts <= now_epoch() {
         return Err(TvError::BadRequest("ese programa ya ha terminado".to_string()));
     }
-    with_db(state.db_path, move |conn| reads::add_reminder(conn, input.profile_id, input.channel_id, input.start_ts, input.stop_ts, &input.title))
-        .await?;
+    with_db(state.db_path, move |conn| {
+        reads::add_reminder(conn, input.profile_id, input.channel_id, input.start_ts, input.stop_ts, &input.title)?;
+        crate::sync::outbox::enqueue_reminder(conn, input.profile_id, input.channel_id, input.start_ts, input.stop_ts, &input.title, false)
+    })
+    .await?;
+    crate::sync::engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -205,7 +210,22 @@ struct ReminderKey {
 }
 
 async fn delete_reminder(State(state): State<TvState>, Query(key): Query<ReminderKey>) -> Result<StatusCode, TvError> {
-    with_db(state.db_path, move |conn| reads::delete_reminder(conn, key.profile_id, key.channel_id, key.start_ts)).await?;
+    with_db(state.db_path, move |conn| {
+        let row: Option<(i64, String)> = conn
+            .query_row(
+                "SELECT stop_ts, title FROM reminders WHERE profile_id = ?1 AND channel_id = ?2 AND start_ts = ?3",
+                rusqlite::params![key.profile_id, key.channel_id, key.start_ts],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?;
+        reads::delete_reminder(conn, key.profile_id, key.channel_id, key.start_ts)?;
+        match row {
+            Some((stop_ts, title)) => crate::sync::outbox::enqueue_reminder(conn, key.profile_id, key.channel_id, key.start_ts, stop_ts, &title, true),
+            None => Ok(()),
+        }
+    })
+    .await?;
+    crate::sync::engine::wake();
     Ok(StatusCode::NO_CONTENT)
 }
 

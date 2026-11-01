@@ -578,6 +578,11 @@ export type SagaEntryResponse = { title: string, year: number | null, poster_pat
  */
 movie_id: number | null, watched: boolean, progress: number | null, };
 
+/**
+ * Un aviso programado: id estable (para no repetirlo), texto y cuándo (epoch).
+ */
+export type ScheduledNotice = { id: number, title: string, body: string, at: number, };
+
 export type SearchHitResponse = { item_kind: string, item_id: number, title: string, poster_path: string | null, };
 
 export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, 
@@ -630,6 +635,46 @@ export type SlowReport = { item_id: number, item_kind: string, source: number | 
  * Parones en la ventana medida y lo que duró el peor, o lo que se esperó al arrancar.
  */
 stalls: number, waited_ms: number, };
+
+export type SportChannel = { id: number, name: string, logo_url: string | null, };
+
+/**
+ * Un partido o una carrera, con todos los canales que lo emiten.
+ */
+export type SportEventResponse = { 
+/**
+ * Estable para el mismo evento (avisos, recordatorios).
+ */
+key: string, name: string, participants: Array<SportParticipant>, competition: string | null, competition_key: string | null, 
+/**
+ * `futbol`, `baloncesto`, `tenis`, `motor`...
+ */
+sport: string | null, start_ts: number, stop_ts: number, 
+/**
+ * La guía lo da como directo (no una repetición).
+ */
+live: boolean, channels: Array<SportChannel>, 
+/**
+ * De un equipo o una competición que sigue el perfil.
+ */
+followed: boolean, 
+/**
+ * Lo grande que es para este perfil (la portada pide 70 o más).
+ */
+score: number, };
+
+/**
+ * Algo que sigue (o puede seguir) un perfil.
+ */
+export type SportFollow = { 
+/**
+ * `team` o `competition`.
+ */
+kind: string, key: string, label: string, sport: string | null, followed: boolean, };
+
+export type SportFollowInput = { profile_id: number, kind: string, key: string, label: string, };
+
+export type SportParticipant = { key: string, name: string, };
 
 export type StreamFailure = { status: number, message: string, };
 

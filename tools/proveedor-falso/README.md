@@ -37,6 +37,10 @@ usuario `qa`, contraseña `qa`. El puerto se cambia con la variable `PORT`.
   - "Prueba de fuente lenta" en dos fuentes: la de 1080p llega a menos de la mitad de lo
     que hace falta para verla (se para enseguida) y la de 720p va bien. El reproductor
     tiene que pasar solo a la segunda, con el aviso y «Volver» (F17).
+  - en la guía de los canales de deportes, partidos al estilo Movistar Plus (F17): un
+    Real Madrid - Barcelona en juego en dos canales (sale en la portada de Inicio), un
+    tenis dentro de unas horas, un Sevilla - Betis mañana, y un resumen y una repetición de
+    otra temporada que no deben salir en Deportes.
 
 En la consola avisa si en algún momento hay más de una conexión de directo abierta a la
 vez: la app nunca debería abrir dos (regla R1).

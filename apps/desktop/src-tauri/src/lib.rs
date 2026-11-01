@@ -7,6 +7,7 @@ mod commands;
 mod db;
 mod media;
 mod native_player;
+mod notifications;
 mod server;
 mod sources;
 mod sync;
@@ -70,7 +71,7 @@ pub fn run() {
 
     let server_control = Arc::new(ServerControl::new(port));
 
-    let builder = tauri::Builder::default();
+    let builder = tauri::Builder::default().plugin(tauri_plugin_notification::init());
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
     builder
@@ -149,6 +150,11 @@ pub fn run() {
             export_diagnostics_log,
             updater::update_ready,
             updater::install_update,
+            notifications::notifications_permission,
+            notifications::notifications_request,
+            notifications::notifications_show,
+            notifications::notifications_can_schedule,
+            notifications::notifications_replace_scheduled,
         ])
         .run(tauri::generate_context!())
         .expect("error al arrancar VIBE IPTV");

@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use serde_json::{json, Map, Value};
 
 use super::backend::{
-    Changes, CloudBackend, CloudError, Collection, RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteSetting, Result, Session,
+    Changes, CloudBackend, CloudError, Collection, RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteReminder, RemoteSetting, RemoteSportFollow, Result, Session,
 };
 use crate::util::civil_time::{epoch_to_rfc3339, rfc3339_to_epoch};
 
@@ -404,6 +404,23 @@ fn encode_fields(doc: &RemoteDoc) -> Value {
             fields.insert("updated_at".into(), fs_int(s.updated_at));
             fields.insert("deleted".into(), fs_bool(s.deleted));
         }
+        RemoteDoc::SportFollow(f) => {
+            fields.insert("profile_id".into(), fs_string(&f.profile_id));
+            fields.insert("kind".into(), fs_string(&f.follow_kind));
+            fields.insert("key".into(), fs_string(&f.key));
+            fields.insert("label".into(), fs_string(&f.label));
+            fields.insert("updated_at".into(), fs_int(f.updated_at));
+            fields.insert("deleted".into(), fs_bool(f.deleted));
+        }
+        RemoteDoc::Reminder(r) => {
+            fields.insert("profile_id".into(), fs_string(&r.profile_id));
+            fields.insert("channel_key".into(), fs_string(&r.channel_key));
+            fields.insert("start_ts".into(), fs_int(r.start_ts));
+            fields.insert("stop_ts".into(), fs_int(r.stop_ts));
+            fields.insert("title".into(), fs_string(&r.title));
+            fields.insert("updated_at".into(), fs_int(r.updated_at));
+            fields.insert("deleted".into(), fs_bool(r.deleted));
+        }
     }
     Value::Object(fields)
 }
@@ -479,6 +496,23 @@ fn decode_doc(collection: Collection, name: &str, document: &Value) -> Option<Re
         Collection::Settings => RemoteDoc::Setting(RemoteSetting {
             key: fields.string("key")?,
             value: fields.string("value").unwrap_or_default(),
+            updated_at,
+            deleted,
+        }),
+        Collection::SportFollows => RemoteDoc::SportFollow(RemoteSportFollow {
+            profile_id: fields.string("profile_id")?,
+            follow_kind: fields.string("kind")?,
+            key: fields.string("key")?,
+            label: fields.string("label").unwrap_or_default(),
+            updated_at,
+            deleted,
+        }),
+        Collection::Reminders => RemoteDoc::Reminder(RemoteReminder {
+            profile_id: fields.string("profile_id")?,
+            channel_key: fields.string("channel_key")?,
+            start_ts: fields.int("start_ts")?,
+            stop_ts: fields.int("stop_ts")?,
+            title: fields.string("title").unwrap_or_default(),
             updated_at,
             deleted,
         }),

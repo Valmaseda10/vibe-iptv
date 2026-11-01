@@ -2098,6 +2098,27 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   paso, «Cancelar» la cuenta atrás en el PC ya no la vuelve a sacar al instante. Un perfil
   infantil no busca personas (sus fichas llevan a títulos de todo tipo); las fichas de
   persona y de saga solo enseñan lo que el perfil puede ver.
+- **Parte 3: deportes, «Mis equipos» y avisos del sistema.** Su guía no trae
+  `<category>` (0 de 10.688 programas), pero es de estilo Movistar Plus: el deporte va en
+  la primera línea de la descripción («Deportes,Fútbol | 2026 | TP») y el directo en el
+  título («DIRECTO Jornada 11: Getafe - Sevilla T26/27 · LALIGA EA SPORTS»). El detector
+  (`catalog::sports`) saca de ahí los rivales, la competición y el deporte, y descarta
+  resúmenes, previas, programas y repeticiones (temporada que no es la actual). Sin rivales
+  solo cuenta lo marcado en directo. El mismo partido en varios canales es un evento. Con
+  su guía real: 42 eventos en la semana. «Mis equipos» por perfil (equipos, jugadores y
+  competiciones; migración 033) y la portada de Inicio: un partido entra desde tres horas
+  antes hasta que acaba si vale 70 o más (competición + equipos grandes + 100 si se sigue;
+  un Madrid o un Barça en LaLiga llega, un Getafe - Sevilla no, salvo que se siga). «Mis
+  equipos» y los recordatorios viajan con la cuenta, cada perfil por separado (dos
+  colecciones nuevas; migración 034 amplía la cola). Avisos del sistema con
+  `tauri-plugin-notification` 2.3 (la última que va con Tauri 2.11; la 2.8 subía Tauri a
+  2.12): en el iPhone quedan programados y avisan con la app cerrada; en el PC, Windows no
+  programa avisos y se enseñan al llegar la hora con la app abierta. Avisan los
+  recordatorios (1 min antes) y los partidos de lo que se sigue (5 min antes), sin tener
+  que marcarlos. El permiso se pide al poner el primer recordatorio o seguir algo.
+  Encontrado al probar: el campo `kind` de un equipo seguido chocaba con la etiqueta
+  `kind` de la cola de salida y la entrada se descartaba sin avisar; ahora es
+  `follow_kind` y lo cubre una prueba de dos aparatos.
 
 ## Deuda técnica conocida desde el diseño
 

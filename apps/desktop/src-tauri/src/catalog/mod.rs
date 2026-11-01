@@ -6,6 +6,7 @@ pub mod normalize;
 pub mod people;
 pub mod recommendations;
 pub mod sources_rank;
+pub mod sports;
 pub mod sync;
 pub mod tmdb;
 pub mod trending;

@@ -9,7 +9,7 @@
 use rand::RngExt;
 use rusqlite::Connection;
 
-use super::backend::{RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteSetting};
+use super::backend::{RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteReminder, RemoteSetting, RemoteSportFollow};
 use crate::db::{cloud, now_epoch, queries, reads, Result};
 
 /// El progreso se guarda cada 10 s mientras se reproduce; a la nube basta con mandarlo
@@ -119,6 +119,30 @@ pub fn enqueue_rating(conn: &Connection, profile_id: i64, item_kind: &str, item_
         updated_at: state.map_or(now, |(_, rated_at)| rated_at),
         deleted: state.is_none(),
     });
+    put(conn, &doc, now)
+}
+
+/// Un equipo o competición que el perfil empieza (o deja) de seguir (F17).
+pub fn enqueue_sport_follow(conn: &Connection, profile_id: i64, kind: &str, key: &str, label: &str, deleted: bool) -> Result<()> {
+    let Some(profile_remote_id) = ensure_profile_remote_id(conn, profile_id)? else { return Ok(()) };
+    let now = now_epoch();
+    let doc = RemoteDoc::SportFollow(RemoteSportFollow {
+        profile_id: profile_remote_id,
+        follow_kind: kind.to_string(),
+        key: key.to_string(),
+        label: label.to_string(),
+        updated_at: now,
+        deleted,
+    });
+    put(conn, &doc, now)
+}
+
+/// Un recordatorio puesto o quitado (F17). Sin clave de canal (canal borrado) no viaja.
+pub fn enqueue_reminder(conn: &Connection, profile_id: i64, channel_id: i64, start_ts: i64, stop_ts: i64, title: &str, deleted: bool) -> Result<()> {
+    let Some(channel_key) = reads::item_key_for(conn, "channel", channel_id)? else { return Ok(()) };
+    let Some(profile_remote_id) = ensure_profile_remote_id(conn, profile_id)? else { return Ok(()) };
+    let now = now_epoch();
+    let doc = RemoteDoc::Reminder(RemoteReminder { profile_id: profile_remote_id, channel_key, start_ts, stop_ts, title: title.to_string(), updated_at: now, deleted });
     put(conn, &doc, now)
 }
 

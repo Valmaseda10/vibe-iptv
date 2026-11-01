@@ -231,6 +231,38 @@ pub fn rating_state(conn: &Connection, profile_id: i64, item_kind: &str, item_id
     .map_err(Into::into)
 }
 
+/// Equipos y competiciones que sigue un perfil: tipo, clave, nombre y desde cuándo (F17).
+pub fn sport_follows(conn: &Connection, profile_id: i64) -> Result<Vec<(String, String, String, i64)>> {
+    let mut stmt = conn.prepare("SELECT kind, key, label, created_at FROM sport_follows WHERE profile_id = ?1")?;
+    let rows = stmt.query_map(params![profile_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
+/// Aplica un equipo o competición llegado de la nube: gana lo más reciente.
+pub fn apply_sport_follow(conn: &Connection, profile_id: i64, remote: &crate::sync::backend::RemoteSportFollow) -> Result<()> {
+    let local: Option<i64> = conn
+        .query_row("SELECT created_at FROM sport_follows WHERE profile_id = ?1 AND kind = ?2 AND key = ?3", params![profile_id, remote.follow_kind, remote.key], |r| r.get(0))
+        .optional()?;
+    if remote.deleted {
+        if local.is_some_and(|at| remote.updated_at >= at) {
+            conn.execute("DELETE FROM sport_follows WHERE profile_id = ?1 AND kind = ?2 AND key = ?3", params![profile_id, remote.follow_kind, remote.key])?;
+        }
+    } else if matches!(remote.follow_kind.as_str(), "team" | "competition") && local.is_none() {
+        conn.execute(
+            "INSERT INTO sport_follows (profile_id, kind, key, label, created_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![profile_id, remote.follow_kind, remote.key, remote.label, remote.updated_at],
+        )?;
+    }
+    Ok(())
+}
+
+/// Recordatorios del perfil que aún no han terminado: canal, inicio, fin y título (F17).
+pub fn future_reminders(conn: &Connection, profile_id: i64, now: i64) -> Result<Vec<(i64, i64, i64, String)>> {
+    let mut stmt = conn.prepare("SELECT channel_id, start_ts, stop_ts, title FROM reminders WHERE profile_id = ?1 AND stop_ts > ?2")?;
+    let rows = stmt.query_map(params![profile_id, now], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
+}
+
 /// Igual que `reads::set_rating`, pero con la fecha de la nube.
 pub fn put_rating_from_remote(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64, rating: i64, rated_at: i64) -> Result<()> {
     conn.execute(

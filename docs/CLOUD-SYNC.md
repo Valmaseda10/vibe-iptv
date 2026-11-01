@@ -77,6 +77,9 @@ users/{uid}/profiles/{profile_id}
 users/{uid}/favorites/{sha256(target)}
 users/{uid}/playback/{sha256(target)}
 users/{uid}/ratings/{sha256(target)}
+users/{uid}/settings/{sha256(target)}
+users/{uid}/sport_follows/{sha256(target)}
+users/{uid}/reminders/{sha256(target)}
 ```
 
 | Campo | Colecciones | Notas |
@@ -88,6 +91,8 @@ users/{uid}/ratings/{sha256(target)}
 | `added_at` | favorites | epoch en segundos |
 | `position_s`, `duration_s`, `finished`, `played_at` | playback | `finished` a partir del 90 % |
 | `rating` | ratings | -1 «No es para mí», 1 «Me gusta», 2 «Me encanta» (2026-10-22); solo películas y series. Gana la marca `updated_at` más nueva y quitar la valoración viaja como borrado lógico |
+| `kind`, `key`, `label` | sport_follows | «Mis equipos» (F17): `kind` `team` o `competition`, `key` la de `catalog::sports` («real-madrid», «champions»). En Rust el campo se llama `follow_kind`: `kind` es la etiqueta de `RemoteDoc` en la cola de salida |
+| `channel_key`, `start_ts`, `stop_ts`, `title` | reminders | recordatorio de un programa (F17); el canal por nombre y calidad, como los favoritos de canal. Los terminados no viajan: cada aparato borra los suyos |
 | `updated_at` | todas | epoch del cliente que hizo el cambio: decide quién gana un conflicto |
 | `deleted` | todas | borrado lógico (ver abajo) |
 | `server_updated_at` | todas | marca de tiempo del servidor (`REQUEST_TIME`): ordena la bajada |

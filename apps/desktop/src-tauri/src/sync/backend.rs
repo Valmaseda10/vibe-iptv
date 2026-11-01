@@ -52,10 +52,22 @@ pub enum Collection {
     Ratings,
     /// Ajustes de la cuenta (hoy, la clave de TMDB: `sync::tmdb_key`).
     Settings,
+    /// Equipos y competiciones que sigue cada perfil (F17).
+    SportFollows,
+    /// Recordatorios de programas del directo (F17).
+    Reminders,
 }
 
 impl Collection {
-    pub const ALL: [Collection; 5] = [Collection::Profiles, Collection::Favorites, Collection::Playback, Collection::Ratings, Collection::Settings];
+    pub const ALL: [Collection; 7] = [
+        Collection::Profiles,
+        Collection::Favorites,
+        Collection::Playback,
+        Collection::Ratings,
+        Collection::Settings,
+        Collection::SportFollows,
+        Collection::Reminders,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -64,6 +76,8 @@ impl Collection {
             Collection::Playback => "playback",
             Collection::Ratings => "ratings",
             Collection::Settings => "settings",
+            Collection::SportFollows => "sport_follows",
+            Collection::Reminders => "reminders",
         }
     }
 }
@@ -126,6 +140,31 @@ pub struct RemoteSetting {
     pub deleted: bool,
 }
 
+/// Un equipo o una competición que sigue un perfil (F17).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteSportFollow {
+    pub profile_id: String,
+    /// `team` o `competition` (no `kind`: ese nombre es el de la etiqueta de `RemoteDoc`).
+    pub follow_kind: String,
+    pub key: String,
+    pub label: String,
+    pub updated_at: i64,
+    pub deleted: bool,
+}
+
+/// Un recordatorio de un programa del directo (F17). El canal va por su clave de la nube
+/// (nombre y calidad, como en los favoritos de canal): cada aparato tiene sus ids.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteReminder {
+    pub profile_id: String,
+    pub channel_key: String,
+    pub start_ts: i64,
+    pub stop_ts: i64,
+    pub title: String,
+    pub updated_at: i64,
+    pub deleted: bool,
+}
+
 /// Un documento de la nube. Los borrados viajan como documentos con `deleted = true`
 /// (borrado lógico): un borrado de verdad no aparecería en la bajada incremental y el
 /// otro dispositivo nunca se enteraría.
@@ -137,6 +176,8 @@ pub enum RemoteDoc {
     Playback(RemotePlayback),
     Rating(RemoteRating),
     Setting(RemoteSetting),
+    SportFollow(RemoteSportFollow),
+    Reminder(RemoteReminder),
 }
 
 impl RemoteDoc {
@@ -147,6 +188,8 @@ impl RemoteDoc {
             RemoteDoc::Playback(_) => Collection::Playback,
             RemoteDoc::Rating(_) => Collection::Ratings,
             RemoteDoc::Setting(_) => Collection::Settings,
+            RemoteDoc::SportFollow(_) => Collection::SportFollows,
+            RemoteDoc::Reminder(_) => Collection::Reminders,
         }
     }
 
@@ -159,6 +202,8 @@ impl RemoteDoc {
             RemoteDoc::Playback(p) => Self::playback_target(&p.profile_id, &p.item_kind, &p.item_key),
             RemoteDoc::Rating(r) => Self::rating_target(&r.profile_id, &r.item_kind, &r.item_key),
             RemoteDoc::Setting(s) => Self::setting_target(&s.key),
+            RemoteDoc::SportFollow(f) => Self::sport_follow_target(&f.profile_id, &f.follow_kind, &f.key),
+            RemoteDoc::Reminder(r) => Self::reminder_target(&r.profile_id, &r.channel_key, r.start_ts),
         }
     }
 
@@ -180,6 +225,14 @@ impl RemoteDoc {
 
     pub fn setting_target(key: &str) -> String {
         format!("setting:{key}")
+    }
+
+    pub fn sport_follow_target(profile_id: &str, kind: &str, key: &str) -> String {
+        format!("sport_follow:{profile_id}:{kind}:{key}")
+    }
+
+    pub fn reminder_target(profile_id: &str, channel_key: &str, start_ts: i64) -> String {
+        format!("reminder:{profile_id}:{channel_key}:{start_ts}")
     }
 
     /// Id del documento en la nube. Los perfiles usan su propio id; favoritos y progreso

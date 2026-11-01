@@ -1,9 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDelete, apiGet, apiPost } from "./api-client";
 import { useActiveProfile } from "./activeProfile";
-import type { ChannelsPage, ReminderResponse } from "./api-types";
+import type { ReminderResponse } from "./api-types";
+import { ensureNotificationPermission } from "./notifications";
 
-type Channel = ChannelsPage["items"][number];
+/** Del canal basta el id (la guía, Deportes y la portada lo llaman con lo que tengan). */
+type Channel = { id: number };
 type Programme = { title: string; start_ts: number; stop_ts: number };
 
 /** Cada cuánto se miran los recordatorios: la guía puede llevar abierta horas. */
@@ -35,6 +37,8 @@ export function useReminders() {
           stop_ts: programme.stop_ts,
           title: programme.title,
         });
+        // Un recordatorio es pedir un aviso del sistema: el permiso, ahora (F17).
+        void ensureNotificationPermission();
       }
     },
     onSettled: () => queryClient.invalidateQueries({ queryKey }),

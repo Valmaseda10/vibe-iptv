@@ -3,7 +3,7 @@ import { Link, useRouterState } from "@tanstack/react-router";
 import { useActiveProfile } from "../lib/activeProfile";
 import { IS_IOS } from "../lib/platform";
 import { GlassSheet, SHEET_ROW } from "./GlassSheet";
-import { DiceIcon, GuideIcon, HeartIcon, HomeIcon, LiveIcon, MoreIcon, MovieIcon, SearchIcon, SeriesIcon, SettingsIcon } from "./icons";
+import { DiceIcon, GuideIcon, HeartIcon, HomeIcon, LiveIcon, MoreIcon, MovieIcon, SearchIcon, SeriesIcon, SettingsIcon, TrophyIcon } from "./icons";
 
 const TABS = [
   { to: "/", label: "Inicio", icon: HomeIcon },
@@ -14,6 +14,7 @@ const TABS = [
 ] as const;
 
 const MORE = [
+  { to: "/sports", label: "Deportes", icon: TrophyIcon },
   { to: "/guide", label: "Guía", icon: GuideIcon },
   { to: "/favorites", label: "Favoritos", icon: HeartIcon },
   { to: "/settings", label: "Ajustes", icon: SettingsIcon },

@@ -42,6 +42,11 @@ quick-xml = "0.36"
 flate2 = "1"
 sha2 = "0.10"
 rand = "0.10"
+# Avisos del sistema (F17): recordatorios y partidos de «Mis equipos»; en el iPhone,
+# programados para que avisen con la app cerrada. 2.3 es la última que va con Tauri 2.11.
+tauri-plugin-notification = "~2.3.0"
+# Ya venía con Tauri: la fecha de un aviso programado (`notifications`).
+time = "0.3"
 
 # Que ffmpeg y mpv mueran con la app aunque se cierre de golpe (`util::child_processes`).
 # Ya venía con Tauri: no añade nada que descargar ni compilar de nuevo.

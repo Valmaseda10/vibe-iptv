@@ -227,6 +227,13 @@ CREATE TABLE people (id INTEGER PRIMARY KEY /* TMDB */, name TEXT, profile_path 
 CREATE TABLE credits (item_kind TEXT /* movie | series */, item_id INTEGER, person_id INTEGER,
   role TEXT /* cast | director | creator */, character TEXT, ord INTEGER,
   PRIMARY KEY (item_kind, item_id, person_id, role));
+
+-- ─────────────── F17: deportes (migraciones 033 y 034) ───────────────
+-- Índice de la guía por hora de inicio (todos los canales a la vez) y lo que sigue cada perfil.
+CREATE INDEX idx_epg_start ON epg_programmes(start_ts);
+CREATE TABLE sport_follows (profile_id INTEGER, kind TEXT /* team | competition */, key TEXT,
+  label TEXT, created_at INTEGER, PRIMARY KEY (profile_id, kind, key));
+-- 034: la cola de salida admite 'sport_follows' y 'reminders'.
 ```
 
 ---

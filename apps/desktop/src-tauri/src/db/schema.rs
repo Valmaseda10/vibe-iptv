@@ -41,6 +41,8 @@ const MIGRATIONS: &[(&str, &str)] = &[
     ("030_ajustes_de_cuenta.sql", include_str!("../../migrations/030_ajustes_de_cuenta.sql")),
     ("031_fuentes_y_tiempo_visto.sql", include_str!("../../migrations/031_fuentes_y_tiempo_visto.sql")),
     ("032_sagas_y_repartos.sql", include_str!("../../migrations/032_sagas_y_repartos.sql")),
+    ("033_deportes.sql", include_str!("../../migrations/033_deportes.sql")),
+    ("034_equipos_y_recordatorios_en_la_nube.sql", include_str!("../../migrations/034_equipos_y_recordatorios_en_la_nube.sql")),
 ];
 
 /// Ruta del fichero SQLite en el directorio de datos de la aplicación, sin abrirlo.

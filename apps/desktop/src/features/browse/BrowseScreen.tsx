@@ -7,6 +7,8 @@ import { feedVisit, rememberFeatured } from "../../lib/feedSeed";
 import { HeroBanner, HeroBannerSkeleton } from "../../components/HeroBanner";
 import { PosterCardSkeleton } from "../../components/PosterCard";
 import { BrowseRows } from "./BrowseRows";
+import { MatchHero } from "../sports/MatchHero";
+import { useFeaturedMatch } from "../../lib/sports";
 
 type BrowseScreenProps = {
   page: "movies" | "series" | "home";
@@ -34,6 +36,10 @@ export function BrowseScreen({ page, title, actions, before }: BrowseScreenProps
     refetchInterval: (q) => (q.state.data?.pending && q.state.dataUpdateCount < 6 ? 3_000 : false),
   });
   const featured = query.data?.featured;
+  // Inicio: un partido importante (de sus equipos, o un Madrid, un Barça, la Champions...)
+  // ocupa la portada mientras está en juego o a punto (F17), como en Movistar Plus.
+  const match = useFeaturedMatch();
+  const featuredMatch = page === "home" ? match.data : null;
   useEffect(() => {
     if (featured) rememberFeatured(featured.kind, featured.id);
   }, [featured]);
@@ -45,7 +51,15 @@ export function BrowseScreen({ page, title, actions, before }: BrowseScreenProps
         {actions}
       </div>
 
-      {query.isPending ? <HeroBannerSkeleton /> : featured ? <HeroBanner featured={featured} /> : <div className="h-16 sm:h-20" />}
+      {featuredMatch ? (
+        <MatchHero event={featuredMatch} />
+      ) : query.isPending ? (
+        <HeroBannerSkeleton />
+      ) : featured ? (
+        <HeroBanner featured={featured} />
+      ) : (
+        <div className="h-16 sm:h-20" />
+      )}
 
       {before}
 

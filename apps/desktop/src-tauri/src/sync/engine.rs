@@ -365,6 +365,24 @@ fn enqueue_local_missing_from_cloud(conn: &Connection, remote: &[RemoteDoc]) -> 
             }
         }
 
+        for (kind, key, label, created_at) in cloud::sport_follows(conn, profile.id)? {
+            let needs_upload = match by_target.get(&RemoteDoc::sport_follow_target(&remote_id, &kind, &key)) {
+                Some(RemoteDoc::SportFollow(r)) => r.deleted && r.updated_at < created_at,
+                Some(_) => false,
+                None => true,
+            };
+            if needs_upload {
+                outbox::enqueue_sport_follow(conn, profile.id, &kind, &key, &label, false)?;
+            }
+        }
+
+        for (channel_id, start_ts, stop_ts, title) in cloud::future_reminders(conn, profile.id, crate::db::now_epoch())? {
+            let Some(channel_key) = reads::item_key_for(conn, "channel", channel_id)? else { continue };
+            if !by_target.contains_key(&RemoteDoc::reminder_target(&remote_id, &channel_key, start_ts)) {
+                outbox::enqueue_reminder(conn, profile.id, channel_id, start_ts, stop_ts, &title, false)?;
+            }
+        }
+
         for rating in reads::list_ratings(conn, profile.id)? {
             let Some(item_key) = reads::item_key_for(conn, &rating.item_kind, rating.item_id)? else { continue };
             let needs_upload = match by_target.get(&RemoteDoc::rating_target(&remote_id, &rating.item_kind, &item_key)) {
@@ -438,6 +456,19 @@ fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
         }
         RemoteDoc::Setting(s) => {
             super::tmdb_key::apply_remote(conn, s)?;
+        }
+        RemoteDoc::SportFollow(f) => {
+            let Some(profile) = cloud::profile_by_remote_id(conn, &f.profile_id)? else { return Ok(()) };
+            cloud::apply_sport_follow(conn, profile.id, f)?;
+        }
+        RemoteDoc::Reminder(r) => {
+            let Some(profile) = cloud::profile_by_remote_id(conn, &r.profile_id)? else { return Ok(()) };
+            let Some(channel_id) = reads::item_id_for_key(conn, "channel", &r.channel_key)? else { return Ok(()) };
+            if r.deleted {
+                reads::delete_reminder(conn, profile.id, channel_id, r.start_ts)?;
+            } else if r.stop_ts > crate::db::now_epoch() {
+                reads::add_reminder(conn, profile.id, channel_id, r.start_ts, r.stop_ts, &r.title)?;
+            }
         }
         RemoteDoc::Rating(r) => {
             let Some(profile) = cloud::profile_by_remote_id(conn, &r.profile_id)? else { return Ok(()) };
@@ -733,6 +764,58 @@ mod tests {
         flush_everything(&pc, &cloud).await.unwrap();
         pull_changes(&laptop.db, &cloud, &session).await.unwrap();
         assert_eq!(laptop.movie_rating(), None, "quitar la valoración también viaja");
+    }
+
+    #[tokio::test]
+    async fn followed_teams_and_reminders_travel_with_the_profile() {
+        let cloud = MemoryBackend::new();
+        let session = cloud.session();
+        let pc = Device::new("pc-equipos");
+        let phone = Device::new("movil-equipos");
+        for device in [&pc, &phone] {
+            device
+                .conn()
+                .execute_batch(
+                    "INSERT INTO categories (id, provider_id, remote_id, kind, name) VALUES (1, 1, '1', 'live', 'DEPORTES');
+                     INSERT INTO channels (id, provider_id, remote_id, category_id, raw_name, display_name, quality) VALUES (5, 1, 'c', 1, 'DAZN LaLiga HD', 'DAZN LaLiga', 'HD');",
+                )
+                .unwrap();
+        }
+        initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+        initial_merge_if_needed(&phone.db, &cloud, &session).await.unwrap();
+        flush_everything(&phone, &cloud).await.unwrap();
+
+        let start = crate::db::now_epoch() + 3600;
+        {
+            let conn = pc.conn();
+            conn.execute("INSERT INTO sport_follows (profile_id, kind, key, label, created_at) VALUES (?1, 'team', 'real-madrid', 'Real Madrid', 1)", rusqlite::params![pc.profile_id]).unwrap();
+            outbox::enqueue_sport_follow(&conn, pc.profile_id, "team", "real-madrid", "Real Madrid", false).unwrap();
+            reads::add_reminder(&conn, pc.profile_id, 5, start, start + 7200, "Real Madrid - FC Barcelona").unwrap();
+            outbox::enqueue_reminder(&conn, pc.profile_id, 5, start, start + 7200, "Real Madrid - FC Barcelona", false).unwrap();
+        }
+        flush_everything(&pc, &cloud).await.unwrap();
+        pull_changes(&phone.db, &cloud, &session).await.unwrap();
+        // En el móvil, el perfil del PC llega como el suyo de la nube.
+        let pc_remote = cloud::sync_profile(&pc.conn(), pc.profile_id).unwrap().and_then(|p| p.remote_id).unwrap();
+        let phone_profile = cloud::profile_by_remote_id(&phone.conn(), &pc_remote).unwrap().unwrap().id;
+        let follows = crate::catalog::sports::follows(&phone.conn(), phone_profile).unwrap();
+        assert_eq!(follows.teams, vec!["real-madrid".to_string()], "el equipo llega al móvil");
+        let reminders = cloud::future_reminders(&phone.conn(), phone_profile, crate::db::now_epoch()).unwrap();
+        assert_eq!(reminders.len(), 1, "y el recordatorio, en su canal (por nombre y calidad)");
+
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        {
+            let conn = pc.conn();
+            conn.execute("DELETE FROM sport_follows WHERE profile_id = ?1", rusqlite::params![pc.profile_id]).unwrap();
+            outbox::enqueue_sport_follow(&conn, pc.profile_id, "team", "real-madrid", "Real Madrid", true).unwrap();
+            reads::delete_reminder(&conn, pc.profile_id, 5, start).unwrap();
+            outbox::enqueue_reminder(&conn, pc.profile_id, 5, start, start + 7200, "Real Madrid - FC Barcelona", true).unwrap();
+        }
+        flush_everything(&pc, &cloud).await.unwrap();
+        pull_changes(&phone.db, &cloud, &session).await.unwrap();
+        assert!(crate::catalog::sports::follows(&phone.conn(), phone_profile).unwrap().teams.is_empty(), "dejar de seguirlo también viaja");
+        assert!(cloud::future_reminders(&phone.conn(), phone_profile, crate::db::now_epoch()).unwrap().is_empty());
     }
 
     #[tokio::test]

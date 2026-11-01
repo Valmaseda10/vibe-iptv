@@ -113,6 +113,20 @@ mismo; terminado, el siguiente; tras el último o sin nada visto, el primero.
 - `GET /api/search` añade `people: [{ id, name, profile_path, department, titles }]`
   (no para perfiles con límite de edad).
 
+### Deportes (F17)
+
+- `GET /api/sports?profile_id=&days=` → `[{ key, name, participants: [{ key, name }],
+  competition, competition_key, sport, start_ts, stop_ts, live, channels: [{ id, name,
+  logo_url }], followed, score }]`, en orden de hora (lo empezado hace menos de 4 h
+  incluido). Sale de la guía guardada; nada se pide al proveedor.
+- `GET /api/sports/featured?profile_id=` → el partido de la portada de Inicio o `null`
+  (70 o más de `score`, desde 3 h antes hasta que acaba; antes el que ya ha empezado).
+- `GET /api/sports/follows?profile_id=`, `POST /api/sports/follows` con `{ profile_id,
+  kind, key, label }`, `DELETE /api/sports/follows?profile_id=&kind=&key=`.
+- `GET /api/sports/followables?profile_id=` → lo que se puede seguir (los conocidos y
+  quien sale en la guía de la semana), con `followed`.
+- Los recordatorios (`/api/reminders`) viajan ya con la cuenta.
+
 ### `GET /api/search?q=&profile_id=`
 Búsqueda instantánea (FTS5). `{ channels: [], movies: [], series: [] }`, cada uno hasta
 20 resultados. `q` vacío o solo símbolos da listas vacías, no error. Lo que el perfil no

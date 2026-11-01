@@ -59,7 +59,7 @@ pub fn local_day_hour(epoch: i64, tz_offset_min: i32) -> (String, i64) {
 }
 
 /// Días desde 1970-01-01 a fecha del calendario (algoritmo de Howard Hinnant).
-fn civil_from_days(days: i64) -> (i64, u32, u32) {
+pub(crate) fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let z = days + 719_468;
     let era = z.div_euclid(146_097);
     let doe = z.rem_euclid(146_097);
