@@ -184,6 +184,10 @@ const seriesSpecs = [
   ["Stranger Things 4K", "21", "Ciencia ficción", "2016-07-15", [2, 2]],
   ["ES| Aquí no hay quien viva", "20", "Comedia", "2003-09-07", [4, 2]],
 ];
+// Con `VIBE_FALSO_EPISODIO_NUEVO=1`, una serie que solo existe aquí (9004): una que también
+// esté en el catálogo de verdad se juntaría con la suya, y la app pediría su ficha al
+// proveedor de verdad.
+if (process.env.VIBE_FALSO_EPISODIO_NUEVO === "1") seriesSpecs.push(["Serie de pruebas VIBE", "21", "Drama", "2025-01-10", [3, 2]]);
 const series = seriesSpecs.map(([name, category, genre, release, _seasons], i) => ({
   num: i + 1,
   name,
@@ -196,8 +200,16 @@ const series = seriesSpecs.map(([name, category, genre, release, _seasons], i) =
   category_id: category,
 }));
 
+// `VIBE_FALSO_EPISODIO_NUEVO=1` (F17): cada vez que se pide la ficha de «Serie de pruebas
+// VIBE» (9004) a partir de la segunda, su última temporada tiene un episodio más, como una
+// serie que sigue emitiéndose. Para probar los avisos de episodios nuevos.
+const seriesInfoRequests = new Map();
+
 function seriesInfo(seriesId) {
   const index = seriesId - 9000;
+  const asked = (seriesInfoRequests.get(seriesId) ?? 0) + 1;
+  seriesInfoRequests.set(seriesId, asked);
+  const extra = process.env.VIBE_FALSO_EPISODIO_NUEVO === "1" && seriesId === 9004 ? asked - 1 : 0;
   const spec = seriesSpecs[index];
   if (!spec) return { seasons: [], info: {}, episodes: {} };
   const [episodesPerSeason, seasonCount] = spec[4];
@@ -205,7 +217,7 @@ function seriesInfo(seriesId) {
   const seasons = [];
   for (let s = 1; s <= seasonCount; s++) {
     seasons.push({ season_number: s, name: `Temporada ${s}` });
-    episodes[String(s)] = Array.from({ length: episodesPerSeason }, (_, e) => ({
+    episodes[String(s)] = Array.from({ length: episodesPerSeason + (s === seasonCount ? extra : 0) }, (_, e) => ({
       id: String(90000 + index * 100 + s * 10 + e + 1),
       episode_num: e + 1,
       title: `${spec[0].replace(/^ES\| /, "")} S${String(s).padStart(2, "0")}E${String(e + 1).padStart(2, "0")}`,

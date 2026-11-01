@@ -1591,7 +1591,7 @@ async fn get_series_detail(
     }))
 }
 
-async fn refresh_series_detail(db_path: PathBuf, series_source_id: i64, provider_id: i64) -> Result<(), String> {
+pub(crate) async fn refresh_series_detail(db_path: PathBuf, series_source_id: i64, provider_id: i64) -> Result<(), String> {
     let (remote_id, provider_row) = with_db(db_path.clone(), move |conn| {
         let remote_id: String = conn.query_row("SELECT remote_id FROM series_sources WHERE id = ?1", rusqlite::params![series_source_id], |r| r.get(0))?;
         let provider_row = queries::get_provider(conn, provider_id)?;

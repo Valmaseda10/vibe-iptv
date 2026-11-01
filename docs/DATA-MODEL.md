@@ -234,6 +234,10 @@ CREATE INDEX idx_epg_start ON epg_programmes(start_ts);
 CREATE TABLE sport_follows (profile_id INTEGER, kind TEXT /* team | competition */, key TEXT,
   label TEXT, created_at INTEGER, PRIMARY KEY (profile_id, kind, key));
 -- 034: la cola de salida admite 'sport_follows' y 'reminders'.
+
+-- 035: el último episodio conocido de cada serie seguida, por perfil (avisos de nuevos).
+CREATE TABLE new_episode_marks (profile_id INTEGER, series_id INTEGER, season INTEGER,
+  number INTEGER, checked_at INTEGER, PRIMARY KEY (profile_id, series_id));
 ```
 
 ---

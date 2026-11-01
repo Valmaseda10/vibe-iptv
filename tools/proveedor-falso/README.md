@@ -50,3 +50,7 @@ vez: la app nunca debería abrir dos (regla R1).
 - `VIBE_FALSO_BACHES=1`: en el directo, cada 10 s deja de mandar 1,5 s y luego manda lo
   atrasado de golpe, como un panel tras una VPN. Para medir los parones del reproductor.
 - `VIBE_FALSO_RAFAGA=30`: la ráfaga inicial del directo dura 30 s en vez de 3.
+- `VIBE_FALSO_EPISODIO_NUEVO=1`: añade «Serie de pruebas VIBE», que gana un episodio cada
+  vez que se pide su ficha (a partir de la segunda). Para los avisos de episodios nuevos
+  (F17). Con un nombre que no está en ningún catálogo de verdad: si no, la app la juntaría
+  con la de verdad y pediría su ficha al proveedor de verdad.

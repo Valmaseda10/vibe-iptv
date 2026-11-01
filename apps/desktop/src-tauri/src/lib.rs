@@ -120,6 +120,11 @@ pub fn run() {
             native_player::install(app.handle().clone());
             updater::start(app.handle().clone(), stream_guard.clone());
 
+            // Episodios nuevos de las series seguidas (F17), si algún perfil lo quiere.
+            if let Ok(db_path) = db::schema::resolve_db_path(app.handle()) {
+                notifications::start_new_episode_checks(app.handle().clone(), db_path, stream_guard.clone());
+            }
+
             let app_handle_for_autosync = app.handle().clone();
             tauri::async_runtime::spawn(async move {
                 loop {
@@ -155,6 +160,10 @@ pub fn run() {
             notifications::notifications_show,
             notifications::notifications_can_schedule,
             notifications::notifications_replace_scheduled,
+            notifications::new_episode_alerts,
+            notifications::set_new_episode_alerts,
+            #[cfg(debug_assertions)]
+            notifications::qa_check_new_episodes,
         ])
         .run(tauri::generate_context!())
         .expect("error al arrancar VIBE IPTV");

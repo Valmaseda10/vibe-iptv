@@ -2119,6 +2119,20 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   Encontrado al probar: el campo `kind` de un equipo seguido chocaba con la etiqueta
   `kind` de la cola de salida y la entrada se descartaba sin avisar; ahora es
   `follow_kind` y lo cubre una prueba de dos aparatos.
+- **Parte 4: avisos de episodios nuevos.** Un interruptor en Ajustes → Avisos, por perfil y
+  en cada aparato, apagado de serie. Series seguidas: «Mi lista» y lo visto en 90 días.
+  Cada 6 horas como mucho, nunca mientras se reproduce algo, se pide al proveedor la
+  ficha de 15 series como mucho (una petición cada 1,5 s: su panel bloquea si se le
+  pregunta mucho). Hay episodio nuevo cuando el más alto (temporada, número) pasa del
+  apuntado (`new_episode_marks`, migración 035); la primera vez, y al activar el aviso,
+  solo se apunta. Un episodio vuelto a subir con otro id no avisa. En el PC, con la app
+  abierta. En el iPhone, además, iOS despierta la app de vez en cuando
+  (`BGAppRefreshTask`, «fetch» en `UIBackgroundModes`; `ios/Sources/VibeBackground.swift`)
+  y el núcleo comprueba en menos de 25 s: con la app firmada gratis iOS decide cuándo, y
+  puede tardar horas o no hacerlo si casi no se abre la app. Al probarlo se vio que una
+  serie del proveedor de pruebas con el mismo nombre que una del catálogo de verdad se
+  juntaba con ella y la app pedía su ficha al proveedor de verdad (tres peticiones, que
+  rechazó por el país): la serie de pruebas tiene ahora un nombre que no existe fuera.
 
 ## Deuda técnica conocida desde el diseño
 

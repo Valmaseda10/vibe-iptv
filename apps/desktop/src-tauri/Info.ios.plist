@@ -17,6 +17,14 @@
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<!-- F17: iOS despierta la app de vez en cuando para mirar si hay episodios nuevos de
+		     las series seguidas (ios/Sources/VibeBackground.swift). Solo si el perfil lo
+		     activó en Ajustes; si no, la comprobación no hace nada. -->
+		<string>fetch</string>
+	</array>
+	<key>BGTaskSchedulerPermittedIdentifiers</key>
+	<array>
+		<string>dev.vibeiptv.desktop.refresh</string>
 	</array>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
