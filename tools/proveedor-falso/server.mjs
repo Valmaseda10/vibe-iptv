@@ -309,14 +309,27 @@ function sendLive(req, res, spec) {
     offset += read;
     return res.write(buffer.subarray(0, read));
   };
-  pushBytes(bytesPerTick * 30);
+  // Ráfaga inicial: 3 s, o los que diga `VIBE_FALSO_RAFAGA` (los paneles reales mandan
+  // varios segundos de golpe al conectar).
+  pushBytes(bytesPerTick * 10 * Number(process.env.VIBE_FALSO_RAFAGA ?? 3));
+  // `VIBE_FALSO_BACHES=1`: cada 10 s deja de mandar 1,5 s y luego manda lo atrasado de
+  // golpe, como un panel real tras una VPN. Para medir los parones del reproductor.
+  const baches = process.env.VIBE_FALSO_BACHES === "1";
+  let tick = 0;
+  let owed = 0;
   const timer = setInterval(() => {
     if (offset >= size) {
       clearInterval(timer);
       res.end();
       return;
     }
-    pushBytes(bytesPerTick);
+    tick++;
+    if (baches && tick % 100 >= 85) {
+      owed += bytesPerTick;
+      return;
+    }
+    pushBytes(bytesPerTick + owed);
+    owed = 0;
   }, 100);
   const close = () => {
     clearInterval(timer);

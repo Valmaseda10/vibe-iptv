@@ -3,8 +3,8 @@ use std::path::PathBuf;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::{routing::get, Json, Router};
-use serde::Serialize;
+use axum::{routing::get, routing::post, Json, Router};
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 /// Estado del núcleo devuelto por `GET /api/health`.
@@ -120,6 +120,31 @@ fn content_type_for(filename: &str) -> &'static str {
     }
 }
 
+/// Un parón del directo visto por el reproductor del PC (`useLiveCushion`).
+#[derive(Deserialize)]
+struct StallReport {
+    channel_id: i64,
+    /// Vídeo que el reproductor tenía guardado por delante al pararse.
+    ahead_s: f64,
+    current_time_s: f64,
+    /// `grabacion` si ya se veía desde la grabación (hls.js); si no, la salida rápida.
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+/// Apunta en el registro un parón del directo, para «Exportar diagnóstico»: dónde estaba,
+/// cuánto vídeo quedaba guardado y desde dónde se veía. Sin nada del proveedor (R5).
+async fn log_stall(Json(report): Json<StallReport>) -> StatusCode {
+    tracing::info!(
+        channel_id = report.channel_id,
+        ahead_s = report.ahead_s,
+        current_time_s = report.current_time_s,
+        mode = report.mode.as_deref().unwrap_or("directo"),
+        "directo: parón en el reproductor"
+    );
+    StatusCode::NO_CONTENT
+}
+
 /// Construye el router del catálogo y de salud/imágenes. `/stream/*` y
 /// `/api/playback/tier/*` viven en `server::stream` (F6) y se añaden aparte en
 /// `server::serve`, que es quien aplica el CORS al router final ya completo — antes
@@ -130,6 +155,7 @@ pub fn build_router(image_cache_dir: PathBuf, db_path: PathBuf) -> Router {
     let health_and_images = Router::new()
         .route("/api/health", get(health))
         .route("/img/:size/:image_id", get(serve_image))
+        .route("/api/diag/stall", post(log_stall))
         .with_state(image_cache_dir);
 
     health_and_images.merge(super::api::catalog_router(db_path))

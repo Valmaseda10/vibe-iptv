@@ -2038,6 +2038,21 @@ tests), recentrada en cada cambio de canal.
   errores): cuánto tarda el primer fragmento y la espera a cerrar la sesión anterior, para
   diagnosticar con «Exportar diagnóstico». Y el selector de subtítulos ignora nombres de
   pista que son firmas («[www.newpct1.com]»).
+- **Parones del directo en el PC (2026-11-01, pedido por el usuario).** En el iPhone iba
+  fluido y en el PC se paraba a menudo. Medido con el proveedor de pruebas con baches de
+  1,5 s cada 10 s (`VIBE_FALSO_BACHES=1`): 3 parones por minuto con un margen mínimo de
+  0,03 s. El `<video>` del PC no guarda más de ~2,5 s por delante (ni en pausa ni más
+  lento), así que ni esperar tras cada parón ni jugar con la velocidad daban margen
+  (probado: seguía parándose). El iPhone no tiene ese problema porque VLC lee de una
+  grabación. Ahora el PC hace lo mismo: el canal arranca por la salida rápida (zapping al
+  instante) y, al primer parón de más de 1 s o al segundo corto, pasa a la grabación del
+  núcleo (la de pausar y rebobinar, con hls.js) 12 s por detrás de lo último grabado. Con
+  menos margen hls.js alcanzaba el final (la grabación avanza a trozos de 2 s) y se seguía
+  parando. Resultado: un parón al principio y ninguno más en 90–150 s, con y sin baches.
+  Hasta 15 s de retraso la pantalla sigue diciendo «En directo». Si dentro de la grabación
+  el vídeo pasa 15 s parado (el proveedor se cayó), vuelve a la salida rápida, que sabe
+  reconectar. Cada parón queda en el diagnóstico (`/api/diag/stall`). La cola entre ffmpeg y
+  el reproductor pasa de 1 MB a 32 MB.
 
 ## Deuda técnica conocida desde el diseño
 

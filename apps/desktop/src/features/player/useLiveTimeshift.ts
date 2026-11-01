@@ -10,7 +10,7 @@ const RESUME_MARGIN_SECONDS = 2;
 
 /** A dónde entrar en la grabación: el segundo exacto de la sesión y, por si la ventana ya
  * se deslizó, cuántos segundos por detrás del directo. */
-type Entry = { at: number; behind: number };
+type Entry = { at: number; behind: number; fromEdge?: boolean };
 
 type Options = {
   /** Directo de un canal (no catch-up, no VOD): solo ahí hay grabación. */
@@ -78,7 +78,9 @@ export function useLiveTimeshift({ enabled, channelId, base, videoRef }: Options
         started = true;
         const first = data.details.fragments[0];
         const aligned = first?.sn === 0;
-        const start = Math.min(data.details.edge, Math.max(first?.start ?? 0, aligned ? entry.at : data.details.edge - entry.behind));
+        const start = entry.fromEdge
+          ? Math.max(first?.start ?? 0, data.details.edge - entry.behind)
+          : Math.min(data.details.edge, Math.max(first?.start ?? 0, aligned ? entry.at : data.details.edge - entry.behind));
         hls.startLoad(start);
         video.play().catch(() => {});
       });
@@ -100,6 +102,15 @@ export function useLiveTimeshift({ enabled, channelId, base, videoRef }: Options
   const enter = useCallback((next: Entry) => {
     setFailed(false);
     setEntry({ at: Math.max(0, next.at), behind: Math.max(0, next.behind) });
+    setEntryNonce((n) => n + 1);
+  }, []);
+
+  /** Pasar a la grabación `behind` segundos por detrás de lo último grabado, sea cual sea el
+   * punto en el que se estaba (tras un parón del directo: ver `useLiveCushion`). */
+  const enterNearLive = useCallback((behind: number) => {
+    pausedAtRef.current = null;
+    setFailed(false);
+    setEntry({ at: 0, behind, fromEdge: true });
     setEntryNonce((n) => n + 1);
   }, []);
 
@@ -153,6 +164,7 @@ export function useLiveTimeshift({ enabled, channelId, base, videoRef }: Options
     /** En pausa en directo (todavía sin pasar a la grabación). */
     isPausedLive: () => pausedAtRef.current != null,
     resumeFromPause,
+    enterNearLive,
     seekBy,
     goLive,
     behindLive,

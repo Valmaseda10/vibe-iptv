@@ -19,6 +19,7 @@ import type {
 } from "../../lib/api-types";
 import { ArrowDownIcon, ArrowUpIcon, BackIcon, FullscreenIcon, ListIcon, MuteIcon, PauseIcon, PictureInPictureIcon, PlayIcon, VolumeIcon } from "../../components/icons";
 import { feedLabels } from "../../lib/channels";
+import { LIVE_BADGE_MAX_BEHIND_S, LIVE_CUSHION_BEHIND_S, useLiveCushion } from "./useLiveCushion";
 import type { PlayerKind, PlayerSearch, PlayerSession } from "../../lib/playerSession";
 import { ChannelPanel } from "./ChannelPanel";
 import { askToRate, WATCHED_RATIO, type RateCandidate } from "../../lib/ratePrompt";
@@ -79,6 +80,9 @@ const DEFINITIVE_ERROR_STATUSES = new Set([400, 402, 403, 404, 501, 503]);
 /** Cada cuánto se piden las frases nuevas de subtítulos. Es el núcleo local leyendo un
  * fichero, no el proveedor: puede ser frecuente. */
 const SUBTITLE_POLL_MS = 1_500;
+/** En la grabación del directo, parado tanto rato es que no llega nada: se vuelve a la salida
+ * rápida para reconectar. */
+const RECORDING_DEAD_MS = 15_000;
 /** Tras la última cifra tecleada, cuánto se espera antes de cambiar de canal (como en un
  * mando: "1", "2" → canal 12). */
 const NUMBER_ENTRY_MS = 1_500;
@@ -327,6 +331,56 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
       ? `/stream/channel/${itemId}?profile_id=${profileId}${passthrough}`
       : `/stream/${kind}/${itemId}?profile_id=${profileId}${appliedStart > 0 ? `&start=${appliedStart}` : ""}${search.source ? `&source=${search.source}` : ""}${search.audioTrack != null ? `&audio_track=${search.audioTrack}` : ""}${subtitleTrack != null ? `&subtitle_track=${subtitleTrack}` : ""}${passthrough}`;
   const streamUrl = base && profileId !== null ? `${base}${streamPath}` : undefined;
+  // Margen contra los baches del proveedor en el directo (no en la grabación: hls.js ya
+  // guarda el suyo).
+  useLiveCushion(videoRef, liveTimeshift && !timeshift.inBuffer && Boolean(streamUrl), `${streamPath}::${retryNonce}`, {
+    onStall: (report) => {
+      if (base) {
+        void fetch(`${base}/api/diag/stall`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ channel_id: itemId, ahead_s: report.aheadS, current_time_s: report.currentTime }),
+        }).catch(() => {});
+      }
+    },
+    onSwitch: () => timeshift.enterNearLive(LIVE_CUSHION_BEHIND_S),
+  });
+  // Y los parones ya dentro de la grabación, para el diagnóstico: si los hay, la causa es otra.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!liveTimeshift || !timeshift.inBuffer || !video || !base) return;
+    const onWaiting = () => {
+      if (video.paused || video.currentTime < 1) return;
+      const ahead = video.buffered.length ? video.buffered.end(video.buffered.length - 1) - video.currentTime : 0;
+      void fetch(`${base}/api/diag/stall`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ channel_id: itemId, ahead_s: Number(ahead.toFixed(2)), current_time_s: video.currentTime, mode: "grabacion" }),
+      }).catch(() => {});
+    };
+    // Parada mucho rato (el proveedor se cayó y la grabación tampoco avanza): se vuelve a la
+    // salida rápida, que sabe reconectar y explicar el fallo.
+    let deadTimer: number | undefined;
+    const armDead = () => {
+      window.clearTimeout(deadTimer);
+      deadTimer = window.setTimeout(() => {
+        if (!video.paused) timeshift.leaveBuffer();
+      }, RECORDING_DEAD_MS);
+    };
+    const disarmDead = () => window.clearTimeout(deadTimer);
+    video.addEventListener("waiting", onWaiting);
+    video.addEventListener("waiting", armDead);
+    video.addEventListener("playing", disarmDead);
+    video.addEventListener("pause", disarmDead);
+    return () => {
+      disarmDead();
+      video.removeEventListener("waiting", onWaiting);
+      video.removeEventListener("waiting", armDead);
+      video.removeEventListener("playing", disarmDead);
+      video.removeEventListener("pause", disarmDead);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveTimeshift, timeshift.inBuffer, timeshift.bufferKey, base, itemId]);
 
   // Cambiar de stream de verdad (zapping, o abrir otro título) es un intento nuevo:
   // sin esto, tres cortes seguidos en canales distintos agotarían los reintentos del
@@ -1404,7 +1458,7 @@ function LiveTimeshiftControls({
   onForward: () => void;
   onGoLive: () => void;
 }) {
-  const atLive = !inBuffer || behind < 8;
+  const atLive = !inBuffer || behind < LIVE_BADGE_MAX_BEHIND_S;
   return (
     <div className="flex items-center gap-2 text-sm">
       <button

@@ -1271,9 +1271,11 @@ fn mp4_response(body: Body) -> Result<Response, StreamError> {
         .map_err(|_| StreamError::Internal)
 }
 
-/// Trozos de la salida en directo que pueden esperar a que el reproductor los lea. Lleno,
-/// es que el reproductor dejó de leer (pausa): se deja de mandarle el directo.
-const LIVE_BUFFER_CHUNKS: usize = 256;
+/// Trozos de la salida en directo que pueden esperar a que el reproductor los lea (de hasta
+/// 4 KB: como mucho 32 MB, medio minuto largo de un canal HD). Lleno, es que el reproductor
+/// dejó de leer (pausa): se deja de mandarle el directo. Con 256 (1 MB, poco más de un
+/// segundo de HD) una ráfaga del panel tras un bache podía cortar el directo.
+const LIVE_BUFFER_CHUNKS: usize = 8192;
 
 /// Directo con grabación para pausar y rebobinar (F13). El mismo ffmpeg saca el directo
 /// por la respuesta y graba en disco (ver `server::timeshift`). A diferencia del VOD, la
@@ -1329,7 +1331,10 @@ async fn spawn_live_response(
             if let Some(tx) = &live {
                 // Lleno (pausa) o cerrado (el reproductor pasó a la grabación o se fue): a
                 // partir de aquí se descarta, la grabación sigue.
-                if tx.try_send(chunk).is_err() {
+                if let Err(err) = tx.try_send(chunk) {
+                    if matches!(err, tokio::sync::mpsc::error::TrySendError::Full(_)) {
+                        tracing::info!("el reproductor no lee el directo y se le deja de mandar (sigue la grabación)");
+                    }
                     live = None;
                     draining.set_reading_live(false);
                 }

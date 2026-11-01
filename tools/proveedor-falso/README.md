@@ -37,3 +37,9 @@ usuario `qa`, contraseña `qa`. El puerto se cambia con la variable `PORT`.
 
 En la consola avisa si en algún momento hay más de una conexión de directo abierta a la
 vez: la app nunca debería abrir dos (regla R1).
+
+## Simular un proveedor de verdad
+
+- `VIBE_FALSO_BACHES=1`: en el directo, cada 10 s deja de mandar 1,5 s y luego manda lo
+  atrasado de golpe, como un panel tras una VPN. Para medir los parones del reproductor.
+- `VIBE_FALSO_RAFAGA=30`: la ráfaga inicial del directo dura 30 s en vez de 3.
