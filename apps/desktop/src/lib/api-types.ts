@@ -43,7 +43,8 @@ trailer_key: string | null, };
  */
 export type BrowseItem = { 
 /**
- * `movie`, `series` o `episode` (solo en «Continuar viendo» de Series).
+ * `movie`, `series`, `episode` (solo en «Continuar viendo» de Series) o `collection`
+ * (una saga, en la fila «Sagas»).
  */
 kind: string, id: number, 
 /**
@@ -137,7 +138,22 @@ last_synced_at: number | null,
  */
 last_error: string | null, };
 
+export type CollectionResponse = { id: number, name: string, overview: string | null, poster_path: string | null, backdrop_path: string | null, entries: Array<SagaEntryResponse>, 
+/**
+ * La que toca ver («Seguir con…» o «Empezar»).
+ */
+next_movie_id: number | null, available: number, watched: number, };
+
 export type ContinueWatchingItem = { item_kind: string, item_id: number, position_s: number, duration_s: number | null, title: string, subtitle: string | null, poster_path: string | null, };
+
+/**
+ * Alguien del reparto o de la dirección de un título (F17).
+ */
+export type CreditSummary = { person_id: number, name: string, profile_path: string | null, character: string | null, 
+/**
+ * `cast`, `director` o `creator`.
+ */
+role: string, };
 
 export type EpgGridProgramme = { channel_id: number, title: string, subtitle: string | null, start_ts: number, stop_ts: number, category: string | null, };
 
@@ -261,7 +277,11 @@ similar: Array<SimilarTitleSummary>,
  * episodio) — `false` si la petición no llevaba `profile_id` (no hay de quién
  * consultarlo), igual que `EpisodeSummary.watched` en `From<EpisodeItem>`.
  */
-watched: boolean, };
+watched: boolean, 
+/**
+ * Reparto y dirección (F17), vacío hasta que se piden a TMDB.
+ */
+cast: Array<CreditSummary>, saga: SagaBadge | null, };
 
 export type MovieSourceSummary = { id: number, provider_id: number, remote_id: string, quality: string | null, language: string | null, container: string | null, 
 /**
@@ -397,6 +417,34 @@ export type NativePlayerEvent = { "type": "progress", position_s: number, durati
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 
+/**
+ * Una persona en los resultados de búsqueda (F17).
+ */
+export type PersonHitResponse = { id: number, name: string, profile_path: string | null, department: string | null, 
+/**
+ * Cuántos títulos suyos hay en el catálogo.
+ */
+titles: number, };
+
+export type PersonResponse = { id: number, name: string, profile_path: string | null, 
+/**
+ * `Acting`, `Directing`… (de TMDB).
+ */
+department: string | null, biography: string | null, birthday: string | null, deathday: string | null, place_of_birth: string | null, titles: Array<PersonTitleResponse>, };
+
+/**
+ * Un título en la ficha de una persona.
+ */
+export type PersonTitleResponse = { 
+/**
+ * `movie` o `series`.
+ */
+kind: string, id: number, clean_title: string, year: number | null, poster_path: string | null, 
+/**
+ * El personaje, o «Dirección» / «Creación».
+ */
+role: string | null, };
+
 export type PlaybackProgressInput = { profile_id: number, item_kind: string, item_id: number, position_s: number, duration_s: number | null, 
 /**
  * `Date.getTimezoneOffset()` del aparato: el tiempo visto se apunta en su hora local
@@ -508,9 +556,35 @@ export type ResetPasswordInput = { email: string,
  */
 token_or_link: string, new_password: string, };
 
+/**
+ * La saga de una película, en su ficha (F17).
+ */
+export type SagaBadge = { id: number, name: string, poster_path: string | null, backdrop_path: string | null, 
+/**
+ * Películas de la saga en el catálogo, y las terminadas por el perfil.
+ */
+available: number, watched: number, 
+/**
+ * La siguiente de la saga sin ver tras esta: la que ofrece el reproductor al acabar.
+ */
+next_movie_id: number | null, next_title: string | null, };
+
+/**
+ * Una película de una saga, en su orden.
+ */
+export type SagaEntryResponse = { title: string, year: number | null, poster_path: string | null, 
+/**
+ * `null` si no está en el catálogo (se enseña en gris).
+ */
+movie_id: number | null, watched: boolean, progress: number | null, };
+
 export type SearchHitResponse = { item_kind: string, item_id: number, title: string, poster_path: string | null, };
 
-export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, };
+export type SearchResults = { channels: Array<SearchHitResponse>, movies: Array<SearchHitResponse>, series: Array<SearchHitResponse>, 
+/**
+ * Actores y directores con algo en el catálogo (F17).
+ */
+people: Array<PersonHitResponse>, };
 
 export type SeriesDetailResponse = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, genres: number[], tmdb_state: string, trailer_key: string | null, age_rating: string | null, similar: Array<SimilarTitleSummary>, episodes: Array<EpisodeSummary>, 
 /**
@@ -524,7 +598,11 @@ up_next_episode_id: number | null,
 /**
  * `true` si el perfil ya iba por la serie: el botón dice "Continuar" y no "Ver".
  */
-up_next_started: boolean, };
+up_next_started: boolean, 
+/**
+ * Reparto y creadores (F17), vacío hasta que se piden a TMDB.
+ */
+cast: Array<CreditSummary>, };
 
 export type SeriesPage = { items: Array<SeriesSummary>, next_cursor: number | null, next_cursor_key: string | null, };
 

@@ -48,7 +48,9 @@ export function BrowseRows({ rows, page }: { rows: BrowseRowResponse[]; page: "m
   }
 
   function open(item: BrowseItem, play: boolean) {
-    if (item.kind === "episode") {
+    if (item.kind === "collection") {
+      navigate({ to: "/collections/$collectionId", params: { collectionId: String(item.id) } });
+    } else if (item.kind === "episode") {
       navigate({
         to: "/player/$kind/$id",
         params: { kind: "episode", id: String(item.id) },

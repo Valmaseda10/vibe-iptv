@@ -2083,6 +2083,21 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   título, con la clave de la nube del título. No hace falta que el reproductor cuente nada:
   en VOD sale de dos avisos de progreso seguidos (lo que avanzó la posición si no avanzó
   más que el reloj: un salto no es tiempo visto) y en el directo de un aviso cada 30 s.
+- **Parte 2: sagas y fichas de personas.** Una consulta a TMDB por título
+  (`append_to_response=credits`, que de paso trae `belongs_to_collection`), en segundo
+  plano tras los votos, los más votados primero y 3.000 por arranque (con su catálogo:
+  3.000 títulos en unos dos minutos, 553 sagas y 34.000 personas). Se guardan los 15
+  primeros del reparto y la dirección (o la creación en series); migración 032. Una ficha
+  que aún no lo tiene lo pide al abrirse. La lista completa de una saga (también las
+  películas que el catálogo no tiene, en gris) se pide al abrirla y se guarda un mes; la
+  biografía de una persona, una vez. Su catálogo tiene la misma película varias veces
+  (ediciones): en sagas y fichas de persona se juntan por id de TMDB, vista si se vio
+  cualquiera. Los nombres de saga pierden « - Colección». Al acabar una película de una
+  saga se ofrece la siguiente sin ver con la cuenta atrás de los episodios: en el iPhone,
+  la de VLC (créditos por capítulos o los últimos 30 s); en el PC, los últimos 30 s. De
+  paso, «Cancelar» la cuenta atrás en el PC ya no la vuelve a sacar al instante. Un perfil
+  infantil no busca personas (sus fichas llevan a títulos de todo tipo); las fichas de
+  persona y de saga solo enseñan lo que el perfil puede ver.
 
 ## Deuda técnica conocida desde el diseño
 

@@ -546,13 +546,21 @@ fn spawn_tmdb_matching(app: AppHandle) {
 
         // Y los votos de lo que se emparejó antes de guardarlos (migración 025), poco a poco.
         let Ok(conn) = schema::open_connection(&app) else { return };
-        match tmdb::run_votes_pass(conn, client).await {
+        match tmdb::run_votes_pass(conn, Arc::clone(&client)).await {
             Ok(stored) if stored > 0 => {
                 tracing::info!(stored, "votos de TMDB completados");
                 crate::catalog::browse::clear_index_cache();
             }
             Ok(_) => {}
             Err(err) => tracing::error!(error = %err, "paso de votos de TMDB fallido"),
+        }
+
+        // Reparto y sagas (F17), los títulos más votados primero, unos miles por arranque.
+        let Ok(conn) = schema::open_connection(&app) else { return };
+        match crate::catalog::people::run_credits_pass(conn, client).await {
+            Ok(stored) if stored > 0 => tracing::info!(stored, "repartos y sagas de TMDB guardados"),
+            Ok(_) => {}
+            Err(err) => tracing::error!(error = %err, "paso de repartos de TMDB fallido"),
         }
     });
 }

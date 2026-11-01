@@ -247,6 +247,48 @@ pub struct MovieDetailResponse {
     /// episodio) — `false` si la petición no llevaba `profile_id` (no hay de quién
     /// consultarlo), igual que `EpisodeSummary.watched` en `From<EpisodeItem>`.
     pub watched: bool,
+    /// Reparto y dirección (F17), vacío hasta que se piden a TMDB.
+    pub cast: Vec<CreditSummary>,
+    pub saga: Option<SagaBadge>,
+}
+
+/// Alguien del reparto o de la dirección de un título (F17).
+#[derive(Serialize, TS, Clone)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct CreditSummary {
+    #[ts(type = "number")]
+    pub person_id: i64,
+    pub name: String,
+    pub profile_path: Option<String>,
+    pub character: Option<String>,
+    /// `cast`, `director` o `creator`.
+    pub role: String,
+}
+
+impl From<crate::catalog::people::CreditRow> for CreditSummary {
+    fn from(row: crate::catalog::people::CreditRow) -> Self {
+        Self { person_id: row.person_id, name: row.name, profile_path: row.profile_path, character: row.character, role: row.role }
+    }
+}
+
+/// La saga de una película, en su ficha (F17).
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct SagaBadge {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub name: String,
+    pub poster_path: Option<String>,
+    pub backdrop_path: Option<String>,
+    /// Películas de la saga en el catálogo, y las terminadas por el perfil.
+    #[ts(type = "number")]
+    pub available: i64,
+    #[ts(type = "number")]
+    pub watched: i64,
+    /// La siguiente de la saga sin ver tras esta: la que ofrece el reproductor al acabar.
+    #[ts(type = "number | null")]
+    pub next_movie_id: Option<i64>,
+    pub next_title: Option<String>,
 }
 
 impl From<reads::MovieDetail> for MovieDetailResponse {
@@ -268,6 +310,8 @@ impl From<reads::MovieDetail> for MovieDetailResponse {
             watched: false,
             pending_details: false,
             similar: Vec::new(),
+            cast: Vec::new(),
+            saga: None,
         }
     }
 }
@@ -375,6 +419,8 @@ pub struct SeriesDetailResponse {
     pub up_next_episode_id: Option<i64>,
     /// `true` si el perfil ya iba por la serie: el botón dice "Continuar" y no "Ver".
     pub up_next_started: bool,
+    /// Reparto y creadores (F17), vacío hasta que se piden a TMDB.
+    pub cast: Vec<CreditSummary>,
 }
 
 #[derive(Serialize, TS)]
@@ -393,6 +439,22 @@ pub struct SearchResults {
     pub channels: Vec<SearchHitResponse>,
     pub movies: Vec<SearchHitResponse>,
     pub series: Vec<SearchHitResponse>,
+    /// Actores y directores con algo en el catálogo (F17).
+    pub people: Vec<PersonHitResponse>,
+}
+
+/// Una persona en los resultados de búsqueda (F17).
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct PersonHitResponse {
+    #[ts(type = "number")]
+    pub id: i64,
+    pub name: String,
+    pub profile_path: Option<String>,
+    pub department: Option<String>,
+    /// Cuántos títulos suyos hay en el catálogo.
+    #[ts(type = "number")]
+    pub titles: i64,
 }
 
 #[derive(Serialize, TS)]
@@ -1139,7 +1201,7 @@ async fn get_movie_detail(
         Vec::new()
     } else {
         let ids = movie.similar_tmdb_ids.clone();
-        with_db(db_path, move |conn| {
+        with_db(db_path.clone(), move |conn| {
             let mut visible = Vec::new();
             for title in reads::resolve_similar_movies(conn, &ids, id, SIMILAR_TITLES_LIMIT)? {
                 if reads::item_allowed(conn, "movie", title.id, access)? {
@@ -1151,11 +1213,73 @@ async fn get_movie_detail(
         .await?
     };
 
+    // Reparto y saga (F17): de lo guardado; si este título aún no se ha pedido (la pasada de
+    // fondo va por los más votados), se pide ahora por detrás.
+    let tmdb_id = movie.tmdb_id;
+    let profile_id = query.profile_id;
+    let (cast, saga, credits_checked) = with_db(db_path.clone(), move |conn| {
+        let cast = crate::catalog::people::title_credits(conn, "movie", id)?;
+        let checked: Option<i64> = conn.query_row("SELECT credits_checked_at FROM movies WHERE id = ?1", rusqlite::params![id], |r| r.get(0))?;
+        let saga = match profile_id {
+            Some(profile_id) => saga_badge(conn, id, profile_id, access)?,
+            None => None,
+        };
+        Ok((cast, saga, checked.is_some()))
+    })
+    .await?;
+    if !credits_checked {
+        if let Some(tmdb_id) = tmdb_id {
+            pending_details |= spawn_people_fetch(db_path.clone(), "movie", id, tmdb_id);
+        }
+    }
+
     let mut response: MovieDetailResponse = movie.into();
     response.similar = similar.into_iter().map(Into::into).collect();
     response.watched = watched;
     response.pending_details = pending_details;
+    response.cast = cast.into_iter().map(Into::into).collect();
+    response.saga = saga;
     Ok(Json(response))
+}
+
+/// La saga de una película para su ficha, con la siguiente que toca tras ella.
+fn saga_badge(conn: &rusqlite::Connection, movie_id: i64, profile_id: i64, access: reads::ProfileAccess) -> crate::db::Result<Option<SagaBadge>> {
+    use crate::catalog::collections;
+    let Some(summary) = collections::movie_saga(conn, movie_id, profile_id, access)? else { return Ok(None) };
+    let header = collections::header(conn, summary.id)?;
+    let entries = collections::entries(conn, summary.id, profile_id, access, header.as_ref().and_then(|h| h.parts.as_deref()))?;
+    let next_movie_id = collections::next_to_watch(&entries, Some(movie_id));
+    let next_title = next_movie_id.and_then(|next| entries.iter().find(|e| e.movie_id == Some(next)).map(|e| e.title.clone()));
+    Ok(Some(SagaBadge {
+        id: summary.id,
+        name: summary.name,
+        poster_path: summary.poster_path,
+        backdrop_path: summary.backdrop_path,
+        available: summary.available,
+        watched: summary.watched,
+        next_movie_id,
+        next_title,
+    }))
+}
+
+/// Pide por detrás a TMDB el reparto (y la saga) de un título que aún no lo tiene.
+/// `true` si se ha puesto a pedirlo (la ficha vuelve a preguntar en unos segundos).
+fn spawn_people_fetch(db_path: PathBuf, item_kind: &'static str, item_id: i64, tmdb_id: i64) -> bool {
+    let Some(key) = detail_refresh::begin(format!("{item_kind}-people:{item_id}")) else { return false };
+    tokio::spawn(async move {
+        let result = async {
+            let api_key = keychain::read_secret(TMDB_API_KEY_CREDENTIAL_REF).map_err(|err| err.to_string())?;
+            let client = TmdbClient::new(api_key);
+            let people = if item_kind == "series" { client.tv_people(tmdb_id).await } else { client.movie_people(tmdb_id).await }.map_err(|err| err.to_string())?;
+            with_db(db_path, move |conn| crate::catalog::people::store_title_people(conn, item_kind, item_id, &people)).await.map_err(|err| err.to_string())
+        }
+        .await;
+        if let Err(err) = &result {
+            tracing::debug!(item_kind, item_id, error = %err, "reparto de TMDB aplazado");
+        }
+        detail_refresh::end(key, result.is_ok());
+    });
+    true
 }
 
 /// Datos de las fichas que se piden por detrás (TMDB, proveedor): nunca dos veces a la vez
@@ -1433,6 +1557,19 @@ async fn get_series_detail(
     let ordered: Vec<i64> = ordered.into_iter().map(|(_, _, id)| id).collect();
     let up_next = reads::up_next_episode(&ordered, &progress);
 
+    let (cast, credits_checked) = with_db(state.db_path.clone(), move |conn| {
+        let cast = crate::catalog::people::title_credits(conn, "series", id)?;
+        let checked: Option<i64> = conn.query_row("SELECT credits_checked_at FROM series WHERE id = ?1", rusqlite::params![id], |r| r.get(0))?;
+        Ok((cast, checked.is_some()))
+    })
+    .await?;
+    let mut pending_details = pending_details;
+    if !credits_checked {
+        if let Some(tmdb_id) = series.tmdb_id {
+            pending_details |= spawn_people_fetch(state.db_path.clone(), "series", id, tmdb_id);
+        }
+    }
+
     Ok(Json(SeriesDetailResponse {
         id: series.id,
         clean_title: series.clean_title,
@@ -1450,6 +1587,7 @@ async fn get_series_detail(
         pending_details,
         up_next_episode_id: up_next.map(|(id, _)| id),
         up_next_started: up_next.is_some_and(|(_, started)| started),
+        cast: cast.into_iter().map(Into::into).collect(),
     }))
 }
 
@@ -1485,14 +1623,21 @@ struct SearchQuery {
 async fn get_search(State(state): State<CatalogState>, Query(query): Query<SearchQuery>) -> Result<Json<SearchResults>, ApiError> {
     let q = query.q.unwrap_or_default();
     if q.trim().is_empty() {
-        return Ok(Json(SearchResults { channels: vec![], movies: vec![], series: vec![] }));
+        return Ok(Json(SearchResults { channels: vec![], movies: vec![], series: vec![], people: vec![] }));
     }
     let profile_id = query.profile_id;
-    let hits = with_db(state.db_path, move |conn| {
+    let (hits, found_people) = with_db(state.db_path, move |conn| {
         let access = reads::profile_access(conn, profile_id)?;
-        reads::search(conn, &q, 20, access)
+        let hits = reads::search(conn, &q, 20, access)?;
+        // Un perfil infantil no busca personas: sus fichas llevan a títulos de todo tipo.
+        let found = if access.max_age.is_none() { crate::catalog::people::search_people(conn, &q, 8)? } else { Vec::new() };
+        Ok((hits, found))
     })
     .await?;
+    let people = found_people
+        .into_iter()
+        .map(|(p, titles)| PersonHitResponse { id: p.id, name: p.name, profile_path: p.profile_path, department: p.department, titles })
+        .collect();
 
     let mut channels = Vec::new();
     let mut movies = Vec::new();
@@ -1506,7 +1651,7 @@ async fn get_search(State(state): State<CatalogState>, Query(query): Query<Searc
             _ => {}
         }
     }
-    Ok(Json(SearchResults { channels, movies, series }))
+    Ok(Json(SearchResults { channels, movies, series, people }))
 }
 
 // ─────────────── Guía EPG (F7) ───────────────

@@ -1,6 +1,7 @@
 pub mod account;
 pub mod api;
 pub mod browse;
+pub mod discover;
 pub mod live_buffer;
 pub mod profiles;
 pub mod provider_status;
@@ -186,6 +187,7 @@ pub async fn build(image_cache_dir: PathBuf, db_path: PathBuf, stream_guard: Arc
 fn full_router(image_cache_dir: PathBuf, db_path: PathBuf, stream_state: stream::StreamState, cloud: Arc<dyn CloudBackend>) -> Router {
     routes::build_router(image_cache_dir, db_path.clone())
         .merge(stream::stream_router(stream_state))
+        .merge(discover::discover_router(discover::DiscoverState { db_path: db_path.clone() }))
         .merge(account::account_router(account::AccountState { db_path: db_path.clone(), cloud }))
         .merge(tv::tv_router(tv::TvState { db_path: db_path.clone() }))
         .merge(browse::browse_router(browse::BrowseState { db_path: db_path.clone() }))

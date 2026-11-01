@@ -127,7 +127,7 @@ export async function apiDelete(path: string): Promise<void> {
 /** URL de una imagen: la de TMDB cacheada por el núcleo (`GET /img/:size/:image_id`), o
  * tal cual si es una URL absoluta del proveedor (carátula sin ficha de TMDB, miniatura
  * de episodio; el núcleo ya la redacta). `null` si no hay ninguna. */
-export function imagePath(base: string | undefined, path: string | null | undefined, size: "w342" | "w500" | "w1280"): string | null {
+export function imagePath(base: string | undefined, path: string | null | undefined, size: "w185" | "w342" | "w500" | "w1280"): string | null {
   if (!path) return null;
   if (/^https?:\/\//.test(path)) return path;
   if (!base) return null;

@@ -50,6 +50,9 @@ const PROGRESS_SAVE_INTERVAL_MS = 10_000;
 const WATCHING_INTERVAL_MS = 30_000;
 const NEXT_EPISODE_TRIGGER_SECONDS = 15;
 const NEXT_EPISODE_COUNTDOWN_SECONDS = 10;
+/** La siguiente película de la saga (F17) se ofrece en los últimos 30 s, como en el iPhone
+ * cuando el fichero no trae capítulos de créditos. */
+const NEXT_SAGA_TRIGGER_SECONDS = 30;
 const RESUME_MIN_SECONDS = 5;
 const SEEK_STEP_SECONDS = 10;
 /** En el nivel 2 cada salto reabre el remux (ffmpeg y una petición al proveedor): se
@@ -135,6 +138,8 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
   const [resumeBanner, setResumeBanner] = useState<number | null>(null);
   const [channelOverlayVisible, setChannelOverlayVisible] = useState(true);
   const [nextCountdown, setNextCountdown] = useState<number | null>(null);
+  // «Cancelar» la cuenta atrás: no vuelve a salir para este vídeo.
+  const [nextDismissed, setNextDismissed] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [needsMpv, setNeedsMpv] = useState(false);
   const [mpvLaunching, setMpvLaunching] = useState(false);
@@ -225,6 +230,8 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
     () => (currentEpisode ? findNextEpisode(seriesQuery.data?.episodes ?? [], currentEpisode) : undefined),
     [seriesQuery.data, currentEpisode],
   );
+  // Siguiente película de la saga (F17), la que da el núcleo tras esta.
+  const sagaNext = kind === "movie" && movieQuery.data?.saga?.next_movie_id != null ? { id: movieQuery.data.saga.next_movie_id, title: movieQuery.data.saga.next_title ?? "" } : null;
   const currentChannel = channelsQuery.data?.items.find((c) => c.id === listChannelId) ?? channelFeeds.find((c) => c.id === itemId);
 
   const title =
@@ -627,19 +634,31 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
     };
   }, [saveProgress]);
 
-  // Siguiente episodio con cuenta atrás cancelable, en los últimos segundos.
+  // Siguiente episodio (o película de la saga) con cuenta atrás cancelable, al final.
   useEffect(() => {
-    if (kind !== "episode" || !nextEpisode || nextCountdown !== null) return;
-    if (displayDuration && displayCurrentTime > 0 && displayDuration - displayCurrentTime <= NEXT_EPISODE_TRIGGER_SECONDS) {
+    setNextDismissed(false);
+    setNextCountdown(null);
+  }, [kind, itemId]);
+  useEffect(() => {
+    if (nextCountdown !== null || nextDismissed) return;
+    const trigger = kind === "episode" && nextEpisode ? NEXT_EPISODE_TRIGGER_SECONDS : kind === "movie" && sagaNext ? NEXT_SAGA_TRIGGER_SECONDS : null;
+    if (trigger === null) return;
+    if (displayDuration && displayCurrentTime > 0 && displayDuration - displayCurrentTime <= trigger) {
       setNextCountdown(NEXT_EPISODE_COUNTDOWN_SECONDS);
     }
-  }, [kind, nextEpisode, displayDuration, displayCurrentTime, nextCountdown]);
+  }, [kind, nextEpisode, sagaNext, displayDuration, displayCurrentTime, nextCountdown, nextDismissed]);
+
+  const goToNext = useCallback(() => {
+    saveProgress(true);
+    setNextCountdown(null);
+    if (kind === "episode" && nextEpisode) onNavigate({ kind: "episode", id: String(nextEpisode.id), search: { seriesId: search.seriesId } });
+    else if (kind === "movie" && sagaNext) onNavigate({ kind: "movie", id: String(sagaNext.id), search: {} });
+  }, [saveProgress, kind, nextEpisode, sagaNext, onNavigate, search.seriesId]);
 
   useEffect(() => {
     if (nextCountdown === null) return;
     if (nextCountdown <= 0) {
-      saveProgress(true);
-      onNavigate({ kind: "episode", id: String(nextEpisode!.id), search: { seriesId: search.seriesId } });
+      goToNext();
       return;
     }
     const timeout = window.setTimeout(() => setNextCountdown((c) => (c ?? 1) - 1), 1000);
@@ -1212,14 +1231,33 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
         </button>
       )}
 
-      {nextCountdown !== null && nextEpisode && (
-        <div className="absolute bottom-28 right-6 flex flex-col gap-2 rounded-lg bg-neutral-900/95 p-4 text-sm text-neutral-200 shadow-lg">
-          <p>
-            Siguiente: {nextEpisode.number}. {nextEpisode.title || `Episodio ${nextEpisode.number}`} en {nextCountdown}s
-          </p>
-          <button type="button" onClick={() => setNextCountdown(null)} className="self-start rounded bg-neutral-800 px-3 py-1 outline-none hover:bg-neutral-700">
-            Cancelar
-          </button>
+      {nextCountdown !== null && (nextEpisode || sagaNext) && (
+        <div className="absolute bottom-28 right-6 flex max-w-sm flex-col gap-2 rounded-lg bg-neutral-900/95 p-4 text-sm text-neutral-200 shadow-lg">
+          {kind === "movie" && sagaNext ? (
+            <p>
+              <span className="block text-xs font-semibold uppercase tracking-wide text-red-500">Siguiente de la saga</span>
+              {sagaNext.title} en {nextCountdown}s
+            </p>
+          ) : nextEpisode ? (
+            <p>
+              Siguiente: {nextEpisode.number}. {nextEpisode.title || `Episodio ${nextEpisode.number}`} en {nextCountdown}s
+            </p>
+          ) : null}
+          <div className="flex gap-2">
+            <button type="button" onClick={goToNext} className="rounded bg-white px-3 py-1 font-medium text-black outline-none hover:bg-neutral-200 focus-visible:ring-2 focus-visible:ring-white/70">
+              Ver ahora
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setNextCountdown(null);
+                setNextDismissed(true);
+              }}
+              className="rounded bg-neutral-800 px-3 py-1 outline-none hover:bg-neutral-700 focus-visible:ring-2 focus-visible:ring-white/70"
+            >
+              Cancelar
+            </button>
+          </div>
         </div>
       )}
 

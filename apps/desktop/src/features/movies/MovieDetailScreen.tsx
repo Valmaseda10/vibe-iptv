@@ -13,6 +13,7 @@ import type { MovieDetailResponse, PlaybackProgressResponse } from "../../lib/ap
 import { DETAIL_ACTION, PRIMARY_ACTION } from "../../components/detailAction";
 import { FloatingBackButton } from "../../components/FloatingBackButton";
 import { BackdropTrailer } from "../../components/BackdropTrailer";
+import { CastRow } from "../../components/CastRow";
 
 export function MovieDetailScreen() {
   const { movieId } = useParams({ from: "/movies/$movieId" });
@@ -189,10 +190,37 @@ export function MovieDetailScreen() {
           <TrailerModal youtubeKey={data.trailer_key} title={data.clean_title} onClose={() => setTrailerOpen(false)} />
         )}
 
+        {data.saga && (
+          <button
+            type="button"
+            onClick={() => navigate({ to: "/collections/$collectionId", params: { collectionId: String(data.saga!.id) } })}
+            className="group mt-2 flex w-full max-w-xl items-center gap-4 overflow-hidden rounded-xl bg-white/[0.05] p-3 text-left outline-none ring-1 ring-white/10 transition-colors hover:bg-white/10 focus-visible:ring-2 focus-visible:ring-white/70"
+          >
+            {imagePath(base, data.saga.poster_path, "w185") && (
+              <img src={imagePath(base, data.saga.poster_path, "w185") ?? undefined} alt="" className="h-20 w-14 shrink-0 rounded-md object-cover" />
+            )}
+            <span className="flex min-w-0 flex-1 flex-col gap-1">
+              <span className="text-xs font-semibold uppercase tracking-[0.15em] text-red-500">Parte de una saga</span>
+              <span className="truncate font-semibold text-neutral-100">{data.saga.name}</span>
+              <span className="text-xs text-neutral-400">
+                {data.saga.watched > 0 ? `Vistas ${data.saga.watched} de ${data.saga.available}` : `${data.saga.available} películas en tu lista`}
+                {data.saga.next_title ? ` · Después: ${data.saga.next_title}` : ""}
+              </span>
+            </span>
+            <span className="text-xl text-neutral-500 transition-transform group-hover:translate-x-1">›</span>
+          </button>
+        )}
+
         {data.sources.length === 1 && (
           <p className="pt-6 text-sm text-neutral-500">1 fuente disponible{qualities.length > 0 ? ` (${qualities.join(", ")})` : ""}</p>
         )}
       </div>
+
+      {data.cast.length > 0 && (
+        <div className="relative pb-8">
+          <CastRow cast={data.cast} />
+        </div>
+      )}
 
       {data.similar.length > 0 && (
         <div className="relative pb-10">

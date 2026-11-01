@@ -271,10 +271,19 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
   );
   const scopeId = scope.favorites ? FAVORITES_SCOPE : (scope.categoryId ?? "");
   const feedIndex = channelFeeds.findIndex((c) => c.id === itemId);
+  const sagaNext = kind === "movie" ? movieQuery.data?.saga : null;
   const next: NativePlayItem | null =
     kind === "episode" && nextEpisode && base
       ? { id: nextEpisode.id, title: seriesQuery.data?.clean_title ?? "", subtitle: episodeLabel(nextEpisode), number: null, url: `${base}${episodePath(nextEpisode.id)}` }
-      : null;
+      : sagaNext?.next_movie_id != null && base
+        ? {
+            id: sagaNext.next_movie_id,
+            title: sagaNext.next_title ?? "",
+            subtitle: "Siguiente de la saga",
+            number: null,
+            url: `${base}/stream/movie/${sagaNext.next_movie_id}?profile_id=${profileId}&passthrough=true`,
+          }
+        : null;
 
   // Fuentes de la película o del episodio (F15, F17): se cambia a mano desde el reproductor
   // y, si una no carga o va lenta, se prueba sola la siguiente. Las mismas reglas que en el
@@ -546,6 +555,10 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
           } else if (latest.kind === "episode") {
             playedPathRef.current = latest.episodePath(payload.id);
             latest.onNavigate({ kind: "episode", id: String(payload.id), search: { seriesId: latest.search.seriesId } });
+          } else if (latest.kind === "movie") {
+            // Siguiente película de la saga (F17), ya sonando.
+            playedPathRef.current = `/stream/movie/${payload.id}?profile_id=${latest.profileId}&passthrough=true`;
+            latest.onNavigate({ kind: "movie", id: String(payload.id), search: {} });
           }
           break;
         }

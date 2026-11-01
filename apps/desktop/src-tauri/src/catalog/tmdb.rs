@@ -115,7 +115,7 @@ impl TmdbClient {
         }
     }
 
-    async fn get_json<T: DeserializeOwned>(&self, path: &str, params: &[(&str, &str)]) -> Result<T> {
+    pub(crate) async fn get_json<T: DeserializeOwned>(&self, path: &str, params: &[(&str, &str)]) -> Result<T> {
         let _permit = self.semaphore.acquire().await.map_err(|_| TmdbError::SemaphoreClosed)?;
 
         let mut url = reqwest::Url::parse(&format!("{}{}", self.base_url, path))

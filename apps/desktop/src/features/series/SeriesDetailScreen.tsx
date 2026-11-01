@@ -13,6 +13,7 @@ import { BackdropTrailer } from "../../components/BackdropTrailer";
 import { Row } from "../../components/Row";
 import { HorizontalScroller } from "../../components/HorizontalScroller";
 import { PosterCard } from "../../components/PosterCard";
+import { CastRow } from "../../components/CastRow";
 import type { EpisodeSummary, SeriesDetailResponse } from "../../lib/api-types";
 
 export function SeriesDetailScreen() {
@@ -240,6 +241,12 @@ export function SeriesDetailScreen() {
           </div>
         )}
       </div>
+
+      {data.cast.length > 0 && (
+        <div className="relative pb-8">
+          <CastRow cast={data.cast} />
+        </div>
+      )}
 
       {data.similar.length > 0 && (
         <div className="relative pb-10">

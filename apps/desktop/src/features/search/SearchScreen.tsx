@@ -40,7 +40,7 @@ export function SearchScreen() {
   });
 
   const hasQuery = debounced.trim().length > 0;
-  const totalHits = (data?.movies.length ?? 0) + (data?.series.length ?? 0) + (data?.channels.length ?? 0);
+  const totalHits = (data?.movies.length ?? 0) + (data?.series.length ?? 0) + (data?.channels.length ?? 0) + (data?.people.length ?? 0);
 
   // Flecha abajo desde el campo de texto entra en la primera tarjeta de resultados;
   // dentro de los resultados, las flechas se mueven por los <button> tal cual salen en
@@ -117,8 +117,38 @@ export function SearchScreen() {
         {data && data.channels.length > 0 && (
           <ResultSection title="Canales" hits={data.channels} onOpen={(id) => navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(id) } })} />
         )}
+        {data && data.people.length > 0 && <PeopleSection people={data.people} onOpen={(id) => navigate({ to: "/people/$personId", params: { personId: String(id) } })} />}
       </div>
     </div>
+  );
+}
+
+/** Actores y directores (F17): cara redonda, nombre y cuántos títulos suyos hay. */
+function PeopleSection({ people, onOpen }: { people: SearchResults["people"]; onOpen: (id: number) => void }) {
+  const { data: base } = useApiBase();
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500 ios:text-[20px] ios:font-bold ios:normal-case ios:tracking-tight ios:text-white">Personas</h2>
+      <div className="grid grid-cols-3 gap-3 sm:flex sm:flex-wrap sm:gap-4">
+        {people.map((person) => {
+          const photo = imagePath(base, person.profile_path, "w185");
+          return (
+            <button
+              key={person.id}
+              type="button"
+              onClick={() => onOpen(person.id)}
+              className="group flex w-full min-w-0 flex-col items-center gap-2 rounded-xl p-1 text-center outline-none focus-visible:ring-2 focus-visible:ring-white/70 sm:w-32"
+            >
+              <span className="block aspect-square w-full max-w-24 overflow-hidden rounded-full bg-neutral-800 ring-1 ring-white/10 transition-transform group-hover:scale-105 group-focus-visible:scale-105">
+                {photo && <img src={photo} alt="" loading="lazy" className="h-full w-full object-cover" />}
+              </span>
+              <span className="line-clamp-2 text-sm font-medium leading-tight text-neutral-100">{person.name}</span>
+              <span className="-mt-1 text-xs text-neutral-500">{person.titles === 1 ? "1 título" : `${person.titles} títulos`}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

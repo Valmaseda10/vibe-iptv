@@ -96,6 +96,23 @@ Igual que películas; el detalle trae `episodes[]` (temporada, número, título,
 (`reads::up_next_episode`): manda lo último que se tocó; empezado sin terminar, ese
 mismo; terminado, el siguiente; tras el último o sin nada visto, el primero.
 
+### Sagas y personas (F17)
+
+- `/api/movies/:id` añade `cast` (`[{ person_id, name, profile_path, character, role }]`,
+  `role` = `cast` | `director`) y `saga` (`{ id, name, poster_path, backdrop_path,
+  available, watched, next_movie_id, next_title }`: la siguiente sin ver tras esta).
+  `/api/series/:id` añade `cast` (`role` = `cast` | `creator`).
+- `GET /api/collections/:id?profile_id=` → `{ id, name, overview, poster_path,
+  backdrop_path, entries: [{ title, year, poster_path, movie_id, watched, progress }],
+  next_movie_id, available, watched }`. `movie_id` es `null` si el catálogo no la tiene.
+- `GET /api/people/:id?profile_id=` → `{ id, name, profile_path, department, biography,
+  birthday, deathday, place_of_birth, titles: [{ kind, id, clean_title, year,
+  poster_path, role }] }`. 404 si el perfil no puede ver nada suyo.
+- `GET /api/browse/movies` y `/home` llevan la fila `sagas` (ítems con `kind:
+  "collection"`).
+- `GET /api/search` añade `people: [{ id, name, profile_path, department, titles }]`
+  (no para perfiles con límite de edad).
+
 ### `GET /api/search?q=&profile_id=`
 Búsqueda instantánea (FTS5). `{ channels: [], movies: [], series: [] }`, cada uno hasta
 20 resultados. `q` vacío o solo símbolos da listas vacías, no error. Lo que el perfil no

@@ -11,6 +11,8 @@ import { searchRoute } from "./routes/search";
 import { favoritesRoute } from "./routes/favorites";
 import { settingsRoute } from "./routes/settings";
 import { playerRoute } from "./routes/player.$kind.$id";
+import { collectionRoute } from "./routes/collections.$collectionId";
+import { personRoute } from "./routes/people.$personId";
 
 const routeTree = rootRoute.addChildren([
   indexRoute,
@@ -24,6 +26,8 @@ const routeTree = rootRoute.addChildren([
   favoritesRoute,
   settingsRoute,
   playerRoute,
+  collectionRoute,
+  personRoute,
 ]);
 
 export const router = createRouter({ routeTree });

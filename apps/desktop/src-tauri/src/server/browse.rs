@@ -117,7 +117,8 @@ pub struct TasteCandidatesResponse {
 #[derive(Serialize, TS)]
 #[ts(export, export_to = "api-types.ts")]
 pub struct BrowseItem {
-    /// `movie`, `series` o `episode` (solo en «Continuar viendo» de Series).
+    /// `movie`, `series`, `episode` (solo en «Continuar viendo» de Series) o `collection`
+    /// (una saga, en la fila «Sagas»).
     pub kind: String,
     #[ts(type = "number")]
     pub id: i64,
@@ -479,6 +480,13 @@ async fn get_browse(State(state): State<BrowseState>, AxumPath(page): AxumPath<S
                 response.rows.insert(0, row);
             }
         }
+        // Películas e Inicio: las sagas (F17), tras las primeras filas.
+        if kinds.contains(&"movie") {
+            if let Some(row) = sagas_row(&conn, profile_id, access)? {
+                let at = response.rows.len().min(SAGAS_ROW_POSITION);
+                response.rows.insert(at, row);
+            }
+        }
         // Series e Inicio: lo que ha recibido episodios, arriba (en Series tras «Continuar viendo»).
         if kinds.contains(&"series") {
             if let Some(row) = new_episodes_row(&conn, profile_id, access, now)? {
@@ -491,6 +499,41 @@ async fn get_browse(State(state): State<BrowseState>, AxumPath(page): AxumPath<S
     .await
     .map_err(|_| BrowseError::Internal)??;
     Ok(Json(response))
+}
+
+/// En qué fila va «Sagas» (tras la portada y las primeras filas).
+const SAGAS_ROW_POSITION: usize = 3;
+const SAGAS_ROW_LIMIT: usize = 20;
+
+/// «Sagas»: colecciones con al menos dos películas en el catálogo; abrir una lleva a la
+/// saga entera (`kind` = `collection`).
+fn sagas_row(conn: &rusqlite::Connection, profile_id: i64, access: reads::ProfileAccess) -> crate::db::Result<Option<BrowseRowResponse>> {
+    let sagas = crate::catalog::collections::saga_row(conn, profile_id, access, SAGAS_ROW_LIMIT)?;
+    if sagas.len() < 2 {
+        return Ok(None);
+    }
+    let items = sagas
+        .into_iter()
+        .map(|saga| BrowseItem {
+            kind: "collection".into(),
+            id: saga.id,
+            series_id: None,
+            clean_title: saga.name,
+            year: None,
+            poster_path: saga.poster_path,
+            subtitle: Some(if saga.watched > 0 {
+                format!("Vistas {} de {}", saga.watched, saga.available)
+            } else {
+                format!("{} películas", saga.available)
+            }),
+            progress: None,
+            is_new: false,
+            rating: None,
+            backdrop_path: saga.backdrop_path,
+            genres: Vec::new(),
+        })
+        .collect();
+    Ok(Some(BrowseRowResponse { key: "sagas".into(), title: "Sagas".into(), style: "poster".into(), items }))
 }
 
 /// Títulos que se ofrecen en «Elige lo que te gusta».

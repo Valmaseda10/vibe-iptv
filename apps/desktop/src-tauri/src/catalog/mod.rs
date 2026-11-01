@@ -1,7 +1,9 @@
 pub mod age;
 pub mod browse;
+pub mod collections;
 pub mod epg;
 pub mod normalize;
+pub mod people;
 pub mod recommendations;
 pub mod sources_rank;
 pub mod sync;

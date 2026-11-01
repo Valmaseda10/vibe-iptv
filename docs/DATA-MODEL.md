@@ -217,6 +217,16 @@ CREATE TABLE watch_time (
   seconds INTEGER NOT NULL, updated_at INTEGER NOT NULL,
   PRIMARY KEY (profile_id, device_id, day, hour, item_kind, item_key)
 );
+
+-- ─────────────── F17: sagas y repartos (migración 032) ───────────────
+-- movies.collection_id y movies/series.credits_checked_at; si cambia el tmdb_id de un
+-- título, unos disparadores borran su reparto y su saga para volver a pedirlos.
+CREATE TABLE collections (id INTEGER PRIMARY KEY /* TMDB */, name TEXT, overview TEXT,
+  poster_path TEXT, backdrop_path TEXT, parts_json TEXT, parts_fetched_at INTEGER);
+CREATE TABLE people (id INTEGER PRIMARY KEY /* TMDB */, name TEXT, profile_path TEXT, department TEXT);
+CREATE TABLE credits (item_kind TEXT /* movie | series */, item_id INTEGER, person_id INTEGER,
+  role TEXT /* cast | director | creator */, character TEXT, ord INTEGER,
+  PRIMARY KEY (item_kind, item_id, person_id, role));
 ```
 
 ---
