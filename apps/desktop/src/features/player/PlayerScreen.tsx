@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { failoverNotice, nextUntriedSource, sourceLabel } from "./movieSources";
+import { failoverNotice, nextUntriedSource, reportSlowSource, slowNotice, sourceLabel, type PlaySource } from "./movieSources";
+import { useSlowSource } from "./useSlowSource";
 import { useNavigate } from "@tanstack/react-router";
-import { keepPreviousData, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiGetOrNull, apiPost, useApiBase } from "../../lib/api-client";
 import { AUDIO_PASSTHROUGH } from "../../lib/codecSupport";
 import { useActiveProfile } from "../../lib/activeProfile";
@@ -9,6 +10,7 @@ import type {
   ChannelSummary,
   ChannelsPage,
   EpgNowNextResponse,
+  EpisodeSourceSummary,
   MovieDetailResponse,
   PlaybackProgressResponse,
   PlaybackTierResponse,
@@ -44,6 +46,8 @@ type PlayerScreenProps = {
 
 const CONTROLS_HIDE_DELAY_MS = 3_000;
 const PROGRESS_SAVE_INTERVAL_MS = 10_000;
+/** Cada cuánto se avisa de que se sigue viendo el directo (tiempo visto, F17). */
+const WATCHING_INTERVAL_MS = 30_000;
 const NEXT_EPISODE_TRIGGER_SECONDS = 15;
 const NEXT_EPISODE_COUNTDOWN_SECONDS = 10;
 const RESUME_MIN_SECONDS = 5;
@@ -157,6 +161,14 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
     queryKey: ["player-series", search.seriesId, profileId],
     queryFn: () => apiGetOrNull<SeriesDetailResponse>(`/api/series/${search.seriesId}?profile_id=${profileId}`),
     enabled: kind === "episode" && Boolean(search.seriesId) && profileId !== null,
+  });
+  // Fuentes del episodio (F17): el mismo episodio en otras entradas de la serie, ya
+  // ordenadas por el núcleo. Sin pedir nada al proveedor al abrirlo.
+  const episodeSourcesQuery = useQuery({
+    queryKey: ["player-episode-sources", itemId, profileId],
+    queryFn: () => apiGetOrNull<EpisodeSourceSummary[]>(`/api/episodes/${itemId}/sources?profile_id=${profileId}`),
+    enabled: kind === "episode" && profileId !== null,
+    staleTime: 5 * 60_000,
   });
   const channelEpgQuery = useQuery({
     queryKey: ["player-epg-now", itemId],
@@ -416,31 +428,45 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
   // se reintenta solo unas pocas veces (ver `MAX_RECONNECT_ATTEMPTS`) forzando un
   // remontaje del `<video>` con la misma URL, salvo que el motivo sea de los que no se
   // arreglan reintentando (`DEFINITIVE_ERROR_STATUSES`).
-  // Fuentes de la película: se cambia a mano abajo y, si una no carga, se prueba sola la
-  // siguiente desde el mismo punto (cada una una vez).
-  const movieSources = useMemo(() => (kind === "movie" ? (movieQuery.data?.sources ?? []) : []), [kind, movieQuery.data]);
-  const activeSourceId = search.source ?? movieSources[0]?.id ?? null;
-  const activeSourceIndex = Math.max(0, movieSources.findIndex((source) => source.id === activeSourceId));
+  // Fuentes de la película o del episodio: se cambia a mano abajo y, si una no carga o va
+  // lenta, se prueba sola la siguiente desde el mismo punto (cada una una vez; por
+  // lentitud, una sola vez y nunca tras elegir a mano). Igual en el iPhone.
+  const playSources = useMemo<PlaySource[]>(
+    () => (kind === "movie" ? (movieQuery.data?.sources ?? []) : kind === "episode" ? (episodeSourcesQuery.data ?? []) : []),
+    [kind, movieQuery.data, episodeSourcesQuery.data],
+  );
+  const activeSourceId = search.source ?? playSources[0]?.id ?? null;
+  const activeSourceIndex = Math.max(0, playSources.findIndex((source) => source.id === activeSourceId));
   const triedSourcesRef = useRef<Set<number>>(new Set());
+  const manualSourceRef = useRef(false);
+  const slowSwitchUsedRef = useRef(false);
+  const fetchedEpisodeSourcesRef = useRef(false);
   useEffect(() => {
     triedSourcesRef.current = new Set();
+    manualSourceRef.current = false;
+    slowSwitchUsedRef.current = false;
+    fetchedEpisodeSourcesRef.current = false;
   }, [kind, itemId]);
-  const [sourceNotice, setSourceNotice] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+  // `backTo`: la fuente de antes, para «Volver» tras cambiar por lentitud.
+  const [sourceNotice, setSourceNotice] = useState<{ text: string; backTo: number | null } | null>(null);
   useEffect(() => {
     if (!sourceNotice) return;
-    const timer = window.setTimeout(() => setSourceNotice(null), 5000);
+    const timer = window.setTimeout(() => setSourceNotice(null), sourceNotice.backTo === null ? 5000 : 10_000);
     return () => window.clearTimeout(timer);
   }, [sourceNotice]);
   const switchSource = useCallback(
-    (index: number, auto: boolean) => {
-      const target = movieSources[index];
+    (index: number, auto: boolean, slow = false, sources: PlaySource[] = playSources) => {
+      const target = sources[index];
       if (!target || target.id === activeSourceId) return;
-      if (auto) setSourceNotice(failoverNotice(activeSourceIndex, index));
+      if (!auto) manualSourceRef.current = true;
+      if (auto) setSourceNotice(slow ? { text: slowNotice(activeSourceIndex, index), backTo: activeSourceIndex } : { text: failoverNotice(activeSourceIndex, index), backTo: null });
+      else setSourceNotice(null);
       setAppliedStart(Math.floor(latestRef.current.displayCurrentTime));
       setVideoCurrentTime(0);
       onNavigate({ kind, id, search: { ...search, source: target.id } }, { replace: true });
     },
-    [movieSources, activeSourceId, activeSourceIndex, onNavigate, kind, id, search],
+    [playSources, activeSourceId, activeSourceIndex, onNavigate, kind, id, search],
   );
 
   const handleVideoError = useCallback(async () => {
@@ -463,12 +489,24 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
     }
     if (currentStreamPathRef.current !== failedPath) return;
 
-    // Película con más fuentes: antes de rendirse (o de abrir mpv), la siguiente sin probar.
-    if (kind === "movie" && movieSources.length > 1) {
+    // Película o episodio con más fuentes: antes de rendirse (o de abrir mpv), la siguiente
+    // sin probar. Un episodio sin otras conocidas pide una vez al proveedor las de las otras
+    // entradas de la serie (como mucho dos peticiones, y solo tras fallar).
+    if (kind === "movie" || kind === "episode") {
       if (activeSourceId != null) triedSourcesRef.current.add(activeSourceId);
-      const nextIndex = nextUntriedSource(movieSources, triedSourcesRef.current);
-      if (nextIndex >= 0) {
-        switchSource(nextIndex, true);
+      let sources = playSources;
+      if (kind === "episode" && nextUntriedSource(sources, triedSourcesRef.current) < 0 && !fetchedEpisodeSourcesRef.current) {
+        fetchedEpisodeSourcesRef.current = true;
+        const fresh = await apiGetOrNull<EpisodeSourceSummary[]>(`/api/episodes/${itemId}/sources?profile_id=${profileId}&fetch=1`).catch(() => null);
+        if (currentStreamPathRef.current !== failedPath) return;
+        if (fresh) {
+          sources = fresh;
+          queryClient.setQueryData(["player-episode-sources", itemId, profileId], fresh);
+        }
+      }
+      const nextIndex = nextUntriedSource(sources, triedSourcesRef.current);
+      if (nextIndex >= 0 && sources.length > 1) {
+        switchSource(nextIndex, true, false, sources);
         return;
       }
     }
@@ -485,7 +523,29 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
     // prometer algo que reproduciría el momento equivocado.
     setNeedsMpv(status === 501 && !isCatchup);
     setErrorMessage(text || "No se pudo reproducir este contenido.");
-  }, [streamUrl, streamPath, isCatchup, kind, itemId, reconnectAttempt, timeshift, movieSources, activeSourceId, switchSource]);
+  }, [streamUrl, streamPath, isCatchup, kind, itemId, profileId, reconnectAttempt, timeshift, playSources, activeSourceId, switchSource, queryClient]);
+
+  // Va lenta (F17): se avisa al núcleo y, una vez, se pasa a la siguiente fuente sin probar.
+  useSlowSource(videoRef, (kind === "movie" || kind === "episode") && Boolean(streamUrl) && resumeReady && !playingInMpv, `${streamPath}::${retryNonce}`, (reason, summary) => {
+    reportSlowSource({ item_kind: kind, item_id: itemId, source: activeSourceId, reason, stalls: summary.stalls, waited_ms: summary.waitedMs });
+    if (slowSwitchUsedRef.current || manualSourceRef.current) return;
+    if (activeSourceId != null) triedSourcesRef.current.add(activeSourceId);
+    const nextIndex = nextUntriedSource(playSources, triedSourcesRef.current);
+    if (nextIndex < 0) return;
+    slowSwitchUsedRef.current = true;
+    switchSource(nextIndex, true, true);
+  });
+
+  // «Sigo viendo» del directo, para el tiempo visto (las películas lo sacan del progreso).
+  useEffect(() => {
+    if (kind !== "channel" || profileId === null) return;
+    const timer = window.setInterval(() => {
+      const video = videoRef.current;
+      if (!video || video.paused) return;
+      apiPost("/api/playback/watching", { profile_id: profileId, item_kind: "channel", item_id: itemId, tz_offset_min: new Date().getTimezoneOffset() }).catch(() => {});
+    }, WATCHING_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [kind, itemId, profileId]);
 
   const launchMpv = useCallback(async () => {
     if (!base || profileId === null) return;
@@ -548,6 +608,7 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
       item_id: itemId,
       position_s: position,
       duration_s: displayDuration ? Math.floor(displayDuration) : null,
+      tz_offset_min: new Date().getTimezoneOffset(),
     }).catch(() => {});
   }, []);
 
@@ -1061,8 +1122,17 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
       )}
 
       {sourceNotice && (
-        <div className="absolute left-1/2 top-6 -translate-x-1/2 rounded-lg bg-black/80 px-4 py-2 text-sm text-neutral-200" role="status">
-          {sourceNotice}
+        <div className="absolute left-1/2 top-6 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-black/80 px-4 py-2 text-sm text-neutral-200" role="status">
+          <span>{sourceNotice.text}</span>
+          {sourceNotice.backTo !== null && (
+            <button
+              type="button"
+              onClick={() => sourceNotice.backTo !== null && switchSource(sourceNotice.backTo, false)}
+              className="rounded bg-white/15 px-2.5 py-1 text-xs font-medium text-white outline-none hover:bg-white/25 focus-visible:ring-2 focus-visible:ring-white/70"
+            >
+              Volver
+            </button>
+          )}
         </div>
       )}
 
@@ -1358,7 +1428,7 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
             </label>
           )}
 
-          {movieSources.length > 1 && (
+          {playSources.length > 1 && (
             <label className="flex items-center gap-1.5 text-xs text-neutral-400">
               <span className="hidden 2xl:inline">Fuente</span>
               <select
@@ -1367,7 +1437,7 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
                 className="max-w-[9rem] truncate rounded bg-black/60 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-2 focus:ring-white/60 2xl:max-w-[12rem]"
                 aria-label="Fuente"
               >
-                {movieSources.map((source, index) => (
+                {playSources.map((source, index) => (
                   <option key={source.id} value={index}>
                     {sourceLabel(source, index)}
                   </option>

@@ -195,6 +195,28 @@ CREATE TABLE probe_cache (
   play_tier   INTEGER NOT NULL,
   probed_at   INTEGER NOT NULL
 );
+
+-- ─────────────── F17: fuentes y tiempo visto (migración 031) ───────────────
+-- Cómo ha ido cada fuente de película o episodio: ordena las fuentes (catalog::sources_rank).
+CREATE TABLE source_health (
+  provider_id INTEGER NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  item_kind TEXT NOT NULL,              -- movie | episode
+  remote_id TEXT NOT NULL,              -- nunca la URL (R5)
+  successes INTEGER, failures INTEGER, slow_reports INTEGER,
+  last_start_ms INTEGER, last_success_at INTEGER, last_failure_at INTEGER, last_slow_at INTEGER,
+  PRIMARY KEY (provider_id, item_kind, remote_id)
+);
+-- Segundos vistos por perfil, aparato, día y hora locales y título («Tu año en VIBE»).
+CREATE TABLE watch_time (
+  profile_id INTEGER NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+  device_id TEXT NOT NULL,              -- app_settings.device_id del aparato que lo vio
+  day TEXT NOT NULL, hour INTEGER NOT NULL,
+  item_kind TEXT NOT NULL,              -- movie | episode | channel
+  item_key TEXT NOT NULL,               -- clave de la nube (reads::item_key_for)
+  title TEXT NOT NULL,                  -- por si el título sale del catálogo
+  seconds INTEGER NOT NULL, updated_at INTEGER NOT NULL,
+  PRIMARY KEY (profile_id, device_id, day, hour, item_kind, item_key)
+);
 ```
 
 ---

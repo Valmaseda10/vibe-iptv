@@ -25,6 +25,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F14 Detalles premium en VOD y perfiles
 - [ ] F15 App de iPhone y iPad (Tauri iOS + VLC, sin Mac ni cuenta de Apple)
 - [ ] F16 Cliente Fire TV (pospuesto: no hay dispositivo a mano para probarlo)
+- [ ] F17 Experiencia premium (PC e iPhone a la vez)
 
 Las fases F11 en adelante se añadieron el 2026-10-15, con las diez primeras ya cerradas.
 Ver la entrada de esa fecha en `docs/DECISIONS.md` para el porqué del orden.
@@ -395,6 +396,35 @@ cuenta Firebase. Interfaz de TV manejada con el mando (flechas, OK, Atrás), que
 admite desde F5. Ya no hay cliente nativo en Kotlin ni API LAN.
 ```
 
+
+---
+
+## F17 — Experiencia premium
+
+Acordada el 2026-11-01. Todo en PC e iPhone/iPad a la vez y con el mismo
+comportamiento: la lógica en el núcleo, las mismas pantallas con su versión de móvil.
+Cada parte acaba con una versión de PC y una de iPhone.
+
+```
+1. Otra fuente automática: si una película o episodio falla o va lenta, la siguiente
+   fuente (primero otro proveedor), una vez por lentitud y con «Volver»; las fuentes se
+   ordenan por cómo han ido. Desde aquí se apunta el tiempo visto por perfil y día.
+2. Sagas (TMDB collections, en orden, lo visto marcado, «Siguiente» al acabar) y fichas
+   de actores y directores con lo suyo en el catálogo; actores en la búsqueda.
+3. Deportes desde la guía ya guardada: hoy, mañana y la semana, el mismo partido en
+   varios canales junto. «Mis equipos» por perfil (equipos y competiciones) que avisan
+   solos; los partidos importantes salen en la portada de Inicio (como Movistar Plus).
+   Recordatorios como avisos del sistema y con la cuenta.
+4. Avisos de episodios nuevos de las series seguidas, activables a mano en cada aparato
+   y perfil (apagados de serie); en el iPhone, en segundo plano si iOS lo permite.
+5. «Tu año en VIBE» por perfil, con el tiempo visto de todos sus aparatos: tarjeta en
+   Inicio del 1 de diciembre al 15 de enero, «Lo que llevas de año» siempre en el perfil.
+6. Transiciones entre pantallas y siluetas de carga en todas las pantallas.
+
+Criterio de aceptación: con el proveedor falso, una película con una fuente lenta cambia
+sola sin abrir nunca dos conexiones; un partido de un equipo seguido sale en la portada y
+avisa en el iPhone y en el PC; «Tu año» de un perfil suma lo visto en ambos.
+```
 ---
 
 ## Cómo repartir el trabajo

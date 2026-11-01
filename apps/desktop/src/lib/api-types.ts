@@ -155,6 +155,12 @@ export type EpgSearchResult = { channel: ChannelSummary, title: string, subtitle
  */
 export type EpgSyncSummary = { imported: number, channels_without_epg: number, };
 
+/**
+ * Una fuente de un episodio (F17): el mismo episodio en otra entrada de la serie. `id`
+ * es el que se pide como `?source=` en `/stream/episode/:id`.
+ */
+export type EpisodeSourceSummary = { id: number, provider_id: number, quality: string | null, language: string | null, };
+
 export type EpisodeSummary = { id: number, series_source_id: number, season: number, number: number, title: string | null, overview: string | null, still_path: string | null, duration_s: number | null, 
 /**
  * Checkmark de "visto" (F "premium") — se rellena aparte en `get_series_detail`, no
@@ -370,6 +376,11 @@ current_source: number | null,
  */
 notice: string | null, 
 /**
+ * Con el aviso, un botón «Volver» que elige esta fuente de `sources` (tras cambiar
+ * solo porque una iba lenta, F17). Lo pulsado llega como [`NativePlayerEvent::Source`].
+ */
+notice_source: number | null, 
+/**
  * Listas que se pueden elegir arriba de la lista de canales del directo: todas,
  * «★ Favoritos» y cada categoría. Vacío fuera del directo.
  */
@@ -382,11 +393,16 @@ current_category: string | null, };
 /**
  * Lo que cuenta el reproductor nativo.
  */
-export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, } | { "type": "subtitle_style", style: SubtitleStyle, } | { "type": "source", index: number, } | { "type": "category", id: string, } | { "type": "minimized" } | { "type": "expanded" };
+export type NativePlayerEvent = { "type": "progress", position_s: number, duration_s: number | null, id: number | null, } | { "type": "closed", position_s: number, duration_s: number | null, ended: boolean, id: number | null, } | { "type": "zap", direction: number, } | { "type": "error", message: string, } | { "type": "switched", id: number, } | { "type": "tracks", audio: string | null, subtitle: string | null, } | { "type": "subtitle_style", style: SubtitleStyle, } | { "type": "source", index: number, } | { "type": "category", id: string, } | { "type": "stall", ms: number, ongoing: boolean, } | { "type": "start_wait", ms: number, } | { "type": "watching", id: number | null, } | { "type": "minimized" } | { "type": "expanded" };
 
 export type NextEpisodeItem = { series_id: number, series_title: string, poster_path: string | null, episode_id: number, season: number, number: number, episode_title: string | null, still_path: string | null, };
 
-export type PlaybackProgressInput = { profile_id: number, item_kind: string, item_id: number, position_s: number, duration_s: number | null, };
+export type PlaybackProgressInput = { profile_id: number, item_kind: string, item_id: number, position_s: number, duration_s: number | null, 
+/**
+ * `Date.getTimezoneOffset()` del aparato: el tiempo visto se apunta en su hora local
+ * (`catalog::watch_time`). Sin él, en UTC.
+ */
+tz_offset_min?: number, };
 
 export type PlaybackProgressResponse = { position_s: number, duration_s: number | null, finished: boolean, };
 
@@ -526,6 +542,17 @@ current_pin: string | null, };
 
 export type SimilarTitleSummary = { id: number, clean_title: string, year: number | null, poster_path: string | null, };
 
+/**
+ * El reproductor avisa de que una fuente de película o episodio va lenta (F17): tardó
+ * demasiado en arrancar (`slow_start`) o se paró demasiado (`stalls`). Baja esa fuente en
+ * el orden (`catalog::sources_rank`) y queda en el diagnóstico.
+ */
+export type SlowReport = { item_id: number, item_kind: string, source: number | null, reason: string, 
+/**
+ * Parones en la ventana medida y lo que duró el peor, o lo que se esperó al arrancar.
+ */
+stalls: number, waited_ms: number, };
+
 export type StreamFailure = { status: number, message: string, };
 
 export type SubtitleCue = { start: number, end: number, text: string, };
@@ -580,5 +607,11 @@ export type TasteCandidatesResponse = {
  * Sin valoraciones y con menos de tres señales de gusto: conviene preguntarle.
  */
 needed: boolean, items: Array<BrowseItem>, };
+
+/**
+ * «Sigo viendo este canal» (F17): cada medio minuto mientras se ve el directo, para el
+ * tiempo visto (`catalog::watch_time`). Las películas y episodios lo sacan del progreso.
+ */
+export type WatchingInput = { profile_id: number, item_kind: string, item_id: number, tz_offset_min?: number, };
 
 export type XtreamSuggestion = { base_url: string, username: string, password: string, };

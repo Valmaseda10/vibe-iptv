@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::catalog::tmdb::{TmdbClient, TmdbExtras, TMDB_API_KEY_CREDENTIAL_REF};
+use crate::catalog::{sources_rank, watch_time};
 use crate::db::reads::{self, MovieSort};
 use crate::db::{queries, schema, DbError};
 use crate::sources::VodInfo;
@@ -565,6 +566,39 @@ pub struct PlaybackProgressInput {
     pub position_s: i64,
     #[ts(type = "number | null")]
     pub duration_s: Option<i64>,
+    /// `Date.getTimezoneOffset()` del aparato: el tiempo visto se apunta en su hora local
+    /// (`catalog::watch_time`). Sin él, en UTC.
+    #[serde(default)]
+    #[ts(optional)]
+    pub tz_offset_min: Option<i32>,
+}
+
+/// «Sigo viendo este canal» (F17): cada medio minuto mientras se ve el directo, para el
+/// tiempo visto (`catalog::watch_time`). Las películas y episodios lo sacan del progreso.
+#[derive(Deserialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct WatchingInput {
+    #[ts(type = "number")]
+    pub profile_id: i64,
+    pub item_kind: String,
+    #[ts(type = "number")]
+    pub item_id: i64,
+    #[serde(default)]
+    #[ts(optional)]
+    pub tz_offset_min: Option<i32>,
+}
+
+/// Una fuente de un episodio (F17): el mismo episodio en otra entrada de la serie. `id`
+/// es el que se pide como `?source=` en `/stream/episode/:id`.
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct EpisodeSourceSummary {
+    #[ts(type = "number")]
+    pub id: i64,
+    #[ts(type = "number")]
+    pub provider_id: i64,
+    pub quality: Option<String>,
+    pub language: Option<String>,
 }
 
 /// Valoración de un perfil (2026-10-22): `rating` -1 «No es para mí», 1 «Me gusta», 2 «Me
@@ -1605,7 +1639,13 @@ async fn post_playback_progress(State(state): State<CatalogState>, Json(input): 
     }
     let (profile_id, is_channel) = (input.profile_id, input.item_kind == "channel");
     with_db(state.db_path.clone(), move |conn| {
+        let now = crate::db::now_epoch();
+        let previous = watch_time::previous_progress(conn, input.profile_id, &input.item_kind, input.item_id)?;
         reads::upsert_playback_progress(conn, input.profile_id, &input.item_kind, input.item_id, input.position_s, input.duration_s)?;
+        let seconds = watch_time::credit_from_progress(previous, input.position_s, now);
+        if let Err(err) = watch_time::add(conn, input.profile_id, &input.item_kind, input.item_id, seconds, now, input.tz_offset_min.unwrap_or(0)) {
+            tracing::warn!(error = %err, "no se pudo apuntar el tiempo visto");
+        }
         // Se guarda cada 10 s mientras se reproduce: a la nube va agrupado (ver sync::outbox).
         outbox::enqueue_playback(conn, input.profile_id, &input.item_kind, input.item_id, true)
     })
@@ -1616,6 +1656,63 @@ async fn post_playback_progress(State(state): State<CatalogState>, Json(input): 
     }
     engine::wake();
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn post_playback_watching(State(state): State<CatalogState>, Json(input): Json<WatchingInput>) -> Result<StatusCode, ApiError> {
+    if input.item_kind != "channel" {
+        return Err(ApiError::BadRequest("item_kind debe ser channel (lo demás sale del progreso)".to_string()));
+    }
+    let now = crate::db::now_epoch();
+    let seconds = watch_time::credit_from_heartbeat(input.profile_id, input.item_id, now);
+    if seconds > 0 {
+        with_db(state.db_path, move |conn| watch_time::add(conn, input.profile_id, "channel", input.item_id, seconds, now, input.tz_offset_min.unwrap_or(0))).await?;
+    }
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
+struct EpisodeSourcesQuery {
+    profile_id: i64,
+    /// Pedir al proveedor los episodios de las otras entradas de la serie que no se han
+    /// pedido nunca (una petición por entrada, como mucho dos): solo cuando una fuente ya
+    /// ha fallado, nunca al abrir un episodio.
+    #[serde(default)]
+    fetch: bool,
+}
+
+/// Lo más que se pide al proveedor de una vez para buscar otra fuente de un episodio.
+const MAX_EPISODE_SOURCE_FETCHES: usize = 2;
+
+async fn get_episode_sources(
+    State(state): State<CatalogState>,
+    AxumPath(id): AxumPath<i64>,
+    Query(query): Query<EpisodeSourcesQuery>,
+) -> Result<Json<Vec<EpisodeSourceSummary>>, ApiError> {
+    let db_path = state.db_path.clone();
+    let profile_id = query.profile_id;
+    let allowed = with_db(db_path.clone(), move |conn| {
+        let access = reads::profile_access(conn, profile_id)?;
+        reads::item_allowed(conn, "episode", id, access)
+    })
+    .await?;
+    if !allowed {
+        return Err(ApiError::NotForProfile);
+    }
+    if query.fetch {
+        let missing = with_db(db_path.clone(), move |conn| sources_rank::series_sources_without_detail(conn, id)).await?;
+        for (series_source_id, provider_id) in missing.into_iter().take(MAX_EPISODE_SOURCE_FETCHES) {
+            if let Err(err) = refresh_series_detail(db_path.clone(), series_source_id, provider_id).await {
+                tracing::warn!(series_source_id, error = %err, "no se pudieron pedir los episodios de otra fuente de la serie");
+            }
+        }
+    }
+    let sources = with_db(db_path, move |conn| sources_rank::episode_sources(conn, id)).await?;
+    Ok(Json(
+        sources
+            .into_iter()
+            .map(|source| EpisodeSourceSummary { id: source.id, provider_id: source.provider_id, quality: source.quality, language: source.language })
+            .collect(),
+    ))
 }
 
 async fn get_favorites(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<Vec<FavoriteItem>>, ApiError> {
@@ -1816,6 +1913,8 @@ pub fn catalog_router(db_path: PathBuf) -> Router {
         .route("/api/epg/now", get(get_epg_now))
         .route("/api/epg/grid", get(get_epg_grid))
         .route("/api/playback/progress", get(get_playback_progress).post(post_playback_progress).delete(delete_playback_progress))
+        .route("/api/playback/watching", post(post_playback_watching))
+        .route("/api/episodes/:id/sources", get(get_episode_sources))
         .route("/api/playback/episode-watched", post(post_episode_watched))
         .route("/api/playback/movie-watched", post(post_movie_watched))
         .route("/api/playback/season-watched", post(post_season_watched))

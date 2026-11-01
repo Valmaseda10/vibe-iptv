@@ -152,7 +152,7 @@ nivel 2: fMP4 fragmentado) o un error (ver más abajo) si hace falta nivel 3. Pa
 | Parámetro | Para qué |
 |---|---|
 | `profile_id` | Obligatorio. De quién es la sesión (registro de nivel, progreso). |
-| `source=<id>` | Una fuente concreta si la película tiene varias calidades. |
+| `source=<id>` | Una fuente concreta: de la película (`sources[].id`) o del episodio (`/api/episodes/:id/sources`). Sin él, la que mejor ha ido. |
 | `start=<segundos>` | Remux empezando en ese punto: así se busca en VOD de nivel 2. |
 | `audio_track=<n>` | Índice relativo de pista de audio (de `tier.audio_tracks`). |
 | `audio_passthrough=ac3,eac3` | Audio que el cliente decodifica él mismo: se copia en vez de convertirse a AAC. Solo se aceptan `ac3`, `eac3` y `dts`. |
@@ -193,6 +193,23 @@ Mientras la lista empieza en su primer trozo (`#EXT-X-MEDIA-SEQUENCE:0`, los pri
 30 min), sus segundos son los mismos que los del directo: pausar en el segundo 120 del
 directo es seguir en el 120 de la grabación. Después, solo vale contar respecto al
 borde de la lista. MP2/MP3 llegan como AAC en la grabación (MSE no los acepta).
+
+### Otra fuente automática (F17)
+
+Las fuentes de una película (`/api/movies/:id` → `sources`) y de un episodio llegan ya
+ordenadas: primero la que mejor ha ido (`catalog::sources_rank`). Una que acaba de fallar
+o de ir lenta baja al final, y también las de un proveedor que está fallando ahora.
+
+- `GET /api/episodes/:id/sources?profile_id=&fetch=` → `[{ id, provider_id, quality,
+  language }]`: el mismo episodio (temporada y número) en las otras entradas de la serie,
+  el suyo incluido. `id` se pide como `?source=` en `/stream/episode/:id`. Con `fetch=1`
+  pide antes al proveedor los episodios de las entradas que no se han pedido nunca (como
+  mucho dos peticiones): solo tras un fallo, nunca al abrir.
+- `POST /api/playback/slow` con `{ item_kind, item_id, source, reason, stalls,
+  waited_ms }`: el reproductor avisa de que esa fuente va lenta (`slow_start`: no empezó a
+  verse en 20 s; `stalls`: un parón de 10 s o tres de más de 1,5 s en dos minutos). La
+  misma regla en el PC y en el iPhone (`movieSources.ts`); cambia de fuente una vez como
+  mucho y nunca si el usuario la eligió a mano.
 
 ### `GET /api/playback/last-error/:kind/:id`
 Por qué falló el último intento de abrir ese stream (`kind` también puede ser
@@ -240,9 +257,13 @@ Mensajes en español, pensados para enseñarse tal cual (ver `server::stream::St
 
 - `GET /api/playback/progress?item_kind=movie&item_id=5` → `{ position_s, duration_s,
   finished }`, o `204` si nunca se ha reproducido.
-- `POST /api/playback/progress` con `{ item_kind, item_id, position_s, duration_s }`.
-  `item_kind` es `movie`, `episode` o `channel` (aunque el directo no llega a guardar
-  progreso real — no tiene "continuar viendo").
+- `POST /api/playback/progress` con `{ item_kind, item_id, position_s, duration_s,
+  tz_offset_min? }`. `item_kind` es `movie`, `episode` o `channel` (aunque el directo no
+  llega a guardar progreso real — no tiene "continuar viendo"). De dos avisos seguidos sale
+  el tiempo visto (`watch_time`, F17), en la hora local del aparato (`tz_offset_min` es
+  `Date.getTimezoneOffset()`).
+- `POST /api/playback/watching` con `{ item_kind: "channel", item_id, tz_offset_min? }`
+  cada 30 s mientras se ve el directo: su tiempo visto.
 
 ---
 

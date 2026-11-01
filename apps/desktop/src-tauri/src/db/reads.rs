@@ -630,7 +630,7 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
         "SELECT id, provider_id, remote_id, quality, language, container, duration_s, video_codec, audio_codec, vod_info_checked_at
          FROM movie_sources WHERE movie_id = ?1",
     )?;
-    let sources = stmt
+    let mut sources = stmt
         .query_map(params![id], |row| {
             Ok(MovieSourceItem {
                 id: row.get(0)?,
@@ -646,6 +646,8 @@ pub fn get_movie(conn: &Connection, id: i64) -> Result<Option<MovieDetail>> {
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+    // La que mejor ha ido, primero: es la que se abre y la primera de «Fuente» (F17).
+    crate::catalog::sources_rank::rank(conn, "movie", &mut sources, |source| (source.provider_id, source.remote_id.as_str()))?;
 
     Ok(Some(MovieDetail {
         id,
@@ -1064,8 +1066,12 @@ pub struct MovieStreamInfo {
 }
 
 /// Si `source_id` se da, resuelve esa fuente concreta (varias calidades de la misma
-/// película); si no, la primera disponible.
+/// película); si no, la que mejor ha ido (`catalog::sources_rank`).
 pub fn resolve_movie_stream(conn: &Connection, movie_id: i64, source_id: Option<i64>) -> Result<Option<MovieStreamInfo>> {
+    let source_id = match source_id {
+        Some(id) => Some(id),
+        None => crate::catalog::sources_rank::best_movie_source(conn, movie_id)?,
+    };
     let row = if let Some(source_id) = source_id {
         conn.query_row(
             "SELECT provider_id, remote_id, container FROM movie_sources WHERE id = ?1 AND movie_id = ?2",
@@ -1090,7 +1096,15 @@ pub struct EpisodeStreamInfo {
     pub container_extension: Option<String>,
 }
 
-pub fn resolve_episode_stream(conn: &Connection, episode_id: i64) -> Result<Option<EpisodeStreamInfo>> {
+/// El episodio, o el mismo episodio en otra fuente de la serie (`source_id`, F17). Sin
+/// `source_id`, la fuente que mejor ha ido; uno que no es el mismo episodio no vale.
+pub fn resolve_episode_stream(conn: &Connection, episode_id: i64, source_id: Option<i64>) -> Result<Option<EpisodeStreamInfo>> {
+    let sources = crate::catalog::sources_rank::episode_sources(conn, episode_id)?;
+    let episode_id = match source_id {
+        Some(id) if sources.iter().any(|source| source.id == id) => id,
+        Some(_) => return Ok(None),
+        None => sources.first().map(|source| source.id).unwrap_or(episode_id),
+    };
     conn.query_row(
         "SELECT ss.provider_id, e.remote_id, e.container
          FROM episodes e JOIN series_sources ss ON ss.id = e.series_source_id
@@ -3317,12 +3331,12 @@ mod tests {
         upsert_episodes(&conn, series_source_id, &[episode]).unwrap();
         let episode_id: i64 = conn.query_row("SELECT id FROM episodes", [], |r| r.get(0)).unwrap();
 
-        let info = resolve_episode_stream(&conn, episode_id).unwrap().unwrap();
+        let info = resolve_episode_stream(&conn, episode_id, None).unwrap().unwrap();
         assert_eq!(info.provider_id, provider_id);
         assert_eq!(info.remote_id, "9001-1-1");
         assert_eq!(info.container_extension.as_deref(), Some("mp4"));
 
-        assert!(resolve_episode_stream(&conn, 9999).unwrap().is_none());
+        assert!(resolve_episode_stream(&conn, 9999, None).unwrap().is_none());
     }
 
     #[test]

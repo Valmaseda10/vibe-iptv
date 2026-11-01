@@ -21,6 +21,7 @@ use reqwest::Url;
 use serde::Deserialize;
 use tokio_util::io::ReaderStream;
 
+use crate::catalog::sources_rank::{self, StartOutcome};
 use crate::commands::build_source_for_provider;
 use crate::db::{queries, reads, schema, DbError};
 use crate::media::ffmpeg::RemuxOptions;
@@ -124,6 +125,7 @@ pub fn stream_router(state: StreamState) -> Router {
         .route("/api/playback/tier/:kind/:id", get(get_playback_tier))
         .route("/api/playback/binaries", get(get_binaries_status))
         .route("/api/playback/last-error/:kind/:id", get(get_last_error))
+        .route("/api/playback/slow", axum::routing::post(post_slow_report))
         .route("/api/playback/subtitles/:kind/:id", get(get_subtitle_cues))
         .route("/stream/timeshift/channel/:id/:file", get(timeshift::get_file))
         .route("/stream/live-buffer/channel/:id", get(get_live_buffer))
@@ -131,6 +133,47 @@ pub fn stream_router(state: StreamState) -> Router {
         .route("/api/timeshift/:channel_id/keepalive", axum::routing::post(timeshift::post_keepalive))
         .route("/api/timeshift/:channel_id", axum::routing::delete(timeshift::delete_session))
         .with_state(state)
+}
+
+/// El reproductor avisa de que una fuente de película o episodio va lenta (F17): tardó
+/// demasiado en arrancar (`slow_start`) o se paró demasiado (`stalls`). Baja esa fuente en
+/// el orden (`catalog::sources_rank`) y queda en el diagnóstico.
+#[derive(Deserialize, ts_rs::TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct SlowReport {
+    #[ts(type = "number")]
+    pub item_id: i64,
+    pub item_kind: String,
+    #[ts(type = "number | null")]
+    pub source: Option<i64>,
+    pub reason: String,
+    /// Parones en la ventana medida y lo que duró el peor, o lo que se esperó al arrancar.
+    #[ts(type = "number")]
+    pub stalls: u32,
+    #[ts(type = "number")]
+    pub waited_ms: u32,
+}
+
+async fn post_slow_report(State(state): State<StreamState>, axum::Json(report): axum::Json<SlowReport>) -> StatusCode {
+    let Ok(media_kind) = parse_kind(&report.item_kind) else { return StatusCode::BAD_REQUEST };
+    if matches!(media_kind, MediaKind::Live) {
+        return StatusCode::BAD_REQUEST;
+    }
+    tracing::info!(kind = %report.item_kind, id = report.item_id, source = ?report.source, reason = %report.reason, stalls = report.stalls, waited_ms = report.waited_ms, "fuente: va lenta");
+    let db_path = state.db_path.clone();
+    let item_kind = report.item_kind.clone();
+    let result = async {
+        let (provider_id, remote_id, _) = resolve_stream_target(&db_path, media_kind, report.item_id, report.source).await?;
+        with_db(db_path, move |conn| sources_rank::record_slow(conn, provider_id, &item_kind, &remote_id)).await
+    }
+    .await;
+    match result {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(err) => {
+            tracing::warn!(error = %err, "no se pudo apuntar la fuente lenta");
+            err.status()
+        }
+    }
 }
 
 #[derive(serde::Serialize, ts_rs::TS)]
@@ -323,6 +366,12 @@ enum StreamError {
 }
 
 impl StreamError {
+    /// Un fallo de la fuente o de su proveedor (no de la app ni del códec): cuenta para
+    /// ordenar las fuentes (`catalog::sources_rank`).
+    fn is_source_failure(&self) -> bool {
+        matches!(self, StreamError::Rejected(_) | StreamError::Unreachable | StreamError::ProviderDown(_) | StreamError::NoData { .. })
+    }
+
     fn status(&self) -> StatusCode {
         match self {
             StreamError::NotFound | StreamError::ProviderNotFound => StatusCode::NOT_FOUND,
@@ -473,12 +522,27 @@ async fn get_stream(
     headers: HeaderMap,
 ) -> Response {
     let range = headers.get(header::RANGE).cloned();
+    // Una petición que empieza el vídeo (no un salto de VLC a mitad del fichero): su tiempo
+    // es el de arranque de la fuente.
+    let from_start = range.as_ref().and_then(|r| r.to_str().ok()).is_none_or(|r| r.trim() == "bytes=0-");
     let log = Arc::clone(&state.last_errors);
+    let db_path = state.db_path.clone();
     let audio = client_audio(query.audio_passthrough.as_deref());
     let tracks = TrackChoice { audio: query.audio_track, subtitles: query.subtitle_track };
+    let started = std::time::Instant::now();
     let result =
         handle_stream(state, kind.clone(), id, query.profile_id, query.source, query.start, tracks, &audio, query.passthrough, range).await;
     remember_outcome(&log, format!("{kind}:{id}"), result.as_ref());
+    if matches!(kind.as_str(), "movie" | "episode") {
+        let outcome = match &result {
+            Ok(_) => Some(StartOutcome::Started { ms: from_start.then(|| started.elapsed().as_millis() as i64) }),
+            Err(err) if err.is_source_failure() => Some(StartOutcome::Failed),
+            Err(_) => None,
+        };
+        if let Some(outcome) = outcome {
+            record_source_outcome(db_path, &kind, id, query.source, outcome).await;
+        }
+    }
     match result {
         Ok(response) => response,
         Err(err) => {
@@ -665,11 +729,27 @@ async fn resolve_stream_target(
             Ok(reads::resolve_movie_stream(conn, id, source_id)?.map(|m| (m.provider_id, m.remote_id, m.container_extension)))
         }
         MediaKind::Series => {
-            Ok(reads::resolve_episode_stream(conn, id)?.map(|e| (e.provider_id, e.remote_id, e.container_extension)))
+            Ok(reads::resolve_episode_stream(conn, id, source_id)?.map(|e| (e.provider_id, e.remote_id, e.container_extension)))
         }
     })
     .await?;
     target.ok_or(StreamError::NotFound)
+}
+
+/// Apunta cómo fue abrir esta fuente (`catalog::sources_rank`): ordena las fuentes la
+/// próxima vez. No es fatal si falla.
+async fn record_source_outcome(db_path: PathBuf, kind: &str, id: i64, source_id: Option<i64>, outcome: StartOutcome) {
+    let Ok(media_kind) = parse_kind(kind) else { return };
+    let item_kind = kind.to_string();
+    let result = async {
+        let (provider_id, remote_id, _) = resolve_stream_target(&db_path, media_kind, id, source_id).await?;
+        tracing::info!(kind = %item_kind, id, ?source_id, ?outcome, "fuente: arranque");
+        with_db(db_path, move |conn| sources_rank::record_start(conn, provider_id, &item_kind, &remote_id, outcome)).await
+    }
+    .await;
+    if let Err(err) = result {
+        tracing::warn!(error = %err, "no se pudo apuntar cómo fue la fuente");
+    }
 }
 
 /// Registra qué nivel sirvió el ítem (diagnóstico, ver `docs/ARCHITECTURE.md`). No es

@@ -62,6 +62,9 @@ private struct PlayRequest: Decodable {
     let current_source: Int?
     /// Aviso breve al empezar (p. ej. tras cambiar solo de fuente porque una no cargaba).
     let notice: String?
+    /// Con el aviso, un botón «Volver» que elige esta fuente de `sources` (tras cambiar solo
+    /// porque una iba lenta, F17).
+    let notice_source: Int?
     /// Listas que se pueden elegir arriba de la lista de canales (todas, favoritos y cada
     /// categoría) y la que se ve. Vacío fuera del directo.
     let categories: [ListOption]?
@@ -407,6 +410,10 @@ final class VibePlayerController: UIViewController {
     private let spinner = UIActivityIndicatorView(style: .large)
     private let messageLabel = UILabel()
     private let hudLabel = PaddedLabel()
+    /// «Volver» junto al aviso de fuente lenta (F17).
+    private let noticeButton = UIButton(type: .system)
+    private var noticeSourceIndex: Int?
+    private var noticeTimer: Timer?
     private let skipIntroButton = UIButton(type: .system)
     private let nextCard = UIView()
     private let nextTitleLabel = UILabel()
@@ -480,6 +487,15 @@ final class VibePlayerController: UIViewController {
     private var lastRetryAt = Date.distantPast
     /// Los controles se enseñan al empezar a verse cada vídeo (también tras un zapping).
     private var shownForThisMedia = false
+    /// Parones de película o episodio (F17): la interfaz decide con ellos si la fuente va
+    /// lenta, con la misma regla que el PC. Cuándo empezó a abrirse lo que se ve, el último
+    /// salto (esperar a que cargue el punto nuevo no es un parón) y el parón en curso.
+    private var mediaStartedAt = Date()
+    private var lastJumpAt = Date.distantPast
+    private var stallStartedAt: Date?
+    private var stallReported = false
+    private var lastStartWaitSent = Date.distantPast
+    private var lastWatchingSent = Date()
     private var tracksApplied = false
     /// Rellenar la pantalla recortando los bordes, en vez de ver la imagen entera.
     private var fillScreen = false
@@ -564,7 +580,11 @@ final class VibePlayerController: UIViewController {
 
     private func load(_ request: PlayRequest) {
         guard !closed else { return }
-        defer { if let notice = request.notice, !notice.isEmpty { hud(notice, seconds: 4) } }
+        defer {
+            if let notice = request.notice, !notice.isEmpty {
+                if let back = request.notice_source { showNotice(notice, backTo: back) } else { hud(notice, seconds: 4) }
+            }
+        }
         self.request = request
         update(request)
         // Lo que llegó mientras se abría (lista, siguiente episodio...) es más nuevo.
@@ -649,6 +669,8 @@ final class VibePlayerController: UIViewController {
         vodReconnects = 0
         errorRetries = 0
         shownForThisMedia = false
+        mediaStartedAt = Date()
+        lastStartWaitSent = Date()
         tracksApplied = false
         nextDismissed = false
         hideNextCard()
@@ -674,6 +696,8 @@ final class VibePlayerController: UIViewController {
         messageLabel.isHidden = true
         spinner.startAnimating()
 
+        lastJumpAt = Date()
+        stallStartedAt = nil
         let media = VLCMedia(url: url)
         // Directo con menos espera: se nota al cambiar de canal.
         media.addOption(isLive ? ":network-caching=1000" : ":network-caching=1500")
@@ -821,6 +845,15 @@ final class VibePlayerController: UIViewController {
         guard let current = current, !closed else { return }
         writeQaState(open: true)
         followSeek()
+        if current.live {
+            // Sigue viéndose el directo: para el tiempo visto (F17).
+            if player.isPlaying, Date().timeIntervalSince(lastWatchingSent) >= 30 {
+                lastWatchingSent = Date()
+                sendEvent(["type": "watching", "id": current.id ?? NSNull()])
+            }
+        } else {
+            trackSlowness()
+        }
         switch player.state {
         case .opening, .buffering:
             if !player.isPlaying { spinner.startAnimating() } else { spinner.stopAnimating() }
@@ -915,6 +948,36 @@ final class VibePlayerController: UIViewController {
         if Date().timeIntervalSince(lastNowPlaying) >= 2 { updateNowPlaying() }
     }
 
+    /// Cuenta a la interfaz lo que tarda en empezar y cada parón (F17). Un parón se cuenta una
+    /// vez: al acabar, o a los 10 s si sigue.
+    private func trackSlowness() {
+        let now = Date()
+        let waiting = (player.state == .opening || player.state == .buffering) && !player.isPlaying
+        if !shownForThisMedia {
+            if now.timeIntervalSince(lastStartWaitSent) >= 5 {
+                lastStartWaitSent = now
+                sendEvent(["type": "start_wait", "ms": Int(now.timeIntervalSince(mediaStartedAt) * 1000)])
+            }
+            return
+        }
+        if waiting, now.timeIntervalSince(lastJumpAt) >= 3 {
+            guard let started = stallStartedAt else {
+                stallStartedAt = now
+                stallReported = false
+                return
+            }
+            if !stallReported, now.timeIntervalSince(started) >= 10 {
+                stallReported = true
+                sendEvent(["type": "stall", "ms": 10_000, "ongoing": true])
+            }
+        } else if !waiting, let started = stallStartedAt {
+            if !stallReported {
+                sendEvent(["type": "stall", "ms": Int(now.timeIntervalSince(started) * 1000), "ongoing": false])
+            }
+            stallStartedAt = nil
+        }
+    }
+
     private func sendProgress(final: Bool) {
         lastProgressSent = Date()
         let position = final ? (durationSeconds ?? knownDuration ?? progressSeconds) : progressSeconds
@@ -931,6 +994,7 @@ final class VibePlayerController: UIViewController {
         hideTimer?.invalidate()
         sleepTimer?.invalidate()
         nextCountdown?.invalidate()
+        noticeTimer?.invalidate()
         player.stop()
         if let current = current, current.liveBuffer {
             VibePlayerController.releaseLiveBufferWhenStopped(current.url, generation: VibePlayerController.playGeneration)
@@ -1178,6 +1242,7 @@ final class VibePlayerController: UIViewController {
 
     @objc private func skipIntroTapped() {
         guard let end = introEnd else { return }
+        lastJumpAt = Date()
         player.time = VLCTime(int: Int32(end * 1000))
         skipIntroButton.isHidden = true
     }
@@ -1316,6 +1381,7 @@ final class VibePlayerController: UIViewController {
         seekTarget = target
         lastPosition = target
         seekRequestedAt = Date()
+        lastJumpAt = Date()
         seekRetried = false
         player.time = VLCTime(int: Int32(target * 1000))
     }
@@ -1911,6 +1977,17 @@ final class VibePlayerController: UIViewController {
         hudLabel.translatesAutoresizingMaskIntoConstraints = false
         controlsRoot.addSubview(hudLabel)
 
+        noticeButton.setTitle("  Volver  ", for: .normal)
+        noticeButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
+        noticeButton.tintColor = .black
+        noticeButton.backgroundColor = .white
+        noticeButton.layer.cornerRadius = 18
+        noticeButton.isHidden = true
+        noticeButton.accessibilityLabel = "Volver a la fuente de antes"
+        noticeButton.translatesAutoresizingMaskIntoConstraints = false
+        noticeButton.addTarget(self, action: #selector(noticeBackTapped), for: .touchUpInside)
+        controlsRoot.addSubview(noticeButton)
+
         skipIntroButton.setTitle("  Saltar intro  ", for: .normal)
         skipIntroButton.titleLabel?.font = .systemFont(ofSize: 15, weight: .bold)
         skipIntroButton.tintColor = .black
@@ -2006,6 +2083,9 @@ final class VibePlayerController: UIViewController {
             messageLabel.trailingAnchor.constraint(lessThanOrEqualTo: guide.trailingAnchor, constant: -32),
             hudLabel.centerXAnchor.constraint(equalTo: root.centerXAnchor),
             hudLabel.topAnchor.constraint(equalTo: guide.topAnchor, constant: 64),
+            noticeButton.centerXAnchor.constraint(equalTo: root.centerXAnchor),
+            noticeButton.topAnchor.constraint(equalTo: hudLabel.bottomAnchor, constant: 10),
+            noticeButton.heightAnchor.constraint(equalToConstant: 36),
             skipIntroButton.trailingAnchor.constraint(equalTo: guide.trailingAnchor, constant: -24),
             skipIntroButton.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -64),
             skipIntroButton.heightAnchor.constraint(equalToConstant: 44),
@@ -2047,6 +2127,25 @@ final class VibePlayerController: UIViewController {
         showOverlay(autoHide: false)
     }
 
+    /// Aviso con «Volver» (cambio de fuente por lentitud): más tiempo a la vista que un aviso.
+    private func showNotice(_ text: String, backTo index: Int) {
+        noticeSourceIndex = index
+        hud(text, seconds: 10)
+        noticeButton.isHidden = false
+        controlsRoot.bringSubviewToFront(noticeButton)
+        noticeTimer?.invalidate()
+        noticeTimer = Timer.scheduledTimer(withTimeInterval: 10, repeats: false) { [weak self] _ in self?.noticeButton.isHidden = true }
+    }
+
+    @objc private func noticeBackTapped() {
+        noticeTimer?.invalidate()
+        noticeButton.isHidden = true
+        hudLabel.alpha = 0
+        guard let index = noticeSourceIndex else { return }
+        noticeSourceIndex = nil
+        sendEvent(["type": "source", "index": index])
+    }
+
     private func hud(_ text: String, seconds: TimeInterval = 1.2) {
         hudLabel.text = text
         controlsRoot.bringSubviewToFront(hudLabel)
@@ -2076,7 +2175,7 @@ final class VibePlayerController: UIViewController {
         guard !locked else { return }
         overlay.isHidden = false
         controlsRoot.bringSubviewToFront(overlay)
-        for view in [skipIntroButton, nextCard, listPanel, hudLabel, lockButton] as [UIView] { controlsRoot.bringSubviewToFront(view) }
+        for view in [skipIntroButton, nextCard, listPanel, hudLabel, noticeButton, lockButton] as [UIView] { controlsRoot.bringSubviewToFront(view) }
         UIView.animate(withDuration: 0.2) { self.overlay.alpha = 1 }
         hideTimer?.invalidate()
         guard autoHide else { return }

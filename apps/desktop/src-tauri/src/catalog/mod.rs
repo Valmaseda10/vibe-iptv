@@ -3,6 +3,8 @@ pub mod browse;
 pub mod epg;
 pub mod normalize;
 pub mod recommendations;
+pub mod sources_rank;
 pub mod sync;
 pub mod tmdb;
 pub mod trending;
+pub mod watch_time;

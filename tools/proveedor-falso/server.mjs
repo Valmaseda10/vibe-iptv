@@ -156,6 +156,10 @@ const movieSpecs = [
   ["Planeta Tierra II (2016) 4K HEVC", "10", "mkv"], ["Akira (1988)", "12", "mkv"],
   ["Toy Story (1995)", "12", "mp4"], ["Buscando a Nemo (2003)", "12", "mp4"], ["Up (2009) HD", "12", "mkv"],
   ["Del revés (2015)", "12", "mp4"], ["XXX| Película Adulta (2020)", "19", "mp4"],
+  // Dos fuentes de la misma película (F17): la de 1080p llega a menos de la mitad de lo que
+  // hace falta para verla (se para enseguida) y la de 720p va bien. El reproductor tiene que
+  // pasar solo a la segunda.
+  ["Prueba de fuente lenta (2024) 1080p", "10", "mp4"], ["Prueba de fuente lenta (2024) 720p", "10", "mp4"],
 ];
 const movies = movieSpecs.map(([name, category, ext], i) => ({
   num: i + 1,
@@ -262,8 +266,34 @@ function sendJson(res, value) {
   res.end(body);
 }
 
-/** Fichero con soporte de Range, como sirve un panel real las películas. */
-function sendFile(req, res, path, contentType) {
+/** Envía `path` desde `start` hasta `end` a `bytesPerSecond`, salvo los primeros
+ * `fastBytes`, de golpe (como el arranque de un panel que luego no da para más). */
+function sendThrottled(res, path, start, end, bytesPerSecond, fastBytes) {
+  const stream = createReadStream(path, { start, end, highWaterMark: 64 * 1024 });
+  const startedAt = Date.now();
+  let sent = 0;
+  const next = () => {
+    if (sent <= fastBytes) return stream.resume();
+    const due = startedAt + ((sent - fastBytes) / bytesPerSecond) * 1000;
+    stream.pause();
+    setTimeout(() => stream.resume(), Math.max(0, due - Date.now()));
+  };
+  stream.on("data", (chunk) => {
+    sent += chunk.length;
+    if (!res.write(chunk)) {
+      stream.pause();
+      res.once("drain", next);
+      return;
+    }
+    next();
+  });
+  stream.on("end", () => res.end());
+  res.on("close", () => stream.destroy());
+}
+
+/** Fichero con soporte de Range, como sirve un panel real las películas. `slow`: a menos
+ * de la mitad de lo que hace falta para verlo (la fuente lenta de las pruebas). */
+function sendFile(req, res, path, contentType, slow = false) {
   const size = statSync(path).size;
   const range = /bytes=(\d*)-(\d*)/.exec(req.headers.range ?? "");
   if (range) {
@@ -279,10 +309,12 @@ function sendFile(req, res, path, contentType) {
       return;
     }
     res.writeHead(206, { "content-type": contentType, "accept-ranges": "bytes", "content-range": `bytes ${start}-${end}/${size}`, "content-length": end - start + 1 });
+    if (slow) return sendThrottled(res, path, start, end, (size / MEDIA.mp4.seconds) * 0.4, 1_500_000);
     createReadStream(path, { start, end }).pipe(res);
     return;
   }
   res.writeHead(200, { "content-type": contentType, "accept-ranges": "bytes", "content-length": size });
+  if (slow) return sendThrottled(res, path, 0, size - 1, (size / MEDIA.mp4.seconds) * 0.4, 1_500_000);
   createReadStream(path).pipe(res);
 }
 
@@ -414,7 +446,8 @@ createServer((req, res) => {
     const movie = movies.find((m) => String(m.stream_id) === vod[2]);
     if (movie && /HEVC/.test(movie.name)) return sendFile(req, res, join(MEDIA_DIR, MEDIA.hevc.file), "video/x-matroska");
     if (movie && /^Akira/.test(movie.name)) return sendFile(req, res, join(MEDIA_DIR, MEDIA.hi10.file), "video/x-matroska");
-    return sendFile(req, res, join(MEDIA_DIR, isMkv ? MEDIA.mkv.file : MEDIA.mp4.file), isMkv ? "video/x-matroska" : "video/mp4");
+    const slow = Boolean(movie && /fuente lenta.*1080p/.test(movie.name));
+    return sendFile(req, res, join(MEDIA_DIR, isMkv ? MEDIA.mkv.file : MEDIA.mp4.file), isMkv ? "video/x-matroska" : "video/mp4", slow);
   }
   res.writeHead(404);
   res.end();

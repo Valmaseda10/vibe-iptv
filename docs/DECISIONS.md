@@ -2054,6 +2054,36 @@ tests), recentrada en cada cambio de canal.
   reconectar. Cada parón queda en el diagnóstico (`/api/diag/stall`). La cola entre ffmpeg y
   el reproductor pasa de 1 MB a 32 MB.
 
+## F17 — Experiencia premium (2026-11-01, en curso)
+
+Acordada con el usuario: otra fuente automática, sagas, actores, «Tu año en VIBE»,
+deportes con «Mis equipos» y el partido en la portada (como Movistar Plus), avisos de
+episodios nuevos (activables a mano) y animaciones; en PC e iPhone a la vez y con el mismo
+comportamiento. Fire TV, más adelante. Decidido con él: el tiempo visto y los
+recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale en Inicio del
+1 de diciembre al 15 de enero y siempre desde el perfil.
+
+- **Parte 1: otra fuente automática.** En su catálogo, 4.226 películas tienen dos fuentes
+  (1080p y 720p) del mismo proveedor; las series también tienen entradas repetidas, pero
+  la app solo pedía los episodios de una. El núcleo apunta cómo arranca cada fuente
+  (`source_health`, migración 031, por `provider_id` y `remote_id`, nunca la URL) y las
+  ordena: una que acaba de fallar o de ir lenta baja al final, y las de un proveedor con
+  dos fallos recientes sin ningún arranque bueno después; a igualdad, el orden de siempre.
+  Es lo que se abre si no se pide fuente, en el PC y en el iPhone. Los episodios tienen
+  fuentes como las películas: el mismo episodio en otra entrada de la serie; tras un fallo
+  sin otra conocida, se piden al proveedor las demás entradas (dos peticiones como mucho).
+  «Va lenta» es una sola regla para los dos reproductores (`movieSources.ts`): sin
+  empezar a verse en 20 s, un parón de 10 s o tres de más de 1,5 s en dos minutos (sin
+  contar lo que tarda en cargar un salto). Entonces pasa una vez a la siguiente fuente desde
+  el mismo punto, con «Volver»; nunca si el usuario eligió fuente a mano. En el iPhone los
+  parones los cuenta VLC (eventos `stall` y `start_wait`). R1: cada cambio pasa por el
+  `StreamGuard` como cualquier apertura.
+- **Tiempo visto desde ya.** «Tu año» necesita datos y se enseña en diciembre, así que se
+  empieza a apuntar en la parte 1 (`watch_time`): por perfil, aparato, día y hora locales y
+  título, con la clave de la nube del título. No hace falta que el reproductor cuente nada:
+  en VOD sale de dos avisos de progreso seguidos (lo que avanzó la posición si no avanzó
+  más que el reloj: un salto no es tiempo visto) y en el directo de un aviso cada 30 s.
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

@@ -34,6 +34,9 @@ usuario `qa`, contraseña `qa`. El puerto se cambia con la variable `PORT`.
     segundo debe verse ("Segundo 30"), así que una captura enseña si van a tiempo;
   - una en H.265/HEVC ("Planeta Tierra II"), que una WebView sin HEVC manda a mpv
     (nivel 3), y una en H.264 de 10 bits ("Akira"), que la WebView2 sí decodifica.
+  - "Prueba de fuente lenta" en dos fuentes: la de 1080p llega a menos de la mitad de lo
+    que hace falta para verla (se para enseguida) y la de 720p va bien. El reproductor
+    tiene que pasar solo a la segunda, con el aviso y «Volver» (F17).
 
 En la consola avisa si en algún momento hay más de una conexión de directo abierta a la
 vez: la app nunca debería abrir dos (regla R1).

@@ -1,5 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { failoverNotice, nextUntriedSource, sourceLabel } from "./movieSources";
+import {
+  failoverNotice,
+  nextUntriedSource,
+  reportSlowSource,
+  SLOW_START_MS,
+  slowNotice,
+  sourceLabel,
+  stallSummary,
+  stallsSaySlow,
+  type PlaySource,
+  type Stall,
+} from "./movieSources";
 import { readSubtitleStyle, saveSubtitleStyle } from "../../lib/subtitleStyle";
 import { useNavigate } from "@tanstack/react-router";
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -12,6 +23,7 @@ import type {
   ChannelSummary,
   ChannelsPage,
   EpgNowNextResponse,
+  EpisodeSourceSummary,
   EpisodeSummary,
   MovieDetailResponse,
   NativeListOption,
@@ -113,6 +125,13 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
     queryKey: ["player-series", search.seriesId, profileId],
     queryFn: () => apiGetOrNull<SeriesDetailResponse>(`/api/series/${search.seriesId}?profile_id=${profileId}`),
     enabled: kind === "episode" && Boolean(search.seriesId) && profileId !== null,
+  });
+  // Fuentes del episodio (F17), igual que en el PC.
+  const episodeSourcesQuery = useQuery({
+    queryKey: ["player-episode-sources", itemId, profileId],
+    queryFn: () => apiGetOrNull<EpisodeSourceSummary[]>(`/api/episodes/${itemId}/sources?profile_id=${profileId}`),
+    enabled: kind === "episode" && profileId !== null,
+    staleTime: 5 * 60_000,
   });
   // Los canales de alrededor del que se ve (nombre, lista y zapping), no la primera página:
   // en listas de miles el canal podía no estar en ella. La ventana da la vuelta por los
@@ -217,7 +236,7 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
     : liveBuffer
       ? channelPath(itemId)
       : kind === "episode"
-        ? episodePath(itemId)
+        ? `${episodePath(itemId)}${search.source ? `&source=${search.source}` : ""}`
         : `/stream/${kind}/${itemId}?profile_id=${profileId}${search.source ? `&source=${search.source}` : ""}&passthrough=true`;
 
   // Lo que el reproductor puede abrir por su cuenta: los canales de la categoría (con lo
@@ -257,28 +276,42 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
       ? { id: nextEpisode.id, title: seriesQuery.data?.clean_title ?? "", subtitle: episodeLabel(nextEpisode), number: null, url: `${base}${episodePath(nextEpisode.id)}` }
       : null;
 
-  // Fuentes de la película (F15): se cambia a mano desde el reproductor y, si una no carga,
-  // se prueba sola la siguiente (cada una una vez).
-  const movieSources = useMemo(() => (kind === "movie" ? (movieQuery.data?.sources ?? []) : []), [kind, movieQuery.data]);
-  const activeSourceId = search.source ?? movieSources[0]?.id ?? null;
-  const activeSourceIndex = Math.max(0, movieSources.findIndex((source) => source.id === activeSourceId));
+  // Fuentes de la película o del episodio (F15, F17): se cambia a mano desde el reproductor
+  // y, si una no carga o va lenta, se prueba sola la siguiente. Las mismas reglas que en el
+  // PC (`movieSources.ts`); los parones los cuenta VLC (`stall`, `start_wait`).
+  const playSources = useMemo<PlaySource[]>(
+    () => (kind === "movie" ? (movieQuery.data?.sources ?? []) : kind === "episode" ? (episodeSourcesQuery.data ?? []) : []),
+    [kind, movieQuery.data, episodeSourcesQuery.data],
+  );
+  const activeSourceId = search.source ?? playSources[0]?.id ?? null;
+  const activeSourceIndex = Math.max(0, playSources.findIndex((source) => source.id === activeSourceId));
   const triedSourcesRef = useRef<Set<number>>(new Set());
   const lastPositionRef = useRef(0);
+  const manualSourceRef = useRef(false);
+  const slowSwitchUsedRef = useRef(false);
+  const fetchedEpisodeSourcesRef = useRef(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // Con el aviso de «va lenta», la fuente a la que vuelve el botón «Volver».
+  const [noticeSource, setNoticeSource] = useState<number | null>(null);
   useEffect(() => {
     triedSourcesRef.current = new Set();
     lastPositionRef.current = 0;
+    manualSourceRef.current = false;
+    slowSwitchUsedRef.current = false;
+    fetchedEpisodeSourcesRef.current = false;
   }, [kind, itemId]);
   const switchSource = useCallback(
-    (index: number, auto: boolean) => {
-      const target = movieSources[index];
-      if (!target || target.id === activeSourceId) return;
-      if (auto) setNotice(failoverNotice(activeSourceIndex, index));
+    (index: number, auto: boolean, slow = false, sources: PlaySource[] = playSources) => {
+      const target = sources[index];
+      if (!target || target.id === activeSourceId || (kind !== "movie" && kind !== "episode")) return;
+      if (!auto) manualSourceRef.current = true;
+      if (auto) setNotice(slow ? slowNotice(activeSourceIndex, index) : failoverNotice(activeSourceIndex, index));
+      setNoticeSource(auto && slow ? activeSourceIndex : null);
       // Sigue en el mismo minuto, con la otra fuente.
       setStartSeconds(Math.floor(lastPositionRef.current));
-      onNavigate({ kind: "movie", id, search: { ...search, source: target.id } }, { replace: true });
+      onNavigate({ kind, id, search: { ...search, source: target.id } }, { replace: true });
     },
-    [movieSources, activeSourceId, activeSourceIndex, onNavigate, id, search],
+    [playSources, activeSourceId, activeSourceIndex, onNavigate, kind, id, search],
   );
 
   const ready = base != null && profileId !== null && startSeconds !== null && (title != null || titleWaitOver);
@@ -312,14 +345,15 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
       preferred_subtitle: tracks.subtitle,
       subtitle_style: readSubtitleStyle(profileId),
       sources:
-        movieSources.length > 1 ? movieSources.map(sourceLabel) : liveBuffer && channelFeeds.length > 1 ? feedLabels(channelFeeds) : [],
-      current_source: movieSources.length > 1 ? activeSourceIndex : liveBuffer && channelFeeds.length > 1 && feedIndex >= 0 ? feedIndex : null,
+        playSources.length > 1 ? playSources.map(sourceLabel) : liveBuffer && channelFeeds.length > 1 ? feedLabels(channelFeeds) : [],
+      current_source: playSources.length > 1 ? activeSourceIndex : liveBuffer && channelFeeds.length > 1 && feedIndex >= 0 ? feedIndex : null,
       notice,
+      notice_source: noticeSource,
       update_only: false,
       categories: listOptions,
       current_category: liveBuffer ? scopeId : null,
     };
-  }, [base, startSeconds, profileId, streamPath, title, subtitle, kind, isCatchup, liveBuffer, items, currentIndex, next, movieSources, activeSourceIndex, notice, channelFeeds, feedIndex, listOptions, scopeId]);
+  }, [base, startSeconds, profileId, streamPath, title, subtitle, kind, isCatchup, liveBuffer, items, currentIndex, next, playSources, activeSourceIndex, notice, noticeSource, channelFeeds, feedIndex, listOptions, scopeId]);
 
   const play = useCallback(() => {
     const request = buildRequest();
@@ -327,6 +361,7 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
     lastRequestRef.current = request;
     setError(null);
     setNotice(null);
+    setNoticeSource(null);
     invoke("native_player_play", { request }).catch((err: unknown) => setError(errorMessage(err)));
   }, [buildRequest]);
 
@@ -385,9 +420,9 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
           ? { profileId, kind: "series", id: Number(search.seriesId), title: seriesQuery.data.clean_title, posterPath: seriesQuery.data.poster_path }
           : null;
 
-  const latestRef = useRef({ rateTarget, kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose });
+  const latestRef = useRef({ rateTarget, kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, playSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose, streamPath });
   useEffect(() => {
-    latestRef.current = { rateTarget, kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, movieSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose };
+    latestRef.current = { rateTarget, kind, itemId, profileId, channels: channelsQuery.data?.items, search, scope, listChannelId, goBack, isCatchup, channelPath, episodePath, playSources, activeSourceId, switchSource, switchChannelFeed, mini, onNavigate, onExpand, onClose, streamPath };
   });
 
   useEffect(() => {
@@ -403,7 +438,34 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
         item_id: itemId,
         position_s: Math.floor(position),
         duration_s: duration ? Math.floor(duration) : null,
+        tz_offset_min: new Date().getTimezoneOffset(),
       }).catch(() => {});
+    };
+
+    // Va lenta (F17): se avisa al núcleo y, una vez por reproducción, se pasa a la siguiente
+    // fuente sin probar; nunca si el usuario eligió fuente a mano.
+    const onSlow = (reason: "slow_start" | "stalls", summary: { stalls: number; waitedMs: number }) => {
+      const latest = latestRef.current;
+      if (slowState.path === latest.streamPath && slowState.fired) return;
+      slowState.fired = true;
+      if (latest.kind !== "movie" && latest.kind !== "episode") return;
+      reportSlowSource({ item_kind: latest.kind, item_id: latest.itemId, source: latest.activeSourceId, reason, stalls: summary.stalls, waited_ms: summary.waitedMs });
+      if (slowSwitchUsedRef.current || manualSourceRef.current) return;
+      if (latest.activeSourceId != null) triedSourcesRef.current.add(latest.activeSourceId);
+      const nextIndex = nextUntriedSource(latest.playSources, triedSourcesRef.current);
+      if (nextIndex < 0) return;
+      slowSwitchUsedRef.current = true;
+      latest.switchSource(nextIndex, true, true);
+    };
+    // Parones de lo que se reproduce ahora (se vacían al cambiar de vídeo).
+    const slowState: { path: string; fired: boolean; stalls: Stall[] } = { path: "", fired: false, stalls: [] };
+    const slowFor = (path: string) => {
+      if (slowState.path !== path) {
+        slowState.path = path;
+        slowState.fired = false;
+        slowState.stalls = [];
+      }
+      return slowState;
     };
 
     const unlisten = listen<NativePlayerEvent>("native-player", ({ payload }) => {
@@ -416,6 +478,22 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
         case "source":
           if (latest.kind === "channel") latest.switchChannelFeed(payload.index);
           else latest.switchSource(payload.index, false);
+          break;
+        case "stall": {
+          const state = slowFor(latest.streamPath);
+          const now = performance.now();
+          state.stalls.push({ at: now, ms: payload.ms });
+          if (stallsSaySlow(state.stalls, now)) onSlow("stalls", stallSummary(state.stalls, now));
+          break;
+        }
+        case "start_wait":
+          slowFor(latest.streamPath);
+          if (payload.ms >= SLOW_START_MS) onSlow("slow_start", { stalls: 0, waitedMs: payload.ms });
+          break;
+        case "watching":
+          if (latest.kind === "channel" && latest.profileId !== null) {
+            apiPost("/api/playback/watching", { profile_id: latest.profileId, item_kind: "channel", item_id: payload.id ?? latest.itemId, tz_offset_min: new Date().getTimezoneOffset() }).catch(() => {});
+          }
           break;
         case "category":
           setListScope(payload.id === FAVORITES_SCOPE ? { favorites: true } : payload.id ? { categoryId: payload.id } : {});
@@ -490,12 +568,30 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
           break;
         }
         case "error": {
-          // Película con más fuentes: se prueba la siguiente sin probar, desde el mismo punto.
-          if (latest.kind === "movie" && latest.movieSources.length > 1) {
+          // Película o episodio con más fuentes: se prueba la siguiente sin probar, desde el
+          // mismo punto. Un episodio sin otras conocidas pide antes una vez las de las otras
+          // entradas de la serie (como en el PC).
+          if (latest.kind === "movie" || latest.kind === "episode") {
             if (latest.activeSourceId != null) triedSourcesRef.current.add(latest.activeSourceId);
-            const nextIndex = nextUntriedSource(latest.movieSources, triedSourcesRef.current);
-            if (nextIndex >= 0) {
+            const nextIndex = nextUntriedSource(latest.playSources, triedSourcesRef.current);
+            if (nextIndex >= 0 && latest.playSources.length > 1) {
               latest.switchSource(nextIndex, true);
+              break;
+            }
+            if (latest.kind === "episode" && !fetchedEpisodeSourcesRef.current) {
+              fetchedEpisodeSourcesRef.current = true;
+              const failedPath = latest.streamPath;
+              const message = payload.message;
+              apiGetOrNull<EpisodeSourceSummary[]>(`/api/episodes/${latest.itemId}/sources?profile_id=${latest.profileId}&fetch=1`)
+                .then((fresh) => {
+                  const now = latestRef.current;
+                  if (!fresh || now.streamPath !== failedPath) return;
+                  queryClient.setQueryData(["player-episode-sources", now.itemId, now.profileId], fresh);
+                  const index = nextUntriedSource(fresh, triedSourcesRef.current);
+                  if (index >= 0 && fresh.length > 1) now.switchSource(index, true, false, fresh);
+                  else setError(message);
+                })
+                .catch(() => setError(message));
               break;
             }
           }
