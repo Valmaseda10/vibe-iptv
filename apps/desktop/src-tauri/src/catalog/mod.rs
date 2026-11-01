@@ -12,3 +12,4 @@ pub mod sync;
 pub mod tmdb;
 pub mod trending;
 pub mod watch_time;
+pub mod year_review;

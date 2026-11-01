@@ -241,6 +241,22 @@ html.ios body {
     transform: none;
   }
 }
+/* «Tu año en VIBE»: cada pantalla entra subiendo un poco. */
+@keyframes year-slide {
+  from {
+    opacity: 0;
+    transform: translateY(18px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.year-slide {
+  animation: year-slide 600ms cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+
 .hero-fade {
   animation: hero-fade 700ms ease-out both;
 }

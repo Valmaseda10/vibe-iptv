@@ -738,3 +738,29 @@ needed: boolean, items: Array<BrowseItem>, };
 export type WatchingInput = { profile_id: number, item_kind: string, item_id: number, tz_offset_min?: number, };
 
 export type XtreamSuggestion = { base_url: string, username: string, password: string, };
+
+/**
+ * «Tu año en VIBE» de un perfil (F17).
+ */
+export type YearReviewResponse = { year: number, total_seconds: number, 
+/**
+ * De lo anterior a que se apuntara el tiempo visto: estimado por lo terminado.
+ */
+estimated_seconds: number, movie_seconds: number, series_seconds: number, live_seconds: number, movies_watched: number, episodes_watched: number, days_watched: number, longest_streak: number, busiest_day: string | null, busiest_day_seconds: number | null, favorite_hour: number | null, 
+/**
+ * 0 lunes … 6 domingo.
+ */
+favorite_weekday: number | null, top_series: Array<YearTitleResponse>, top_movies: Array<YearTitleResponse>, top_channels: Array<YearTitleResponse>, top_genres: Array<string>, first_title: YearTitleResponse | null, };
+
+/**
+ * Un título de «Tu año».
+ */
+export type YearTitleResponse = { 
+/**
+ * `movie`, `series` o `channel`.
+ */
+kind: string, title: string, seconds: number, 
+/**
+ * En el catálogo de este aparato (para abrirlo y su portada).
+ */
+id: number | null, poster_path: string | null, };

@@ -127,6 +127,13 @@ mismo; terminado, el siguiente; tras el último o sin nada visto, el primero.
   quien sale en la guía de la semana), con `followed`.
 - Los recordatorios (`/api/reminders`) viajan ya con la cuenta.
 
+### Tu año en VIBE (F17)
+
+- `GET /api/year-review?profile_id=&year=` → horas (total, películas, series, directo y
+  `estimated_seconds`), títulos vistos, días, racha, día más intenso, hora y día de la
+  semana favoritos, `top_series`, `top_movies`, `top_channels` (`{ kind, title, seconds,
+  id, poster_path }`), `top_genres` y `first_title`. Suma todos los aparatos del perfil.
+
 ### `GET /api/search?q=&profile_id=`
 Búsqueda instantánea (FTS5). `{ channels: [], movies: [], series: [] }`, cada uno hasta
 20 resultados. `q` vacío o solo símbolos da listas vacías, no error. Lo que el perfil no

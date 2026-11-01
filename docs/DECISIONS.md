@@ -2133,6 +2133,16 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   serie del proveedor de pruebas con el mismo nombre que una del catálogo de verdad se
   juntaba con ella y la app pedía su ficha al proveedor de verdad (tres peticiones, que
   rechazó por el país): la serie de pruebas tiene ahora un nombre que no existe fuera.
+- **Parte 5: «Tu año en VIBE».** Por perfil (decidido con el usuario), sumando todos sus
+  aparatos: el tiempo visto viaja con la cuenta como un documento por perfil, aparato y
+  día (`watch_time`, migración 036 amplía la cola), agrupado (sube como mucho cada 10 min);
+  al bajarlo se guarda aparte del de este aparato y se suma (una prueba de dos aparatos lo
+  cubre, también que volver a bajarlo no lo cuente dos veces). Lo de antes de noviembre
+  de 2026 se estima con lo terminado (su duración, hasta 4 h) y la pantalla lo dice.
+  Pantalla a pantalla como una historia: horas y en qué, serie del año, películas,
+  género, tu momento (hora, día de la semana, racha, día más intenso), directo y un
+  resumen. Tarjeta en Inicio del 1 de diciembre al 15 de enero (en enero, el año que
+  acaba de terminar); siempre desde el menú del perfil (PC) y «Más» (iPhone).
 
 ## Deuda técnica conocida desde el diseño
 

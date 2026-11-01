@@ -56,10 +56,12 @@ pub enum Collection {
     SportFollows,
     /// Recordatorios de programas del directo (F17).
     Reminders,
+    /// Tiempo visto por perfil, aparato y día: «Tu año en VIBE» (F17).
+    WatchTime,
 }
 
 impl Collection {
-    pub const ALL: [Collection; 7] = [
+    pub const ALL: [Collection; 8] = [
         Collection::Profiles,
         Collection::Favorites,
         Collection::Playback,
@@ -67,6 +69,7 @@ impl Collection {
         Collection::Settings,
         Collection::SportFollows,
         Collection::Reminders,
+        Collection::WatchTime,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -78,6 +81,7 @@ impl Collection {
             Collection::Settings => "settings",
             Collection::SportFollows => "sport_follows",
             Collection::Reminders => "reminders",
+            Collection::WatchTime => "watch_time",
         }
     }
 }
@@ -165,6 +169,19 @@ pub struct RemoteReminder {
     pub deleted: bool,
 }
 
+/// Lo visto por un perfil en un aparato en un día (F17). `entries` es JSON: hora, tipo,
+/// clave del título, nombre y segundos (`[{"h":22,"k":"movie","key":"…","t":"…","s":3600}]`).
+/// Cada aparato escribe solo los suyos; al bajarlos se guardan aparte y se suman.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RemoteWatchDay {
+    pub profile_id: String,
+    pub device_id: String,
+    pub day: String,
+    pub entries: String,
+    pub updated_at: i64,
+    pub deleted: bool,
+}
+
 /// Un documento de la nube. Los borrados viajan como documentos con `deleted = true`
 /// (borrado lógico): un borrado de verdad no aparecería en la bajada incremental y el
 /// otro dispositivo nunca se enteraría.
@@ -178,6 +195,7 @@ pub enum RemoteDoc {
     Setting(RemoteSetting),
     SportFollow(RemoteSportFollow),
     Reminder(RemoteReminder),
+    WatchDay(RemoteWatchDay),
 }
 
 impl RemoteDoc {
@@ -190,6 +208,7 @@ impl RemoteDoc {
             RemoteDoc::Setting(_) => Collection::Settings,
             RemoteDoc::SportFollow(_) => Collection::SportFollows,
             RemoteDoc::Reminder(_) => Collection::Reminders,
+            RemoteDoc::WatchDay(_) => Collection::WatchTime,
         }
     }
 
@@ -204,6 +223,7 @@ impl RemoteDoc {
             RemoteDoc::Setting(s) => Self::setting_target(&s.key),
             RemoteDoc::SportFollow(f) => Self::sport_follow_target(&f.profile_id, &f.follow_kind, &f.key),
             RemoteDoc::Reminder(r) => Self::reminder_target(&r.profile_id, &r.channel_key, r.start_ts),
+            RemoteDoc::WatchDay(w) => Self::watch_day_target(&w.profile_id, &w.device_id, &w.day),
         }
     }
 
@@ -233,6 +253,10 @@ impl RemoteDoc {
 
     pub fn reminder_target(profile_id: &str, channel_key: &str, start_ts: i64) -> String {
         format!("reminder:{profile_id}:{channel_key}:{start_ts}")
+    }
+
+    pub fn watch_day_target(profile_id: &str, device_id: &str, day: &str) -> String {
+        format!("watch:{profile_id}:{device_id}:{day}")
     }
 
     /// Id del documento en la nube. Los perfiles usan su propio id; favoritos y progreso

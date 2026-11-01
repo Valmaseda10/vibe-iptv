@@ -9,7 +9,7 @@
 use rand::RngExt;
 use rusqlite::Connection;
 
-use super::backend::{RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteReminder, RemoteSetting, RemoteSportFollow};
+use super::backend::{RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteReminder, RemoteSetting, RemoteSportFollow, RemoteWatchDay};
 use crate::db::{cloud, now_epoch, queries, reads, Result};
 
 /// El progreso se guarda cada 10 s mientras se reproduce; a la nube basta con mandarlo
@@ -135,6 +135,19 @@ pub fn enqueue_sport_follow(conn: &Connection, profile_id: i64, kind: &str, key:
         deleted,
     });
     put(conn, &doc, now)
+}
+
+/// Se agrupan las escrituras del tiempo visto (cada aviso de progreso suma): sube como
+/// mucho una vez cada tanto por perfil y día.
+const WATCH_DAY_DEBOUNCE_S: i64 = 10 * 60;
+
+/// Lo visto hoy (o el día que sea) por un perfil en este aparato (F17).
+pub fn enqueue_watch_day(conn: &Connection, profile_id: i64, device_id: &str, day: &str) -> Result<()> {
+    let Some(profile_remote_id) = ensure_profile_remote_id(conn, profile_id)? else { return Ok(()) };
+    let entries = crate::catalog::watch_time::day_entries_json(conn, profile_id, device_id, day)?;
+    let now = now_epoch();
+    let doc = RemoteDoc::WatchDay(RemoteWatchDay { profile_id: profile_remote_id, device_id: device_id.to_string(), day: day.to_string(), entries, updated_at: now, deleted: false });
+    put(conn, &doc, now + WATCH_DAY_DEBOUNCE_S)
 }
 
 /// Un recordatorio puesto o quitado (F17). Sin clave de canal (canal borrado) no viaja.

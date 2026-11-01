@@ -365,6 +365,13 @@ fn enqueue_local_missing_from_cloud(conn: &Connection, remote: &[RemoteDoc]) -> 
             }
         }
 
+        let device = crate::catalog::watch_time::device_id(conn)?;
+        for day in crate::catalog::watch_time::local_days(conn, profile.id, &device)? {
+            if !by_target.contains_key(&RemoteDoc::watch_day_target(&remote_id, &device, &day)) {
+                outbox::enqueue_watch_day(conn, profile.id, &device, &day)?;
+            }
+        }
+
         for (kind, key, label, created_at) in cloud::sport_follows(conn, profile.id)? {
             let needs_upload = match by_target.get(&RemoteDoc::sport_follow_target(&remote_id, &kind, &key)) {
                 Some(RemoteDoc::SportFollow(r)) => r.deleted && r.updated_at < created_at,
@@ -456,6 +463,13 @@ fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
         }
         RemoteDoc::Setting(s) => {
             super::tmdb_key::apply_remote(conn, s)?;
+        }
+        RemoteDoc::WatchDay(w) => {
+            let Some(profile) = cloud::profile_by_remote_id(conn, &w.profile_id)? else { return Ok(()) };
+            // Lo de este aparato ya está aquí (y es lo más nuevo).
+            if w.device_id != crate::catalog::watch_time::device_id(conn)? {
+                crate::catalog::watch_time::replace_remote_day(conn, profile.id, &w.device_id, &w.day, &w.entries)?;
+            }
         }
         RemoteDoc::SportFollow(f) => {
             let Some(profile) = cloud::profile_by_remote_id(conn, &f.profile_id)? else { return Ok(()) };
@@ -816,6 +830,41 @@ mod tests {
         pull_changes(&phone.db, &cloud, &session).await.unwrap();
         assert!(crate::catalog::sports::follows(&phone.conn(), phone_profile).unwrap().teams.is_empty(), "dejar de seguirlo también viaja");
         assert!(cloud::future_reminders(&phone.conn(), phone_profile, crate::db::now_epoch()).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_year_review_adds_up_what_every_device_watched() {
+        let cloud = MemoryBackend::new();
+        let session = cloud.session();
+        let pc = Device::new("pc-anyo");
+        let phone = Device::new("movil-anyo");
+        initial_merge_if_needed(&pc.db, &cloud, &session).await.unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+        initial_merge_if_needed(&phone.db, &cloud, &session).await.unwrap();
+        flush_everything(&phone, &cloud).await.unwrap();
+        // El móvil ve el perfil del PC como el suyo de la nube.
+        let pc_remote = cloud::sync_profile(&pc.conn(), pc.profile_id).unwrap().and_then(|p| p.remote_id).unwrap();
+        let phone_profile = cloud::profile_by_remote_id(&phone.conn(), &pc_remote).unwrap().unwrap().id;
+
+        let at = 1_793_575_800; // 2026-11-01 23:30 UTC
+        crate::catalog::watch_time::add(&pc.conn(), pc.profile_id, "movie", 10, 3600, at, 0).unwrap();
+        crate::catalog::watch_time::add(&phone.conn(), phone_profile, "movie", 10, 1800, at, 0).unwrap();
+        flush_everything(&pc, &cloud).await.unwrap();
+        flush_everything(&phone, &cloud).await.unwrap();
+        pull_changes(&pc.db, &cloud, &session).await.unwrap();
+        pull_changes(&phone.db, &cloud, &session).await.unwrap();
+
+        let on_pc = crate::catalog::year_review::year_review(&pc.conn(), pc.profile_id, 2026).unwrap();
+        let on_phone = crate::catalog::year_review::year_review(&phone.conn(), phone_profile, 2026).unwrap();
+        assert_eq!(on_pc.total_seconds, 5400, "lo del móvil también cuenta en el PC");
+        assert_eq!(on_phone.total_seconds, 5400, "y al revés");
+
+        // Volver a bajar lo mismo no lo cuenta dos veces.
+        crate::catalog::watch_time::add(&phone.conn(), phone_profile, "movie", 10, 600, at, 0).unwrap();
+        flush_everything(&phone, &cloud).await.unwrap();
+        pull_changes(&pc.db, &cloud, &session).await.unwrap();
+        pull_changes(&pc.db, &cloud, &session).await.unwrap();
+        assert_eq!(crate::catalog::year_review::year_review(&pc.conn(), pc.profile_id, 2026).unwrap().total_seconds, 6000);
     }
 
     #[tokio::test]

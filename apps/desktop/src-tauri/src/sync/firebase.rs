@@ -11,7 +11,7 @@ use reqwest::StatusCode;
 use serde_json::{json, Map, Value};
 
 use super::backend::{
-    Changes, CloudBackend, CloudError, Collection, RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteReminder, RemoteSetting, RemoteSportFollow, Result, Session,
+    Changes, CloudBackend, CloudError, Collection, RemoteDoc, RemoteFavorite, RemotePlayback, RemoteProfile, RemoteRating, RemoteReminder, RemoteSetting, RemoteSportFollow, RemoteWatchDay, Result, Session,
 };
 use crate::util::civil_time::{epoch_to_rfc3339, rfc3339_to_epoch};
 
@@ -412,6 +412,14 @@ fn encode_fields(doc: &RemoteDoc) -> Value {
             fields.insert("updated_at".into(), fs_int(f.updated_at));
             fields.insert("deleted".into(), fs_bool(f.deleted));
         }
+        RemoteDoc::WatchDay(w) => {
+            fields.insert("profile_id".into(), fs_string(&w.profile_id));
+            fields.insert("device_id".into(), fs_string(&w.device_id));
+            fields.insert("day".into(), fs_string(&w.day));
+            fields.insert("entries".into(), fs_string(&w.entries));
+            fields.insert("updated_at".into(), fs_int(w.updated_at));
+            fields.insert("deleted".into(), fs_bool(w.deleted));
+        }
         RemoteDoc::Reminder(r) => {
             fields.insert("profile_id".into(), fs_string(&r.profile_id));
             fields.insert("channel_key".into(), fs_string(&r.channel_key));
@@ -504,6 +512,14 @@ fn decode_doc(collection: Collection, name: &str, document: &Value) -> Option<Re
             follow_kind: fields.string("kind")?,
             key: fields.string("key")?,
             label: fields.string("label").unwrap_or_default(),
+            updated_at,
+            deleted,
+        }),
+        Collection::WatchTime => RemoteDoc::WatchDay(RemoteWatchDay {
+            profile_id: fields.string("profile_id")?,
+            device_id: fields.string("device_id")?,
+            day: fields.string("day")?,
+            entries: fields.string("entries").unwrap_or_else(|| "[]".into()),
             updated_at,
             deleted,
         }),

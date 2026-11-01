@@ -51,6 +51,7 @@ pub fn discover_router(state: DiscoverState) -> Router {
     Router::new()
         .route("/api/collections/:id", get(get_collection))
         .route("/api/people/:id", get(get_person))
+        .route("/api/year-review", get(get_year_review))
         .with_state(state)
 }
 
@@ -255,4 +256,97 @@ async fn get_person(State(state): State<DiscoverState>, AxumPath(id): AxumPath<i
         return Err(DiscoverError::NotFound);
     }
     Ok(Json(response))
+}
+
+/// Un título de «Tu año».
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct YearTitleResponse {
+    /// `movie`, `series` o `channel`.
+    pub kind: String,
+    pub title: String,
+    #[ts(type = "number")]
+    pub seconds: i64,
+    /// En el catálogo de este aparato (para abrirlo y su portada).
+    #[ts(type = "number | null")]
+    pub id: Option<i64>,
+    pub poster_path: Option<String>,
+}
+
+impl From<crate::catalog::year_review::ReviewTitle> for YearTitleResponse {
+    fn from(t: crate::catalog::year_review::ReviewTitle) -> Self {
+        Self { kind: t.kind, title: t.title, seconds: t.seconds, id: t.id, poster_path: t.poster_path }
+    }
+}
+
+/// «Tu año en VIBE» de un perfil (F17).
+#[derive(Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct YearReviewResponse {
+    pub year: i32,
+    #[ts(type = "number")]
+    pub total_seconds: i64,
+    /// De lo anterior a que se apuntara el tiempo visto: estimado por lo terminado.
+    #[ts(type = "number")]
+    pub estimated_seconds: i64,
+    #[ts(type = "number")]
+    pub movie_seconds: i64,
+    #[ts(type = "number")]
+    pub series_seconds: i64,
+    #[ts(type = "number")]
+    pub live_seconds: i64,
+    #[ts(type = "number")]
+    pub movies_watched: i64,
+    #[ts(type = "number")]
+    pub episodes_watched: i64,
+    #[ts(type = "number")]
+    pub days_watched: i64,
+    #[ts(type = "number")]
+    pub longest_streak: i64,
+    pub busiest_day: Option<String>,
+    #[ts(type = "number | null")]
+    pub busiest_day_seconds: Option<i64>,
+    #[ts(type = "number | null")]
+    pub favorite_hour: Option<i64>,
+    /// 0 lunes … 6 domingo.
+    #[ts(type = "number | null")]
+    pub favorite_weekday: Option<i64>,
+    pub top_series: Vec<YearTitleResponse>,
+    pub top_movies: Vec<YearTitleResponse>,
+    pub top_channels: Vec<YearTitleResponse>,
+    pub top_genres: Vec<String>,
+    pub first_title: Option<YearTitleResponse>,
+}
+
+#[derive(Deserialize)]
+struct YearQuery {
+    profile_id: i64,
+    year: Option<i32>,
+}
+
+async fn get_year_review(State(state): State<DiscoverState>, Query(query): Query<YearQuery>) -> Result<Json<YearReviewResponse>, DiscoverError> {
+    let year = query.year.unwrap_or_else(|| crate::catalog::normalize::current_year());
+    let review = with_db(state.db_path, move |conn| crate::catalog::year_review::year_review(conn, query.profile_id, year)).await?;
+    let (busiest_day, busiest_day_seconds) = review.busiest_day.map_or((None, None), |(d, s)| (Some(d), Some(s)));
+    Ok(Json(YearReviewResponse {
+        year: review.year,
+        total_seconds: review.total_seconds,
+        estimated_seconds: review.estimated_seconds,
+        movie_seconds: review.movie_seconds,
+        series_seconds: review.series_seconds,
+        live_seconds: review.live_seconds,
+        movies_watched: review.movies_watched,
+        episodes_watched: review.episodes_watched,
+        days_watched: review.days_watched,
+        longest_streak: review.longest_streak,
+        busiest_day,
+        busiest_day_seconds,
+        favorite_hour: review.favorite_hour,
+        favorite_weekday: review.favorite_weekday,
+        top_series: review.top_series.into_iter().map(Into::into).collect(),
+        top_movies: review.top_movies.into_iter().map(Into::into).collect(),
+        top_channels: review.top_channels.into_iter().map(Into::into).collect(),
+        top_genres: review.top_genres.into_iter().map(|(name, _)| name).collect(),
+        first_title: review.first_title.map(Into::into),
+    }))
 }

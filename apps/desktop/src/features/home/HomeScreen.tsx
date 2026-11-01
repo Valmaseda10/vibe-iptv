@@ -10,6 +10,7 @@ import { ProviderStatusPill } from "./ProviderStatusPill";
 import { FavoriteChannelsRow } from "../../components/FavoriteChannelsRow";
 import { BrowseScreen } from "../browse/BrowseScreen";
 import { TasteOnboarding } from "../profiles/TasteOnboarding";
+import { YearReviewBanner } from "../year/YearReviewBanner";
 
 export function HomeScreen() {
   const navigate = useNavigate();
@@ -85,6 +86,8 @@ export function HomeScreen() {
         before={
           <>
             {isError && <p className="px-4 text-red-400 sm:px-10">No se pudo cargar el inicio. ¿Hay algún proveedor sincronizado?</p>}
+
+            <YearReviewBanner />
 
             {isPending ? (
               <SkeletonRow title="Continuar viendo" />

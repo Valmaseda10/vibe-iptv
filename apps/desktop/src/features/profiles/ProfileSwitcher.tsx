@@ -81,6 +81,14 @@ export function ProfileSwitcher({ collapsed }: { collapsed: boolean }) {
             Cambiar de perfil
           </button>
           <Link
+            to="/year"
+            role="menuitem"
+            className="block w-full rounded px-3 py-2 text-left text-sm text-neutral-200 outline-none hover:bg-neutral-800 focus-visible:bg-neutral-800"
+            onClick={() => setOpen(false)}
+          >
+            Tu año en VIBE
+          </Link>
+          <Link
             to="/settings"
             role="menuitem"
             className="block w-full rounded px-3 py-2 text-left text-sm text-neutral-200 outline-none hover:bg-neutral-800 focus-visible:bg-neutral-800"

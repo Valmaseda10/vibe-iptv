@@ -98,6 +98,46 @@ fn title_for(conn: &Connection, item_kind: &str, item_id: i64) -> Result<Option<
     conn.query_row(sql, params![item_id], |row| row.get(0)).optional().map_err(Into::into)
 }
 
+/// Lo visto por un perfil en un aparato un día, en el JSON de la nube (`RemoteWatchDay`).
+pub fn day_entries_json(conn: &Connection, profile_id: i64, device_id: &str, day: &str) -> Result<String> {
+    let mut stmt = conn.prepare("SELECT hour, item_kind, item_key, title, seconds FROM watch_time WHERE profile_id = ?1 AND device_id = ?2 AND day = ?3")?;
+    let entries = stmt
+        .query_map(params![profile_id, device_id, day], |r| {
+            Ok(serde_json::json!({ "h": r.get::<_, i64>(0)?, "k": r.get::<_, String>(1)?, "key": r.get::<_, String>(2)?, "t": r.get::<_, String>(3)?, "s": r.get::<_, i64>(4)? }))
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(serde_json::Value::Array(entries).to_string())
+}
+
+/// Los días con algo visto por un perfil en este aparato.
+pub fn local_days(conn: &Connection, profile_id: i64, device_id: &str) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT DISTINCT day FROM watch_time WHERE profile_id = ?1 AND device_id = ?2")?;
+    let days = stmt.query_map(params![profile_id, device_id], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(days)
+}
+
+/// Guarda lo que otro aparato vio un día (llegado de la nube): sustituye lo que había.
+pub fn replace_remote_day(conn: &Connection, profile_id: i64, device_id: &str, day: &str, entries_json: &str) -> Result<()> {
+    let entries: Vec<serde_json::Value> = serde_json::from_str(entries_json).unwrap_or_default();
+    conn.execute("DELETE FROM watch_time WHERE profile_id = ?1 AND device_id = ?2 AND day = ?3", params![profile_id, device_id, day])?;
+    let now = now_epoch();
+    for entry in entries {
+        let (Some(hour), Some(kind), Some(key), Some(title), Some(seconds)) =
+            (entry["h"].as_i64(), entry["k"].as_str(), entry["key"].as_str(), entry["t"].as_str(), entry["s"].as_i64())
+        else {
+            continue;
+        };
+        if !(0..24).contains(&hour) || !matches!(kind, "movie" | "episode" | "channel") || seconds <= 0 {
+            continue;
+        }
+        conn.execute(
+            "INSERT OR REPLACE INTO watch_time (profile_id, device_id, day, hour, item_kind, item_key, title, seconds, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![profile_id, device_id, day, hour, kind, key, title, seconds, now],
+        )?;
+    }
+    Ok(())
+}
+
 /// Suma `seconds` vistos de un título a este perfil, en la hora local de `at`.
 pub fn add(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64, seconds: i64, at: i64, tz_offset_min: i32) -> Result<()> {
     if seconds <= 0 {
@@ -115,6 +155,8 @@ pub fn add(conn: &Connection, profile_id: i64, item_kind: &str, item_id: i64, se
             seconds = seconds + excluded.seconds, title = excluded.title, updated_at = excluded.updated_at",
         params![profile_id, device, day, hour, item_kind, item_key, title, seconds, now_epoch()],
     )?;
+    // Viaja con la cuenta (agrupado): «Tu año» suma todos los aparatos del perfil.
+    crate::sync::outbox::enqueue_watch_day(conn, profile_id, &device, &day)?;
     Ok(())
 }
 

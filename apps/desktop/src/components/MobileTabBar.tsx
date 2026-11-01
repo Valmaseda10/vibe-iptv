@@ -17,6 +17,7 @@ const MORE = [
   { to: "/sports", label: "Deportes", icon: TrophyIcon },
   { to: "/guide", label: "Guía", icon: GuideIcon },
   { to: "/favorites", label: "Favoritos", icon: HeartIcon },
+  { to: "/year", label: "Tu año", icon: TrophyIcon },
   { to: "/settings", label: "Ajustes", icon: SettingsIcon },
 ] as const;
 
