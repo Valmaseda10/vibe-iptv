@@ -6,6 +6,7 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import type { PersonResponse } from "../../lib/api-types";
 import { FloatingBackButton } from "../../components/FloatingBackButton";
 import { PosterCard } from "../../components/PosterCard";
+import { SkeletonBlock, SkeletonGrid } from "../../components/Skeleton";
 
 const DEPARTMENTS: Record<string, string> = {
   Acting: "Interpretación",
@@ -126,13 +127,14 @@ function PersonSkeleton() {
   return (
     <div className="flex flex-col gap-8 px-4 pt-20 sm:px-10">
       <div className="flex flex-col items-center gap-6 sm:flex-row">
-        <div className="h-48 w-48 animate-pulse rounded-full bg-neutral-800" />
+        <SkeletonBlock className="h-48 w-48 rounded-full" />
         <div className="flex w-full max-w-xl flex-col gap-3">
-          <div className="h-10 w-72 max-w-full animate-pulse rounded bg-neutral-800" />
-          <div className="h-4 w-60 animate-pulse rounded bg-neutral-800" />
-          <div className="h-20 w-full animate-pulse rounded bg-neutral-900" />
+          <SkeletonBlock className="h-10 w-72 max-w-full" />
+          <SkeletonBlock className="h-4 w-60" />
+          <SkeletonBlock className="h-20 w-full" />
         </div>
       </div>
+      <SkeletonGrid count={8} />
     </div>
   );
 }

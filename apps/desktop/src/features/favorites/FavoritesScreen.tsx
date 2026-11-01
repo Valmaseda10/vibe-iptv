@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { SkeletonGrid } from "../../components/Skeleton";
 import { useNavigate } from "@tanstack/react-router";
 import { apiGet } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
@@ -34,7 +35,7 @@ export function FavoritesScreen() {
     <div className="flex flex-col gap-6 px-4 py-5 sm:gap-8 sm:px-10 sm:py-8">
       <LargeTitle>Favoritos</LargeTitle>
 
-      {isPending && <p className="text-neutral-500">Cargando…</p>}
+      {isPending && <SkeletonGrid count={12} />}
       {!isPending && channels.length === 0 && movies.length === 0 && series.length === 0 && (
         <p className="text-neutral-500">Todavía no has marcado nada como favorito. El corazón de cada tarjeta lo añade aquí.</p>
       )}

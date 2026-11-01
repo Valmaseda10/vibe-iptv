@@ -171,7 +171,7 @@ export function ChannelPanel({ profileId, currentChannelId, currentName, initial
         {channelsQuery.isPending ? (
           <div className="flex flex-col gap-2 px-2 py-2">
             {Array.from({ length: 8 }).map((_, i) => (
-              <div key={i} className="h-12 animate-pulse rounded bg-neutral-800" />
+              <div key={i} className="h-12 skeleton rounded" />
             ))}
           </div>
         ) : groups.length === 0 && !hasMore ? (
@@ -208,7 +208,7 @@ export function ChannelPanel({ profileId, currentChannelId, currentName, initial
                       )}
                     </button>
                   ) : (
-                    <div className="mx-2 mt-2 h-12 animate-pulse rounded bg-neutral-800" />
+                    <div className="mx-2 mt-2 h-12 skeleton rounded" />
                   )}
                 </div>
               );

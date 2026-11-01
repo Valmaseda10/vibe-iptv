@@ -51,6 +51,18 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
   const { data: base } = useApiBase();
   const src = imagePath(base, posterPath, "w342");
   const [loaded, setLoaded] = useState(false);
+  // La portada pulsada crece hasta el fondo de la ficha (transición «vibe-hero», F17).
+  const coverRef = useRef<HTMLDivElement>(null);
+  const open = () => {
+    const cover = coverRef.current;
+    if (cover) {
+      cover.style.viewTransitionName = "vibe-hero";
+      window.setTimeout(() => {
+        cover.style.viewTransitionName = "";
+      }, 800);
+    }
+    onOpen();
+  };
   // Una carátula del proveedor puede no cargar (enlace caído): mejor el título que el
   // icono de imagen rota.
   const [failed, setFailed] = useState(false);
@@ -108,7 +120,7 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
             swallowClick.current = false;
             return;
           }
-          onOpen();
+          open();
         }}
         onPointerDown={(e) => {
           if (e.pointerType !== "touch" || !hasMenu) return;
@@ -133,12 +145,12 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
         onKeyDown={(e) => {
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
-            onOpen();
+            open();
           }
         }}
         className="flex w-full flex-col gap-2 rounded text-left outline-none"
       >
-        <div className="relative aspect-[2/3] w-full overflow-hidden rounded-lg bg-neutral-800 ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] group-focus-visible:scale-[1.03] ios:rounded-xl ios:bg-ios-surface-1 ios:ring-0">
+        <div ref={coverRef} className="relative aspect-[2/3] w-full overflow-hidden rounded-lg bg-neutral-800 ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] group-focus-visible:scale-[1.03] ios:rounded-xl ios:bg-ios-surface-1 ios:ring-0">
           {src && !failed ? (
             <img
               src={src}
@@ -234,8 +246,8 @@ export function PosterCard({ title, posterPath, subtitle, onOpen, gridIndex, fav
 export function PosterCardSkeleton({ fluid }: { fluid?: boolean }) {
   return (
     <div className={`flex flex-col gap-2 ${fluid ? "w-full min-w-0" : "w-40 shrink-0 sm:w-44"}`}>
-      <div className="aspect-[2/3] w-full animate-pulse rounded-lg bg-neutral-800" />
-      <div className="h-4 w-3/4 animate-pulse rounded bg-neutral-800" />
+      <div className="aspect-[2/3] w-full skeleton rounded-lg" />
+      <div className="h-4 w-3/4 skeleton rounded" />
     </div>
   );
 }

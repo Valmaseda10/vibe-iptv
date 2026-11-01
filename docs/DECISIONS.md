@@ -2143,6 +2143,16 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   género, tu momento (hora, día de la semana, racha, día más intenso), directo y un
   resumen. Tarjeta en Inicio del 1 de diciembre al 15 de enero (en enero, el año que
   acaba de terminar); siempre desde el menú del perfil (PC) y «Más» (iPhone).
+- **Parte 6: transiciones y siluetas de carga.** Transiciones del navegador (View
+  Transitions, las del enrutador): fundido corto entre pantallas y, al abrir una ficha
+  desde su portada, la portada crece hasta el fondo de la ficha («vibe-hero»; si la ficha
+  aún no está cargada, solo funde). Nunca al entrar, salir o cambiar de canal en el
+  reproductor (el zapping tiene que ser instantáneo) ni si solo cambian filtros. Solo
+  donde la WebView entiende «tipos» de transición (WebView2 sí; iOS desde 18.2): sin
+  ellos el enrutador las haría siempre, también en el zapping. Siluetas con brillo
+  (`components/Skeleton`) en lugar de «Cargando…» y de los bloques que parpadeaban, en
+  todas las pantallas, y el logotipo latiendo al abrir la app. Con «reducir movimiento»
+  del sistema no hay animaciones.
 
 ## Deuda técnica conocida desde el diseño
 

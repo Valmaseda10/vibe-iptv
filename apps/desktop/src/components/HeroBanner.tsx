@@ -106,7 +106,7 @@ function useTrailerActive(ref: React.RefObject<HTMLDivElement | null>): boolean 
 
 export function HeroBannerSkeleton() {
   return (
-    <div className="relative flex h-[56vh] min-h-[340px] w-full animate-pulse items-end overflow-hidden bg-neutral-900 sm:h-[62vh] sm:min-h-[380px]">
+    <div className="relative flex h-[56vh] min-h-[340px] w-full items-end overflow-hidden skeleton sm:h-[62vh] sm:min-h-[380px]">
       <div className="flex w-full max-w-xl flex-col gap-4 px-4 pb-8 sm:px-10 sm:pb-10">
         <div className="h-4 w-40 rounded bg-neutral-800" />
         <div className="h-10 w-2/3 rounded bg-neutral-800" />

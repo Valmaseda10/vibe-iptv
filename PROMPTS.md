@@ -25,7 +25,7 @@ inútil. Marca la casilla cuando la fase esté aceptada.
 - [x] F14 Detalles premium en VOD y perfiles
 - [ ] F15 App de iPhone y iPad (Tauri iOS + VLC, sin Mac ni cuenta de Apple)
 - [ ] F16 Cliente Fire TV (pospuesto: no hay dispositivo a mano para probarlo)
-- [ ] F17 Experiencia premium (PC e iPhone a la vez)
+- [ ] F17 Experiencia premium (PC e iPhone a la vez) — construida entera el 2026-11-02; falta que la pruebes, sobre todo en el iPhone
 
 Las fases F11 en adelante se añadieron el 2026-10-15, con las diez primeras ya cerradas.
 Ver la entrada de esa fecha en `docs/DECISIONS.md` para el porqué del orden.

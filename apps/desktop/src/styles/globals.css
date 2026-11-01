@@ -215,6 +215,66 @@ html.ios body {
   }
 }
 
+/* Siluetas de carga (F17, `components/Skeleton`): un brillo que pasa de izquierda a derecha. */
+@keyframes skeleton-shine {
+  from {
+    background-position: 150% 0;
+  }
+  to {
+    background-position: -50% 0;
+  }
+}
+.skeleton {
+  background-color: rgb(38 38 38);
+  background-image: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.06) 50%, transparent 70%);
+  background-size: 200% 100%;
+  animation: skeleton-shine 1.4s ease-in-out infinite;
+}
+html.ios .skeleton {
+  background-color: rgb(28 28 30);
+}
+
+/* Logotipo al abrir la app: late suave mientras se sabe qué cuenta y perfil hay. */
+@keyframes splash-logo {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: scale(0.98);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.splash-logo {
+  animation: splash-logo 1.6s ease-in-out infinite;
+}
+
+/* Transiciones entre pantallas (F17, ver `router.tsx`): fundido corto, y la portada pulsada
+   crece hasta el fondo de la ficha. */
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 220ms;
+  animation-timing-function: ease-out;
+}
+::view-transition-group(vibe-hero) {
+  animation-duration: 380ms;
+  animation-timing-function: cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+::view-transition-old(vibe-hero),
+::view-transition-new(vibe-hero) {
+  height: 100%;
+  width: 100%;
+  object-fit: cover;
+}
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) {
+    animation: none !important;
+  }
+}
+
 /* Entrada suave de cada pantalla (ver `AppLayout`). */
 @keyframes page-enter {
   from {

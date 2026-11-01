@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { SkeletonList } from "../../components/Skeleton";
 import { useNavigate } from "@tanstack/react-router";
 import { useInfiniteQuery, useQueries, useQuery } from "@tanstack/react-query";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -249,7 +250,13 @@ export function GuideScreen() {
       {searching ? (
         <GuideSearchResults query={query.trim()} reminders={reminders} />
       ) : channels.length === 0 ? (
-        <p className="px-4 text-neutral-500 sm:px-10">{channelsQuery.isPending ? "Cargando canales…" : "Sin canales en esta categoría."}</p>
+        channelsQuery.isPending ? (
+          <div className="px-4 sm:px-10">
+            <SkeletonList count={8} />
+          </div>
+        ) : (
+          <p className="px-4 text-neutral-500 sm:px-10">Sin canales en esta categoría.</p>
+        )
       ) : (
         <div className="flex min-h-0 flex-1 flex-col px-4 sm:px-10">
           <div className="mb-2 flex border-b border-neutral-800 pb-2 text-xs text-neutral-500 ios:border-ios-separator ios:text-ios-label-2">

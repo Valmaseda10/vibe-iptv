@@ -1,4 +1,5 @@
 import { useEffect, type ReactNode } from "react";
+import { AppSplash } from "../../components/Skeleton";
 import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
@@ -28,7 +29,7 @@ export function ActiveProfileGate({ children }: { children: ReactNode }) {
   }, [profilesQuery.data, profileId, activeStillExists, setProfileId]);
 
   if (profilesQuery.isPending) {
-    return <div className="flex h-full min-h-screen items-center justify-center bg-neutral-950 text-neutral-500 ios:bg-black">Cargando…</div>;
+    return <AppSplash />;
   }
 
   if (!activeStillExists) {

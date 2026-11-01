@@ -68,7 +68,7 @@ export function BrowseScreen({ page, title, actions, before }: BrowseScreenProps
       {query.isPending ? (
         Array.from({ length: 3 }).map((_, i) => (
           <section key={i} className="flex flex-col gap-3">
-            <div className="mx-4 h-5 w-48 animate-pulse rounded bg-neutral-800 sm:mx-10" />
+            <div className="mx-4 h-5 w-48 skeleton rounded sm:mx-10" />
             <div className="flex gap-4 overflow-hidden px-4 sm:px-10">
               {Array.from({ length: 7 }).map((_, j) => (
                 <PosterCardSkeleton key={j} />

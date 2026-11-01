@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { GlassSheet } from "../../components/GlassSheet";
 import { TeamCrest } from "../../components/TeamCrest";
+import { SkeletonList } from "../../components/Skeleton";
 import { SPORT_LABELS, sportEmoji, useFollowables } from "../../lib/sports";
 import type { SportFollow } from "../../lib/api-types";
 
@@ -33,7 +34,7 @@ export function FollowTeamsSheet({ onClose }: { onClose: () => void }) {
           className="w-full rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none focus-visible:border-red-500 ios:rounded-full ios:border-white/10 ios:bg-white/[0.06]"
           autoFocus
         />
-        {isPending && <p className="text-sm text-neutral-500">Cargando…</p>}
+        {isPending && <SkeletonList count={6} />}
         {groups.map((group) => (
           <section key={group.title} className="flex flex-col gap-1">
             <h3 className="px-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">{group.title}</h3>

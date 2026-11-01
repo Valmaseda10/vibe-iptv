@@ -219,7 +219,7 @@ export function LiveScreen() {
         {channelsQuery.isPending ? (
           <div className="flex flex-col gap-2 py-4">
             {Array.from({ length: 10 }).map((_, i) => (
-              <div key={i} className="h-10 animate-pulse rounded bg-neutral-800" />
+              <div key={i} className="h-10 skeleton rounded" />
             ))}
           </div>
         ) : groups.length === 0 && !hasMore ? (
@@ -279,7 +279,7 @@ export function LiveScreen() {
                       )}
                     </div>
                   ) : (
-                    <div className="mx-3 h-10 animate-pulse rounded bg-neutral-800" />
+                    <div className="mx-3 h-10 skeleton rounded" />
                   )}
                 </div>
               );

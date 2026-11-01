@@ -14,6 +14,7 @@ import { Row } from "../../components/Row";
 import { HorizontalScroller } from "../../components/HorizontalScroller";
 import { PosterCard } from "../../components/PosterCard";
 import { CastRow } from "../../components/CastRow";
+import { SkeletonDetail } from "../../components/Skeleton";
 import type { EpisodeSummary, SeriesDetailResponse } from "../../lib/api-types";
 
 export function SeriesDetailScreen() {
@@ -70,7 +71,7 @@ export function SeriesDetailScreen() {
     // `goBack` depende de `canGoBack`: sin él aquí, Escape usaría un valor viejo.
   }, [navigate, trailerOpen, canGoBack, router]);
 
-  if (isPending) return <DetailSkeleton />;
+  if (isPending) return <SkeletonDetail />;
   // 403: el perfil no puede ver este título (F14); el núcleo dice por qué.
   if (isError && error instanceof ApiError && error.status === 403) return <p className="p-10 text-neutral-300">{errorMessage(error)}</p>;
   if (isError || !data) return <p className="p-10 text-red-400">No se encontró la serie.</p>;
@@ -86,7 +87,7 @@ export function SeriesDetailScreen() {
   return (
     <div className="relative min-h-full">
       <div className="absolute inset-0 h-[50vh] overflow-hidden" style={{ ["--trailer-h" as string]: "50vh" }}>
-        {backdrop && <img src={backdrop} alt="" className="h-full w-full object-cover" />}
+        {backdrop && <img src={backdrop} alt="" className="h-full w-full object-cover" style={{ viewTransitionName: "vibe-hero" }} />}
         {backdrop && data.trailer_key && <BackdropTrailer youtubeKey={data.trailer_key} />}
         {poster && <img src={poster} alt="" className="h-full w-full scale-110 object-cover opacity-40 blur-2xl" />}
         <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/70 to-transparent ios:from-black ios:via-black/60" />
@@ -279,12 +280,3 @@ function groupBySeason(episodes: EpisodeSummary[]) {
     .map(([season, eps]) => ({ season, episodes: eps.sort((a, b) => a.number - b.number) }));
 }
 
-function DetailSkeleton() {
-  return (
-    <div className="flex flex-col gap-4 p-10">
-      <div className="h-8 w-40 animate-pulse rounded bg-neutral-800" />
-      <div className="h-12 w-96 animate-pulse rounded bg-neutral-800" />
-      <div className="h-24 w-full max-w-2xl animate-pulse rounded bg-neutral-800" />
-    </div>
-  );
-}

@@ -34,7 +34,25 @@ const routeTree = rootRoute.addChildren([
   yearRoute,
 ]);
 
-export const router = createRouter({ routeTree });
+/** Transiciones entre pantallas (F17): un fundido corto y, al abrir una ficha desde su
+ * portada, la portada crece hasta el fondo de la ficha («vibe-hero»). Nunca al entrar,
+ * salir o cambiar de canal en el reproductor (el zapping tiene que ser instantáneo), ni si
+ * solo cambian los filtros de una pantalla. Solo donde la WebView sabe de «tipos» de
+ * transición: sin ellos, el enrutador las haría siempre, también en el zapping. */
+const canTypeTransitions = typeof window !== "undefined" && window.CSS?.supports?.("selector(:active-view-transition-type(a))") === true;
+
+export const router = createRouter({
+  routeTree,
+  defaultViewTransition: canTypeTransitions
+    ? {
+        types: ({ fromLocation, toLocation, pathChanged }) => {
+          if (!pathChanged || !fromLocation) return false;
+          if (fromLocation.pathname.startsWith("/player") || toLocation.pathname.startsWith("/player")) return false;
+          return ["page"];
+        },
+      }
+    : false,
+});
 
 declare module "@tanstack/react-router" {
   interface Register {

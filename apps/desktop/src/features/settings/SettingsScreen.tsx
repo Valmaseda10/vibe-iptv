@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SkeletonList } from "../../components/Skeleton";
 import { SubtitlesSection } from "./SubtitlesSection";
 import { TasteSection } from "./TasteSection";
 import { NotificationsSection } from "./NotificationsSection";
@@ -340,7 +341,7 @@ export function SettingsScreen() {
 
       <section className="mb-10">
         <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Proveedores</h2>
-        {providersQuery.isPending && <p className="text-neutral-400">Cargando…</p>}
+        {providersQuery.isPending && <SkeletonList count={2} />}
         {providersQuery.data?.length === 0 && <p className="text-neutral-400">Todavía no has añadido ninguno.</p>}
         <ul className="flex flex-col gap-3">
           {providersQuery.data?.map((provider) => {

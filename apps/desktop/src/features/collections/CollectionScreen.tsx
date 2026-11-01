@@ -6,6 +6,7 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import type { CollectionResponse, SagaEntryResponse } from "../../lib/api-types";
 import { FloatingBackButton } from "../../components/FloatingBackButton";
 import { PRIMARY_ACTION } from "../../components/detailAction";
+import { SkeletonBlock } from "../../components/Skeleton";
 
 /** Una saga entera (F17): sus películas en orden de estreno, lo visto marcado, las que no
  * tiene el catálogo en gris, y un botón para seguir con la que toca. */
@@ -149,12 +150,12 @@ function SagaEntryCard({ entry, index, isNext, onOpen }: { entry: SagaEntryRespo
 function CollectionSkeleton() {
   return (
     <div className="flex flex-col gap-4 px-4 pt-24 sm:px-10">
-      <div className="h-4 w-16 animate-pulse rounded bg-neutral-800" />
-      <div className="h-12 w-80 max-w-full animate-pulse rounded bg-neutral-800" />
-      <div className="h-4 w-56 animate-pulse rounded bg-neutral-800" />
+      <SkeletonBlock className="h-4 w-16" />
+      <SkeletonBlock className="h-12 w-80 max-w-full" />
+      <SkeletonBlock className="h-4 w-56" />
       <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
         {Array.from({ length: 6 }, (_, i) => (
-          <div key={i} className="h-28 animate-pulse rounded-xl bg-neutral-900" />
+          <SkeletonBlock key={i} className="h-28 rounded-xl" />
         ))}
       </div>
     </div>

@@ -1,4 +1,5 @@
 import { useState, type ReactNode } from "react";
+import { AppSplash } from "../../components/Skeleton";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiGet, apiPost, errorMessage } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
@@ -46,7 +47,7 @@ export function AccountGate({ children }: { children: ReactNode }) {
   }
 
   if (statusQuery.isPending) {
-    return <div className="flex h-full min-h-screen items-center justify-center bg-neutral-950 text-neutral-500 ios:bg-black">Cargando…</div>;
+    return <AppSplash />;
   }
 
   return <AccountForm onLoggedIn={handleLoggedIn} onEnterOffline={() => setOffline(true)} />;

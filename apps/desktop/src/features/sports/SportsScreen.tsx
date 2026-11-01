@@ -4,6 +4,7 @@ import { SPORT_LABELS, dayLabel, isOnNow, sportEmoji, useSportsEvents } from "..
 import type { SportEventResponse } from "../../lib/api-types";
 import { SportEventCard } from "./SportEventCard";
 import { FollowTeamsSheet } from "./FollowTeamsSheet";
+import { SkeletonBlock } from "../../components/Skeleton";
 
 /** Deportes (F17): lo que hay en directo ahora y lo de los próximos días, sacado de la guía,
  * con el mismo partido en todos sus canales juntos. Filtros por deporte y por «Mis
@@ -98,7 +99,7 @@ function SportsSkeleton() {
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
       {Array.from({ length: 6 }, (_, i) => (
-        <div key={i} className="h-36 animate-pulse rounded-2xl bg-white/[0.04]" />
+        <SkeletonBlock key={i} className="h-36 rounded-2xl" />
       ))}
     </div>
   );
