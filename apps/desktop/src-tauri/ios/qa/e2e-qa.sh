@@ -292,13 +292,21 @@ section() {
   fi
 }
 
-# Navegación: pestañas en el iPhone; en el iPad todo está en la barra lateral.
+# Navegación (menú compacto, 2026-11-02): Inicio, Directo, Deportes, Buscar y Mi lista, en
+# pestañas en el iPhone y en la barra lateral en el iPad. Películas y Series son el filtro de
+# arriba de Inicio, la Guía es la otra vista de Directo y Ajustes, en el iPhone, está
+# arriba de Mi lista. La barra de pestañas va al final de la página: en el iPhone se toca la
+# última coincidencia (antes van el título «Directo» o el botón «Mi lista» de la portada).
 go() {
+  local tab=exacta
+  [ "$W" -lt 768 ] && tab=ultima
   case "$1" in
-    Guía|Favoritos|Ajustes)
-      if [ "$W" -lt 768 ]; then tap_label "Más" exacta 5; sleep 1; fi
-      tap_label "$1" exacta 8 ;;
-    *) tap_label "$1" exacta 8 ;;
+    Películas|Series) go Inicio; tap_label "$1" exacta 8 ;;
+    Guía) go Directo; tap_label "Guía" exacta 8 ;;
+    Ajustes)
+      if [ "$W" -lt 768 ]; then go "Mi lista"; fi
+      tap_label "Ajustes" exacta 8 ;;
+    *) tap_label "$1" "$tab" 8 ;;
   esac
   sleep 3
 }
@@ -345,15 +353,15 @@ tap_label "Lista disponible"; sleep 1
 
 # ───────── 2. Navegación por todas las pantallas ─────────
 section "navegación"
-for pair in Directo:/live Películas:/movies Series:/series Buscar:/search; do
+for pair in Directo:/live Deportes:/sports Películas:/movies Series:/series Buscar:/search "Mi lista:/favorites"; do
   tab=${pair%%:*}; route=${pair#*:}
   go "$tab"
   check "navegación: «${tab}» abre su pantalla" "wait_visible \"ruta:$route\" exacta 8"
 done
+check "navegación: ya no hay pestaña «Más»" '! visible "Más"'
 if [ "$W" -lt 768 ]; then
-  tap_label "Más" exacta 5; sleep 1; shot menu-mas
-  check "más: la hoja tiene Guía, Favoritos, Ajustes y Cambiar de perfil" 'visible "Guía" && visible "Favoritos" && visible "Ajustes" && visible "Cambiar de perfil" contiene'
-  tap_label "Cancelar" ultima 2 >/dev/null || idb ui tap --udid "$UDID" $((W / 2)) 120; sleep 1
+  shot mi-lista-perfil
+  check "mi lista: arriba están Ajustes, Tu año, Sorpréndeme y Cambiar de perfil" 'visible "Ajustes" && visible "Tu año" && visible "Sorpréndeme" && visible "Cambiar de perfil"'
 fi
 go Guía
 check "guía: abre con la parrilla y su programación" 'wait_visible "ruta:/guide" exacta 5 && wait_visible "Debate" contiene 15'
@@ -361,8 +369,8 @@ tap_label "Avanzar una hora" exacta 5; sleep 1
 tap_label "Ahora" exacta 5; sleep 1
 check "guía: los botones de hora responden" 'visible "Retroceder una hora"'
 shot guia
-go Favoritos
-check "favoritos: vacío al principio" 'wait_visible "Todavía no has marcado nada" contiene 8'
+go "Mi lista"
+check "mi lista: vacía al principio" 'wait_visible "Tu lista está vacía" contiene 8'
 
 # ───────── 3. Mi lista desde el menú de una portada ─────────
 section "mi lista"
@@ -377,10 +385,10 @@ tap_label "Añadir a Mi lista" ultima 3; sleep 2
 long_press "Toy Story" contiene; sleep 1
 check "portada: el menú recuerda que ya está en Mi lista" 'wait_visible "Quitar de Mi lista" exacta 5'
 tap_label "Cancelar" ultima 3; sleep 1
-go Favoritos
-check "favoritos: aparece lo añadido" 'wait_visible "Toy Story" contiene 8'
+go "Mi lista"
+check "mi lista: aparece lo añadido" 'wait_visible "Toy Story" contiene 8'
 go Inicio
-check "inicio: aparece la fila «Mi lista»" 'wait_visible "Mi lista" exacta 10'
+check "inicio: aparece la fila «Mi lista»" 'wait_visible "titulo:Mi lista" exacta 10'
 
 # ───────── 4. Ficha y reproducción de una película ─────────
 section "película"
@@ -607,8 +615,8 @@ shot ajustes-abajo
 # ───────── 10. Cambiar de perfil ─────────
 section "perfiles"
 if [ "$W" -lt 768 ]; then
-  tap_label "Más" exacta 5; sleep 1
-  tap_label "Cambiar de perfil" contiene 5; sleep 2
+  go "Mi lista"
+  tap_label "Cambiar de perfil" exacta 5; sleep 2
   check "perfil: «Cambiar de perfil» vuelve a «¿Quién está viendo?»" 'wait_visible "¿Quién está viendo?" exacta 8'
   tap_label "QA" contiene 10; sleep 3
   check "perfil: elegirlo de nuevo vuelve a Inicio" 'wait_visible "Inicio" exacta 10'

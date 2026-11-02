@@ -27,7 +27,10 @@ function snapshot() {
     if (rect.width < 1 || rect.height < 1 || rect.bottom <= 0 || rect.top >= window.innerHeight) continue;
     const label = (node.getAttribute("aria-label") ?? node.innerText ?? "").replace(/\s+/g, " ").trim();
     if (!label || label.length > 120) continue;
-    items.push({ AXLabel: label, frame: { x: rect.left, y: rect.top, width: rect.width, height: rect.height } });
+    const frame = { x: rect.left, y: rect.top, width: rect.width, height: rect.height };
+    items.push({ AXLabel: label, frame });
+    // Los títulos, además, marcados: «titulo:Mi lista» es la fila, no la pestaña.
+    if (/^H[1-3]$/.test(node.tagName)) items.push({ AXLabel: `titulo:${label}`, frame });
   }
   // La ruta actual, para que la prueba sepa en qué pantalla está de verdad.
   items.push({ AXLabel: `ruta:${window.location.pathname}`, frame: { x: 0, y: 0, width: 0, height: 0 } });

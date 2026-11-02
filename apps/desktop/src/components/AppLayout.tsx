@@ -1,26 +1,14 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
+import { Link, useRouterState } from "@tanstack/react-router";
 import { ProfileSwitcher } from "../features/profiles/ProfileSwitcher";
 import { SyncStatusBanner } from "./SyncStatusBanner";
-import { useActiveProfile } from "../lib/activeProfile";
 import { ReminderNotifier } from "./ReminderNotifier";
 import { MobileTabBar } from "./MobileTabBar";
-import { apiGetOrNull } from "../lib/api-client";
-import type { RandomTitleResponse } from "../lib/api-types";
-import { HomeIcon, LiveIcon, GuideIcon, MovieIcon, SeriesIcon, SearchIcon, HeartIcon, SettingsIcon, ChevronIcon, DiceIcon, TrophyIcon } from "./icons";
+import { useSurpriseMe } from "../lib/surprise";
+import { NAV_ITEMS, isNavActive } from "../lib/navigation";
+import { SettingsIcon, ChevronIcon, DiceIcon } from "./icons";
 import { NotificationScheduler } from "./NotificationScheduler";
 
-const NAV_ITEMS = [
-  { to: "/", label: "Inicio", icon: HomeIcon },
-  { to: "/live", label: "Directo", icon: LiveIcon },
-  { to: "/guide", label: "Guía", icon: GuideIcon },
-  { to: "/sports", label: "Deportes", icon: TrophyIcon },
-  { to: "/movies", label: "Películas", icon: MovieIcon },
-  { to: "/series", label: "Series", icon: SeriesIcon },
-  { to: "/search", label: "Buscar", icon: SearchIcon },
-  { to: "/favorites", label: "Favoritos", icon: HeartIcon },
-  { to: "/settings", label: "Ajustes", icon: SettingsIcon },
-] as const;
 
 /** Cascarón de F5: barra lateral colapsable + contenido (en pantallas estrechas, una
  * barra de pestañas abajo: `MobileTabBar`, F15). Tab funciona como siempre;
@@ -28,10 +16,8 @@ const NAV_ITEMS = [
  * mando a distancia). El foco siempre es visible (ver globals.css). */
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
-  const [surprising, setSurprising] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const navigate = useNavigate();
-  const { profileId } = useActiveProfile();
+  const { surpriseMe, surprising } = useSurpriseMe();
   const navRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
 
@@ -78,22 +64,6 @@ export function AppLayout({ children }: { children: ReactNode }) {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
-  // "Sorpréndeme" (F "premium"): lleva directo a la ficha de un título al azar, nunca
-  // abre el reproductor solo — sigue siendo el usuario quien decide reproducir (R1).
-  async function surpriseMe() {
-    if (surprising) return;
-    setSurprising(true);
-    try {
-      if (profileId === null) return;
-      const pick = await apiGetOrNull<RandomTitleResponse>(`/api/random?profile_id=${profileId}`);
-      if (!pick) return;
-      if (pick.kind === "series") navigate({ to: "/series/$seriesId", params: { seriesId: String(pick.id) } });
-      else navigate({ to: "/movies/$movieId", params: { movieId: String(pick.id) } });
-    } finally {
-      setSurprising(false);
-    }
-  }
-
   // El reproductor va a pantalla completa, sin barra lateral ni cromo alrededor: es la
   // única pantalla de toda la app que no vive dentro de este layout de navegación.
   if (pathname.startsWith("/player/")) {
@@ -118,8 +88,8 @@ export function AppLayout({ children }: { children: ReactNode }) {
         </div>
 
         <ul className="flex flex-1 flex-col gap-1 px-2">
-          {NAV_ITEMS.map(({ to, label, icon: ItemIcon }) => {
-            const active = to === "/" ? pathname === "/" : pathname.startsWith(to);
+          {NAV_ITEMS.map(({ to, label, icon: ItemIcon, also }) => {
+            const active = isNavActive(pathname, to, also);
             return (
               <li key={to}>
                 <Link
@@ -138,9 +108,21 @@ export function AppLayout({ children }: { children: ReactNode }) {
           })}
         </ul>
 
+        <Link
+          to="/settings"
+          className={`mx-2 mb-1 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm outline-none transition-colors ${
+            pathname.startsWith("/settings") ? "bg-neutral-800 text-white ios:rounded-xl ios:bg-white/15" : "text-neutral-400 hover:bg-neutral-900 hover:text-neutral-100 ios:text-white/70"
+          } ${collapsed ? "justify-center px-0" : ""}`}
+          aria-current={pathname.startsWith("/settings") ? "page" : undefined}
+          title={collapsed ? "Ajustes" : undefined}
+        >
+          <SettingsIcon className="h-5 w-5 shrink-0" />
+          {!collapsed && <span>Ajustes</span>}
+        </Link>
+
         <button
           type="button"
-          onClick={surpriseMe}
+          onClick={() => void surpriseMe()}
           disabled={surprising}
           className={`mx-2 mb-2 flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm text-neutral-400 outline-none transition-colors hover:bg-neutral-900 hover:text-neutral-100 disabled:opacity-50 ${
             collapsed ? "justify-center px-0" : ""
@@ -166,7 +148,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
           {children}
         </div>
       </main>
-      <MobileTabBar onSurprise={surpriseMe} surprising={surprising} />
+      <MobileTabBar />
       <SyncStatusBanner />
       <ReminderNotifier />
       <NotificationScheduler />

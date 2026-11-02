@@ -10,6 +10,7 @@ import { feedLabels, groupChannelsByName, type ChannelGroup } from "../../lib/ch
 import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { LargeTitle } from "../../components/LargeTitle";
+import { LIVE_SECTIONS, SectionSwitch } from "../../components/SectionSwitch";
 
 const ROW_HEIGHT = 60;
 const EPG_REFRESH_MS = 60_000;
@@ -150,7 +151,11 @@ export function LiveScreen() {
   return (
     <div className="flex h-full flex-col gap-4 py-5 sm:py-8">
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-10">
-        <LargeTitle>Directo</LargeTitle>
+        <div className="flex items-center gap-3">
+          <LargeTitle>Directo</LargeTitle>
+          {/* La Guía es la otra vista de Directo (menú compacto, 2026-11-02). */}
+          <SectionSwitch items={LIVE_SECTIONS} label="Vista de Directo" />
+        </div>
         <select
           aria-label="Categoría"
           className="w-full rounded border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm outline-none sm:w-auto ios:rounded-full ios:border-0 ios:bg-white/10 ios:px-4 ios:py-2.5 ios:text-[15px]"

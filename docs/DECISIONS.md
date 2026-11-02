@@ -2172,6 +2172,19 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   en Deportes salvo que se pidan y no avisan. Las carreras («MotoGP - GP de Malasia») ya no
   se leen como dos equipos.
 
+- **Menú compacto (2026-11-02, pedido por el usuario).** Nueve entradas en la barra
+  lateral y «Más» en el iPhone eran demasiadas. Ahora son cinco, las mismas en el PC y en
+  el iPhone: **Inicio, Directo, Deportes, Buscar y Mi lista**. Películas y Series no se
+  juntaron en un menú nuevo: son el filtro `Todo · Películas · Series` de arriba de Inicio,
+  como Netflix (cada botón es su pantalla de siempre, con sus filas y «Catálogo completo»).
+  La Guía es la otra vista de Directo (`Canales · Guía`). «Favoritos» pasa a llamarse «Mi
+  lista», como el botón de las fichas. En el PC, Ajustes va abajo, junto a «Sorpréndeme», y
+  «Tu año» sigue en el menú del perfil. En el iPhone desaparece «Más»: la pestaña «Mi lista»
+  lleva el avatar del perfil y arriba de esa pantalla están el perfil, Ajustes, «Tu año»,
+  «Sorpréndeme» y «Cambiar de perfil» (como «Mi Netflix»). De paso, la guía ya no pinta dos
+  veces el mismo programa cuando un canal tiene guía del proveedor y de un XMLTV general
+  (`reads::epg_grid` se queda con el primero de cada hueco, el del proveedor si empatan).
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

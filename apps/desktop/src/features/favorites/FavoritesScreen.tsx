@@ -7,10 +7,11 @@ import { useFavorites } from "../../lib/favorites";
 import { PosterCard } from "../../components/PosterCard";
 import type { FavoriteItem } from "../../lib/api-types";
 import { LargeTitle } from "../../components/LargeTitle";
+import { ProfilePanel } from "./ProfilePanel";
 
-/** Lista de favoritos: sin esto, marcar algo como favorito no llevaba a ningún sitio —
- * el conmutador cambiaba, pero no había manera de volver a encontrarlo. Una lista por
- * perfil, como el resto de "lo tuyo" (F "perfiles Netflix"). */
+/** «Mi lista» (antes «Favoritos»): lo que el perfil ha marcado con el corazón, una lista por
+ * perfil (F "perfiles Netflix"). En el iPhone, arriba, el perfil con Ajustes, «Tu año»,
+ * «Sorpréndeme» y «Cambiar de perfil» (`ProfilePanel`, 2026-11-02). */
 export function FavoritesScreen() {
   const navigate = useNavigate();
   const { toggleFavorite } = useFavorites();
@@ -33,11 +34,12 @@ export function FavoritesScreen() {
 
   return (
     <div className="flex flex-col gap-6 px-4 py-5 sm:gap-8 sm:px-10 sm:py-8">
-      <LargeTitle>Favoritos</LargeTitle>
+      <LargeTitle>Mi lista</LargeTitle>
+      <ProfilePanel />
 
       {isPending && <SkeletonGrid count={12} />}
       {!isPending && channels.length === 0 && movies.length === 0 && series.length === 0 && (
-        <p className="text-neutral-500">Todavía no has marcado nada como favorito. El corazón de cada tarjeta lo añade aquí.</p>
+        <p className="text-neutral-500">Tu lista está vacía. El corazón de cada película, serie o canal lo añade aquí.</p>
       )}
 
       {movies.length > 0 && (

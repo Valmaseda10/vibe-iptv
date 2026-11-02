@@ -33,7 +33,7 @@ export function HomeScreen() {
     enabled: profileId !== null,
   });
   // Las 40 más recientes (el núcleo las da de la más nueva a la más vieja): una fila no
-  // pinta cientos de portadas; la lista entera está en Favoritos.
+  // pinta cientos de portadas; la lista entera está en «Mi lista».
   const myList = (favoritesQuery.data ?? []).filter((f) => (f.item_kind === "movie" || f.item_kind === "series") && f.title).slice(0, 40);
 
   // Optimista: la fila se siente al instante como Netflix, en vez de esperar la

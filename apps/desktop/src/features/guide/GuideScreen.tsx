@@ -11,6 +11,7 @@ import { useReminders } from "../../lib/reminders";
 import { BellIcon } from "../../components/icons";
 import { GuideSearchResults } from "./GuideSearchResults";
 import { LargeTitle } from "../../components/LargeTitle";
+import { LIVE_SECTIONS, SectionSwitch } from "../../components/SectionSwitch";
 
 const WINDOW_HOURS = 4;
 const SHIFT_SECONDS = 3600;
@@ -190,7 +191,11 @@ export function GuideScreen() {
   return (
     <div className="flex h-full flex-col gap-4 py-5 sm:py-8">
       <div className="flex flex-wrap items-center justify-between gap-3 px-4 sm:px-10">
-        <LargeTitle>Guía</LargeTitle>
+        <div className="flex items-center gap-3">
+          <LargeTitle>Directo</LargeTitle>
+          {/* La Guía es la otra vista de Directo (menú compacto, 2026-11-02). */}
+          <SectionSwitch items={LIVE_SECTIONS} label="Vista de Directo" />
+        </div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto sm:gap-3">
           <input
             type="search"

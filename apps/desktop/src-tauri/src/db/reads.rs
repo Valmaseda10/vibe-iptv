@@ -1198,7 +1198,7 @@ pub fn epg_grid(conn: &Connection, channel_ids: &[i64], from_ts: i64, to_ts: i64
         "SELECT c.id, p.title, p.subtitle, p.start_ts, p.stop_ts, p.category
          FROM epg_programmes p JOIN channels c ON c.epg_channel_id = p.channel_id AND (p.provider_id IS NULL OR p.provider_id = c.provider_id)
          WHERE c.id IN ({placeholders}) AND p.start_ts < ? AND p.stop_ts > ?
-         ORDER BY c.id, p.start_ts"
+         ORDER BY c.id, p.start_ts, p.provider_id IS NULL"
     );
     let mut args: Vec<Box<dyn ToSql>> = channel_ids.iter().map(|id| Box::new(*id) as Box<dyn ToSql>).collect();
     args.push(Box::new(to_ts));
@@ -1215,7 +1215,20 @@ pub fn epg_grid(conn: &Connection, channel_ids: &[i64], from_ts: i64, to_ts: i64
             category: row.get(5)?,
         })
     })?;
-    rows.collect::<rusqlite::Result<Vec<_>>>().map_err(Into::into)
+    // Un canal con guía del proveedor y de un XMLTV general traía cada programa dos veces
+    // (y la rejilla los pintaba uno encima de otro): se queda el primero de cada hueco, el
+    // del proveedor si empiezan a la vez.
+    let mut out: Vec<GridProgramme> = Vec::new();
+    for row in rows {
+        let row = row?;
+        if let Some(last) = out.last() {
+            if last.channel_id == row.channel_id && row.start_ts < last.stop_ts {
+                continue;
+            }
+        }
+        out.push(row);
+    }
+    Ok(out)
 }
 
 // ─────────────── Continuar viendo, recientes, favoritos ───────────────
@@ -3552,6 +3565,23 @@ mod tests {
         assert_eq!(grid.len(), 1);
         assert_eq!(grid[0].title, "Dentro de la ventana");
         assert_eq!(grid[0].channel_id, channel_a);
+    }
+
+    #[test]
+    fn epg_grid_shows_each_programme_once_when_two_guides_cover_the_channel() {
+        let conn = memory_conn();
+        let provider_id = queries::insert_provider(&conn, ProviderKind::Xtream, "P", "http://x", None, 1, None).unwrap();
+        let channel = seed_channel_with_epg_id(&conn, provider_id, "1", Some("a.es"));
+        insert_test_programme(&conn, "a.es", 1000, 2000, "Noticias");
+        insert_test_programme(&conn, "a.es", 2000, 3000, "Cine");
+        conn.execute(
+            "INSERT INTO epg_programmes (provider_id, channel_id, start_ts, stop_ts, title) VALUES (?1, 'a.es', 1000, 2000, 'Noticias'), (?1, 'a.es', 1990, 2600, 'Cine (otra guía)')",
+            params![provider_id],
+        )
+        .unwrap();
+
+        let titles: Vec<String> = epg_grid(&conn, &[channel], 0, 4000).unwrap().into_iter().map(|p| p.title).collect();
+        assert_eq!(titles, ["Noticias", "Cine"]);
     }
 
     #[test]

@@ -9,6 +9,7 @@ import { PosterCardSkeleton } from "../../components/PosterCard";
 import { BrowseRows } from "./BrowseRows";
 import { MatchHero } from "../sports/MatchHero";
 import { useFeaturedMatch } from "../../lib/sports";
+import { HOME_SECTIONS, SectionSwitch } from "../../components/SectionSwitch";
 
 type BrowseScreenProps = {
   page: "movies" | "series" | "home";
@@ -20,7 +21,8 @@ type BrowseScreenProps = {
   before?: ReactNode;
 };
 
-/** Inicio, Películas y Series como en Netflix: portada y filas que cambian en cada visita
+/** Inicio, Películas y Series como en Netflix (con el filtro `Todo · Películas · Series`
+ * arriba): portada y filas que cambian en cada visita
  * (ver `catalog::browse` en el núcleo y `lib/feedSeed`). Igual en el PC y en iPhone/iPad. */
 export function BrowseScreen({ page, title, actions, before }: BrowseScreenProps) {
   const { profileId } = useActiveProfile();
@@ -48,6 +50,8 @@ export function BrowseScreen({ page, title, actions, before }: BrowseScreenProps
     <div className="relative flex flex-col gap-8 pb-10 sm:gap-10">
       <div className="absolute inset-x-0 top-0 z-20 flex flex-wrap items-center gap-3 px-4 pt-4 sm:px-10 sm:pt-6">
         <h1 className="text-2xl font-bold text-white drop-shadow-lg sm:text-3xl ios:text-[34px] ios:tracking-tight">{title}</h1>
+        {/* Películas y Series viven dentro de Inicio (2026-11-02), como el filtro de Netflix. */}
+        <SectionSwitch items={HOME_SECTIONS} label="Qué ver" />
         {actions}
       </div>
 
