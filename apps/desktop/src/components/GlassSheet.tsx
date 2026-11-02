@@ -28,7 +28,9 @@ export function GlassSheet({
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === "Escape" || e.key === "Backspace") {
+      // Borrar dentro de un campo de texto no cierra la hoja (el formulario de proveedor).
+      const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
+      if (e.key === "Escape" || (e.key === "Backspace" && !typing)) {
         e.preventDefault();
         onClose();
       }

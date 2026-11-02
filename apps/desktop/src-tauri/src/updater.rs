@@ -50,43 +50,68 @@ pub fn start(app: AppHandle, stream_guard: Arc<StreamGuard>) {
     });
 }
 
-async fn check_and_download(app: &AppHandle, stream_guard: &StreamGuard) {
+/// Resultado de mirar si hay versión nueva (la comprobación a mano de Ajustes lo enseña).
+#[derive(Clone, Serialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum UpdateCheck {
+    UpToDate,
+    Ready { version: String, notes: Option<String> },
+    /// Hay algo reproduciéndose: no se descarga nada ahora (R1).
+    Busy,
+    Failed { message: String },
+}
+
+async fn check_and_download(app: &AppHandle, stream_guard: &StreamGuard) -> UpdateCheck {
     let pending = app.state::<PendingUpdate>();
-    if pending.0.lock().map(|slot| slot.is_some()).unwrap_or(true) {
-        return;
+    if let Ok(slot) = pending.0.lock() {
+        if let Some((update, _)) = slot.as_ref() {
+            return UpdateCheck::Ready { version: update.version.clone(), notes: update.body.clone() };
+        }
     }
     let update = match app.updater().map_err(|err| err.to_string()) {
         Ok(updater) => match updater.check().await {
             Ok(Some(update)) => update,
-            Ok(None) => return,
+            Ok(None) => return UpdateCheck::UpToDate,
             // Sin red o GitHub caído: se vuelve a mirar en la siguiente vuelta.
             Err(err) => {
                 tracing::info!(error = %err, "no se pudo comprobar si hay versión nueva");
-                return;
+                return UpdateCheck::Failed { message: "No se pudo comprobar: ¿hay conexión a internet?".into() };
             }
         },
         Err(err) => {
             tracing::warn!(error = %err, "actualizador sin configurar");
-            return;
+            return UpdateCheck::Failed { message: "Las actualizaciones no están disponibles en esta copia.".into() };
         }
     };
     if stream_guard.is_busy() {
-        return;
+        return UpdateCheck::Busy;
     }
     let version = update.version.clone();
     let bytes = match update.download(|_, _| {}, || {}).await {
         Ok(bytes) => bytes,
         Err(err) => {
             tracing::warn!(error = %err, version, "no se pudo descargar la versión nueva");
-            return;
+            return UpdateCheck::Failed { message: format!("No se pudo descargar la versión {version}.") };
         }
     };
     tracing::info!(version, "versión nueva descargada, lista para instalar");
-    let ready = UpdateReady { version, notes: update.body.clone() };
+    let ready = UpdateReady { version: version.clone(), notes: update.body.clone() };
     if let Ok(mut slot) = pending.0.lock() {
         *slot = Some((update, bytes));
     }
-    let _ = app.emit(EVENT_READY, ready);
+    let _ = app.emit(EVENT_READY, ready.clone());
+    UpdateCheck::Ready { version, notes: ready.notes }
+}
+
+/// Comando Tauri: «Buscar actualizaciones» en Ajustes. Si hay versión nueva la descarga
+/// (salvo con algo reproduciéndose) y queda lista para «Reiniciar».
+#[tauri::command]
+pub async fn check_for_update(app: AppHandle, stream_guard: tauri::State<'_, Arc<StreamGuard>>) -> Result<UpdateCheck, String> {
+    if cfg!(debug_assertions) {
+        return Ok(UpdateCheck::Failed { message: "En la versión de desarrollo no se buscan actualizaciones.".into() });
+    }
+    let guard = Arc::clone(&stream_guard);
+    Ok(check_and_download(&app, &guard).await)
 }
 
 /// Comando Tauri: la versión lista para instalar, si hay (para la interfaz que se monta

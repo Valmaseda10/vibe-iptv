@@ -159,7 +159,7 @@ function WelcomeWithoutProvider() {
       <button
         type="button"
         autoFocus
-        onClick={() => navigate({ to: "/settings" })}
+        onClick={() => navigate({ to: "/settings/$section", params: { section: "proveedores" } })}
         className="rounded bg-red-600 px-6 py-3 font-medium outline-none hover:bg-red-500 focus-visible:ring-4 focus-visible:ring-red-400"
       >
         Añadir proveedor

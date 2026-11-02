@@ -59,6 +59,10 @@ pub struct NativePlayRequest {
     pub preferred_audio: Option<String>,
     #[serde(default)]
     pub preferred_subtitle: Option<String>,
+    /// Segundos de la cuenta atrás del siguiente episodio (Ajustes → Reproducción); 0 lo
+    /// ofrece sin pasar solo. Sin dato, 10.
+    #[serde(default)]
+    pub next_countdown: Option<u32>,
     /// Solo actualiza `items`, `next` y las preferencias del reproductor abierto, sin
     /// volver a cargar el vídeo (tras un cambio hecho por el propio reproductor).
     #[serde(default)]
@@ -295,6 +299,7 @@ mod platform {
                     next: None,
                     preferred_audio: None,
                     preferred_subtitle: None,
+                    next_countdown: None,
                     update_only: false,
                     subtitle_style: None,
                     sources: vec![],
@@ -411,7 +416,7 @@ mod tests {
 
     #[test]
     fn outside_ios_the_command_says_it_is_not_available() {
-        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false, message: None, kind: "movie".into(), items: vec![], current_index: None, next: None, preferred_audio: None, preferred_subtitle: None, update_only: false, subtitle_style: None, sources: vec![], current_source: None, notice: None, notice_source: None, categories: vec![], current_category: None };
+        let request = NativePlayRequest { url: "http://127.0.0.1:1/stream/movie/1".into(), title: "T".into(), subtitle: None, start_seconds: 0.0, live: false, live_buffer: false, message: None, kind: "movie".into(), items: vec![], current_index: None, next: None, preferred_audio: None, preferred_subtitle: None, next_countdown: None, update_only: false, subtitle_style: None, sources: vec![], current_source: None, notice: None, notice_source: None, categories: vec![], current_category: None };
         assert!(matches!(native_player_play(request), Err(NativePlayerError::Unsupported)));
     }
 }

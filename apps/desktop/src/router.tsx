@@ -10,6 +10,7 @@ import { seriesDetailRoute } from "./routes/series.$seriesId";
 import { searchRoute } from "./routes/search";
 import { favoritesRoute } from "./routes/favorites";
 import { settingsRoute } from "./routes/settings";
+import { settingsSectionRoute } from "./routes/settings.$section";
 import { playerRoute } from "./routes/player.$kind.$id";
 import { collectionRoute } from "./routes/collections.$collectionId";
 import { personRoute } from "./routes/people.$personId";
@@ -27,6 +28,7 @@ const routeTree = rootRoute.addChildren([
   searchRoute,
   favoritesRoute,
   settingsRoute,
+  settingsSectionRoute,
   playerRoute,
   collectionRoute,
   personRoute,

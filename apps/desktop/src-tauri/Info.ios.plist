@@ -14,6 +14,12 @@
 	<!-- El audio sigue con la pantalla bloqueada o en otra app (decidido con el usuario),
 	     con sus controles en la pantalla de bloqueo. Además, mientras suena, iOS no
 	     suspende la app y el servidor local sigue vivo. -->
+	<!-- La copia de seguridad (Ajustes → Datos y copia) se guarda en Documentos: así se ve en
+	     la app «Archivos», en «En mi iPhone → VIBE IPTV». -->
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>

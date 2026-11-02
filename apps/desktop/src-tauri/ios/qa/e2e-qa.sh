@@ -600,8 +600,15 @@ fi
 # ───────── 9. Ajustes: sincronizar y eliminar (sin borrar) ─────────
 section "ajustes"
 go Ajustes
-check "ajustes: enseña la compilación" 'wait_visible "Compilación" contiene 5'
+# Ajustes por secciones (2026-11-02): en el iPhone, una lista en la que cada fila abre su
+# pantalla (y «‹ Ajustes» vuelve); en el iPad, la lista a la izquierda y la sección al lado.
+tap_label "Acerca de" exacta 8; sleep 2
+check "ajustes: «Acerca de» enseña la versión y la compilación" 'wait_visible "Compilación" contiene 5'
+shot ajustes-acerca
+if [ "$W" -lt 768 ]; then tap_label "Ajustes" exacta 5; sleep 2; fi
+tap_label "Proveedores" exacta 8; sleep 2
 check "ajustes: lista el proveedor" 'wait_visible "Proveedor de pruebas" contiene 8'
+shot ajustes-proveedores
 tap_label "Sincronizar" exacta 5; sleep 1
 # Con el proveedor de pruebas termina en un instante: «Sincronizado:» (que solo sale tras
 # tocar el botón en esta pantalla) también demuestra que arrancó.

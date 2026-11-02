@@ -13,6 +13,15 @@ export type AddProviderInput = { kind: ProviderKind, name: string, base_url: str
  */
 export type AudioTrackSummary = { index: number, language: string | null, codec_name: string | null, channels: number | null, };
 
+/**
+ * Lo que trajo una importación, para enseñarlo.
+ */
+export type BackupSummary = { profiles: number, my_list: number, ratings: number, progress: number, follows: number, reminders: number, 
+/**
+ * Títulos o canales de la copia que este catálogo no tiene.
+ */
+not_found: number, };
+
 export type BecauseRowResponse = { 
 /**
  * `movie` o `series`.
@@ -241,6 +250,11 @@ top_movies_es: Array<SimilarTitleSummary>, top_series_es: Array<SimilarTitleSumm
  */
 genre_rows: Array<GenreRowResponse>, };
 
+/**
+ * Lo que hay en este aparato.
+ */
+export type LibraryStats = { channels: number, movies: number, series: number, episodes: number, image_cache_bytes: number, image_cache_files: number, };
+
 export type M3uValidation = { channel_count: number, movie_count: number, series_count: number, 
 /**
  * Presente si la URL es en realidad un `get.php` de Xtream (ver
@@ -373,6 +387,11 @@ next: NativePlayItem | null,
  * Idioma o nombre de pista de audio y subtítulos que prefiere el perfil.
  */
 preferred_audio: string | null, preferred_subtitle: string | null, 
+/**
+ * Segundos de la cuenta atrás del siguiente episodio (Ajustes → Reproducción); 0 lo
+ * ofrece sin pasar solo. Sin dato, 10.
+ */
+next_countdown: number | null, 
 /**
  * Solo actualiza `items`, `next` y las preferencias del reproductor abierto, sin
  * volver a cargar el vídeo (tras un cambio hecho por el propio reproductor).

@@ -5,6 +5,7 @@
 //! `docs/CLOUD-SYNC.md`.
 
 pub mod backend;
+pub mod backup;
 pub mod engine;
 pub mod firebase;
 #[cfg(test)]

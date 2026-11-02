@@ -185,6 +185,17 @@ esto, cerrar sesión y entrar con otra cuenta le subía los perfiles de la anter
 
 ---
 
+### Copia de seguridad en fichero (`sync::backup`, 2026-11-02)
+
+Ajustes → Datos y copia exporta los mismos documentos que viajan a la nube (perfiles,
+Mi lista, valoraciones, progreso, equipos seguidos, recordatorios y tiempo visto de este
+aparato) a un JSON en Documentos, más las preferencias que viven en la interfaz
+(subtítulos, reproducción) por nombre de perfil. Importar es aplicar esos documentos con
+`apply_remote` (gana lo más reciente; lo que el catálogo no tiene se salta y se cuenta) y
+encolar lo local para subirlo si hay cuenta. Sin cuenta, un perfil de la copia que se llama
+igual que uno de aquí se trata como ese. Nunca lleva el documento de la clave de TMDB ni
+nada de los proveedores (R5).
+
 ## Para los clientes iOS y Fire TV (F15, F16)
 
 Usarán el SDK oficial de Firebase contra este mismo modelo. Lo imprescindible:

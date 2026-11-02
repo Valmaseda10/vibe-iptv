@@ -5,6 +5,7 @@
 mod catalog;
 mod commands;
 mod db;
+mod library;
 mod media;
 mod native_player;
 mod notifications;
@@ -155,6 +156,11 @@ pub fn run() {
             export_diagnostics_log,
             updater::update_ready,
             updater::install_update,
+            updater::check_for_update,
+            library::library_stats,
+            library::clear_image_cache,
+            library::export_backup,
+            library::import_backup,
             notifications::notifications_permission,
             notifications::notifications_request,
             notifications::notifications_show,

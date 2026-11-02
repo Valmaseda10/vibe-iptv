@@ -52,6 +52,8 @@ private struct PlayRequest: Decodable {
     let next: PlayItem?
     let preferred_audio: String?
     let preferred_subtitle: String?
+    /// Segundos de la cuenta atrás del siguiente episodio; 0 lo ofrece sin pasar solo.
+    let next_countdown: Int?
     /// Solo actualiza la lista, el siguiente episodio y las preferencias del reproductor ya
     /// abierto, sin volver a cargar el vídeo.
     let update_only: Bool?
@@ -1256,11 +1258,18 @@ final class VibePlayerController: UIViewController {
 
     private func startNextCountdown() {
         guard let next = nextItem else { return }
-        nextSecondsLeft = 10
+        let seconds = request?.next_countdown ?? 10
+        nextSecondsLeft = seconds
         nextTitleLabel.text = "Siguiente: \(next.title)\((next.subtitle ?? "").isEmpty ? "" : " · " + (next.subtitle ?? ""))"
-        nextPlayButton.setTitle("  Ver ahora (\(nextSecondsLeft))  ", for: .normal)
+        nextPlayButton.setTitle(seconds > 0 ? "  Ver ahora (\(nextSecondsLeft))  " : "  Ver ahora  ", for: .normal)
         nextCard.isHidden = false
         controlsRoot.bringSubviewToFront(nextCard)
+        // «Siguiente episodio solo» apagado: se ofrece, pero no pasa sin tocarlo. El
+        // temporizador quieto solo marca la tarjeta como ya enseñada (no vuelve a salir).
+        guard seconds > 0 else {
+            nextCountdown = Timer.scheduledTimer(withTimeInterval: 3600, repeats: false) { _ in }
+            return
+        }
         nextCountdown = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             guard let self = self else { return }
             self.nextSecondsLeft -= 1
@@ -1309,9 +1318,21 @@ final class VibePlayerController: UIViewController {
     }
 
     private func selectTrack(_ wanted: String, names: [Any], indexes: [Any], apply: (Int32) -> Void) {
-        for (name, index) in zip(names.map { "\($0)".lowercased() }, indexes.compactMap { ($0 as? NSNumber)?.int32Value }) where name.contains(wanted) {
-            apply(index)
-            return
+        // «lang:spa,es,español…»: el idioma elegido en Ajustes → Reproducción, que se
+        // busca como palabra suelta en el nombre de la pista («Español - [Spanish]»).
+        let words: [String]? = wanted.hasPrefix("lang:") ? wanted.dropFirst(5).split(separator: ",").map(String.init) : nil
+        for (name, index) in zip(names.map { "\($0)".lowercased() }, indexes.compactMap { ($0 as? NSNumber)?.int32Value }) {
+            let matches: Bool
+            if let words = words {
+                let parts = name.components(separatedBy: CharacterSet.letters.inverted).filter { !$0.isEmpty }
+                matches = words.contains { parts.contains($0) }
+            } else {
+                matches = name.contains(wanted)
+            }
+            if matches {
+                apply(index)
+                return
+            }
         }
     }
 

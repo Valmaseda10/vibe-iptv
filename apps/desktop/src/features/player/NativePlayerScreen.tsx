@@ -38,6 +38,7 @@ import { findNextEpisode } from "./episodes";
 import { feedLabels } from "../../lib/channels";
 import type { PlayerSearch, PlayerSession } from "../../lib/playerSession";
 import { askToRate, WATCHED_RATIO, type RateCandidate } from "../../lib/ratePrompt";
+import { nativeAudioPreference, readPlaybackPrefs } from "../../lib/playbackPrefs";
 
 type Kind = "channel" | "movie" | "episode";
 
@@ -215,7 +216,9 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
       .catch(() => null)
       .then((progress) => {
         if (cancelled) return;
-        setStartSeconds(progress && !progress.finished && progress.position_s > RESUME_MIN_SECONDS ? progress.position_s : 0);
+        // Unos segundos antes de donde se dejó (Ajustes → Reproducción), para situarse.
+        const rewind = readPlaybackPrefs(profileId).resumeRewind;
+        setStartSeconds(progress && !progress.finished && progress.position_s > RESUME_MIN_SECONDS ? Math.max(0, progress.position_s - rewind) : 0);
       });
     return () => {
       cancelled = true;
@@ -338,6 +341,7 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
   const buildRequest = useCallback((): NativePlayRequest | null => {
     if (!base || startSeconds === null) return null;
     const tracks = readTrackPreference(profileId);
+    const prefs = readPlaybackPrefs(profileId);
     return {
       url: `${base}${streamPath}`,
       title: title ?? "",
@@ -350,8 +354,10 @@ export function NativePlayerScreen({ kind, id, search, mini, onNavigate, onExpan
       items,
       current_index: currentIndex >= 0 ? currentIndex : null,
       next,
-      preferred_audio: tracks.audio,
+      // El idioma elegido en Ajustes manda; si no, la última pista elegida a mano.
+      preferred_audio: nativeAudioPreference(prefs.audioLanguage) ?? tracks.audio,
       preferred_subtitle: tracks.subtitle,
+      next_countdown: prefs.autoplayNext ? prefs.nextCountdown : 0,
       subtitle_style: readSubtitleStyle(profileId),
       sources:
         playSources.length > 1 ? playSources.map(sourceLabel) : liveBuffer && channelFeeds.length > 1 ? feedLabels(channelFeeds) : [],

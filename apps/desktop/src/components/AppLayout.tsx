@@ -8,6 +8,8 @@ import { useSurpriseMe } from "../lib/surprise";
 import { NAV_ITEMS, isNavActive } from "../lib/navigation";
 import { SettingsIcon, ChevronIcon, DiceIcon } from "./icons";
 import { NotificationScheduler } from "./NotificationScheduler";
+import { WhatsNewSheet } from "./WhatsNewSheet";
+import { useWhatsNewOnLaunch } from "../lib/releaseNotes";
 import { BrandLockup, BrandMark } from "./BrandMark";
 
 
@@ -19,6 +21,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { surpriseMe, surprising } = useSurpriseMe();
+  const [whatsNew, dismissWhatsNew] = useWhatsNewOnLaunch();
   const navRef = useRef<HTMLElement>(null);
   const mainRef = useRef<HTMLElement>(null);
 
@@ -152,6 +155,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       <SyncStatusBanner />
       <ReminderNotifier />
       <NotificationScheduler />
+      {whatsNew && <WhatsNewSheet onClose={dismissWhatsNew} />}
     </div>
   );
 }

@@ -50,6 +50,22 @@ bump(join(tauriDir, "tauri.conf.json"), /"version": "[^"]+"/, `"version": "${ver
 bump(join(desktop, "package.json"), /"version": "[^"]+"/, `"version": "${version}"`);
 bump(join(tauriDir, "Cargo.toml"), /^version = "[^"]+"/m, `version = "${version}"`);
 
+// Las novedades van dentro de la app («Novedades» al abrir la versión nueva, y en Ajustes →
+// Acerca de), también en la de iPhone, que se compila desde el repositorio.
+if (notesFile) {
+  const notes = readFileSync(notesFile, "utf8")
+    .split(/?
+/)
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2).trim());
+  writeFileSync(
+    join(desktop, "src", "lib", "releaseNotes.generated.ts"),
+    `// Generado por tools/publicar-version.mjs a partir de las notas de la versión: no se edita a mano.
+export const RELEASE_NOTES: { version: string; notes: readonly string[] } = ${JSON.stringify({ version, notes }, null, 2)};
+`,
+  );
+}
+
 // 2. Instalador firmado (el actualizador comprueba la firma con la clave pública de tauri.conf.json).
 console.log(`Compilando la versión ${version}…`);
 execFileSync("npm", ["run", "build:installer"], {

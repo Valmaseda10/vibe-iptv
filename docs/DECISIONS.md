@@ -2185,6 +2185,26 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   veces el mismo programa cuando un canal tiene guía del proveedor y de un XMLTV general
   (`reads::epg_grid` se queda con el primero de cada hueco, el del proveedor si empatan).
 
+- **Logo nuevo y Ajustes rediseñados (2026-11-02, pedido por el usuario).** El logo es un
+  play con degradado naranja → rojo → magenta y la «V» tallada dentro (elegido entre siete
+  propuestas; el degradado lo aleja del rojo sobre negro de Netflix). Fuente en
+  `src-tauri/icons/source/` (una versión a sangre para iOS); los iconos salen con
+  `tauri icon`, y en la app es `BrandMark`. Ajustes pasa de una columna larga a secciones:
+  en el PC y el iPad, lista a la izquierda y contenido a la derecha (como Windows 11); en el
+  iPhone, lista agrupada como la de iOS con una pantalla por sección (`/settings/$section`),
+  y buscador en los dos. Filas con el mismo formato en todas partes (`SettingsCard`,
+  `SettingsRow`, `Toggle`, `SegmentedChoice`). «Añadir proveedor» va en una hoja; la
+  dirección y el usuario del proveedor salen ocultos (por si se comparte pantalla). Nuevo:
+  **Reproducción** (siguiente episodio solo o no y su cuenta atrás, retroceder al reanudar,
+  idioma de audio preferido; por perfil y aparato, en `lib/playbackPrefs`, los usan el
+  reproductor del PC y el de iPhone), **Datos y copia** (tamaño del catálogo y de las
+  portadas con «Vaciar», copia de seguridad en fichero: ver CLOUD-SYNC.md), **Acerca de**
+  («Buscar actualizaciones» a mano en el PC y «Novedades»). Las novedades las escribe
+  `tools/publicar-version.mjs` en `src/lib/releaseNotes.generated.ts` y salen solas la
+  primera vez que se abre una versión nueva (no al instalar). De paso: la portada de Inicio
+  ya no se monta sobre el título con títulos largos, y las hojas ya no se cierran al borrar
+  dentro de un campo de texto.
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

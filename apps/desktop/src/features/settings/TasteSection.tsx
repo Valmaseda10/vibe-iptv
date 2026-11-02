@@ -5,6 +5,9 @@ import { useActiveProfile } from "../../lib/activeProfile";
 import type { BrowseItem, RatedTitle, TasteCandidatesResponse } from "../../lib/api-types";
 import { RATING_OPTIONS, useRatings, type RatingValue } from "../../lib/ratings";
 import { TastePicker } from "../profiles/TastePicker";
+import { SettingsCard } from "../../components/SettingsCard";
+import { SettingsRow } from "../../components/SettingsRow";
+import { BUTTON_PRIMARY } from "./styles";
 
 /** Ajustes → «Mis gustos»: lo que el perfil ha valorado (lo que más pesa en sus
  * recomendaciones), para cambiarlo o quitarlo, y «Elegir más títulos». */
@@ -45,33 +48,29 @@ export function TasteSection() {
   }));
 
   return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Mis gustos</h2>
-        <button
-          type="button"
-          onClick={() => setPicking(true)}
-          className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium text-white outline-none hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-red-600 ios:rounded-full"
-        >
+    <div className="flex flex-col gap-6">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="max-w-lg text-sm text-neutral-400">Lo que has valorado es lo que más pesa en tus recomendaciones. Cámbialo o quítalo cuando quieras.</p>
+        <button type="button" onClick={() => setPicking(true)} className={BUTTON_PRIMARY}>
           Elegir más títulos
         </button>
       </div>
-      <p className="mb-4 text-sm text-neutral-400">Lo que has valorado es lo que más pesa en tus recomendaciones. Cámbialo o quítalo cuando quieras.</p>
 
-      {titles.length === 0 && !rated.isPending && <p className="text-sm text-neutral-500">Todavía no has valorado nada.</p>}
+      {titles.length === 0 && !rated.isPending && (
+        <SettingsCard>
+          <SettingsRow title="Todavía no has valorado nada" description="Usa 👍 en las fichas, o «Elegir más títulos», para afinar lo que te recomendamos." />
+        </SettingsCard>
+      )}
 
       {groups
         .filter((group) => group.titles.length > 0)
         .map((group) => (
-          <div key={group.value} className="mb-4">
-            <h3 className="mb-2 text-sm font-semibold text-neutral-300">
-              {group.option?.icon} {group.option?.label} · {group.titles.length}
-            </h3>
-            <ul className="flex flex-col gap-1.5">
+          <SettingsCard key={group.value} title={`${group.option?.icon ?? ""} ${group.option?.label ?? ""} · ${group.titles.length}`}>
+            <ul className="flex flex-col divide-y divide-white/[0.06]">
               {group.titles.map((title) => {
                 const poster = imagePath(base, title.poster_path, "w342");
                 return (
-                  <li key={`${title.kind}-${title.id}`} className="flex items-center gap-3 rounded-lg bg-black/20 p-1.5 pr-2">
+                  <li key={`${title.kind}-${title.id}`} className="flex items-center gap-3 px-3 py-2">
                     {poster ? <img src={poster} alt="" className="h-12 w-8 shrink-0 rounded object-cover" /> : <span className="h-12 w-8 shrink-0 rounded bg-neutral-800" />}
                     <span className="min-w-0 flex-1 truncate text-sm text-neutral-100">
                       {title.clean_title}
@@ -98,12 +97,12 @@ export function TasteSection() {
                 );
               })}
             </ul>
-          </div>
+          </SettingsCard>
         ))}
 
       {picking && candidates.data && candidates.data.items.length > 0 && (
         <TastePicker items={candidates.data.items} saving={saving} onDone={(picked) => void saveMore(picked)} onSkip={() => setPicking(false)} />
       )}
-    </section>
+    </div>
   );
 }

@@ -1,895 +1,187 @@
-import { useEffect, useState } from "react";
-import { SkeletonList } from "../../components/Skeleton";
-import { SubtitlesSection } from "./SubtitlesSection";
+import { useMemo, useState, type ComponentType, type SVGProps } from "react";
+import { Link, useNavigate } from "@tanstack/react-router";
+import { LargeTitle } from "../../components/LargeTitle";
+import { BellIcon, ChevronIcon, DatabaseIcon, InfoIcon, PlayIcon, SearchIcon, ServerIcon, ShieldIcon, SparkIcon, UserIcon } from "../../components/icons";
+import { AccountSection } from "./AccountSection";
+import { ProvidersSection } from "./ProvidersSection";
+import { PlaybackSection } from "./PlaybackSection";
 import { TasteSection } from "./TasteSection";
 import { NotificationsSection } from "./NotificationsSection";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
-import { apiGet, apiPost, apiPut, errorMessage } from "../../lib/api-client";
-import { useActiveProfile } from "../../lib/activeProfile";
-import { IS_IOS } from "../../lib/platform";
-import { LargeTitle } from "../../components/LargeTitle";
-import type {
-  AccountStatus,
-  AccountStatusResponse,
-  AddProviderInput,
-  CategoryAdultSetting,
-  CloudSyncStatus,
-  BinariesStatus,
-  EpgSyncSummary,
-  M3uValidation,
-  ProviderKind,
-  ProviderSummary,
-  SyncFinished,
-  SyncProgress,
-} from "../../lib/api-types";
+import { ParentalSection } from "./ParentalSection";
+import { DataSection } from "./DataSection";
+import { AboutSection } from "./AboutSection";
+import { BinariesStatusBanner } from "./BinariesStatusBanner";
+import { SettingsProfileHeader } from "./SettingsProfileHeader";
 
-type FormState = {
-  kind: ProviderKind;
-  name: string;
-  baseUrl: string;
-  username: string;
-  password: string;
-  m3uUrl: string;
+type Section = {
+  id: string;
+  label: string;
+  description: string;
+  icon: ComponentType<SVGProps<SVGSVGElement>>;
+  /** Color del cuadradito del icono, como en los Ajustes de iOS. */
+  tint: string;
+  /** Palabras con las que el buscador encuentra la sección. */
+  keywords: string;
+  component: ComponentType;
 };
 
-const emptyForm: FormState = { kind: "xtream", name: "", baseUrl: "", username: "", password: "", m3uUrl: "" };
+const SECTIONS: Section[] = [
+  {
+    id: "cuenta",
+    label: "Cuenta y perfiles",
+    description: "Tu perfil, la cuenta en la nube y la contraseña.",
+    icon: UserIcon,
+    tint: "bg-sky-600",
+    keywords: "cuenta correo contraseña sesión nube perfil perfiles pin cerrar sesión",
+    component: AccountSection,
+  },
+  {
+    id: "proveedores",
+    label: "Proveedores",
+    description: "Tus listas IPTV: estado, caducidad y sincronización.",
+    icon: ServerIcon,
+    tint: "bg-red-600",
+    keywords: "proveedor lista xtream m3u sincronizar caduca conexiones añadir eliminar guía epg",
+    component: ProvidersSection,
+  },
+  {
+    id: "reproduccion",
+    label: "Reproducción",
+    description: "Siguiente episodio, idioma de audio y subtítulos.",
+    icon: PlayIcon,
+    tint: "bg-violet-600",
+    keywords: "reproducción reproductor subtítulos audio idioma siguiente episodio reanudar cuenta atrás",
+    component: PlaybackSection,
+  },
+  {
+    id: "gustos",
+    label: "Tus gustos",
+    description: "Lo que has valorado, que guía las recomendaciones.",
+    icon: SparkIcon,
+    tint: "bg-pink-600",
+    keywords: "gustos me gusta valoraciones recomendaciones",
+    component: TasteSection,
+  },
+  {
+    id: "avisos",
+    label: "Avisos",
+    description: "Episodios nuevos, recordatorios y partidos.",
+    icon: BellIcon,
+    tint: "bg-amber-500",
+    keywords: "avisos notificaciones episodios nuevos recordatorios partidos",
+    component: NotificationsSection,
+  },
+  {
+    id: "control-parental",
+    label: "Control parental",
+    description: "Qué categorías no ven los perfiles infantiles.",
+    icon: ShieldIcon,
+    tint: "bg-emerald-600",
+    keywords: "control parental adultos categorías niños infantil pin",
+    component: ParentalSection,
+  },
+  {
+    id: "datos",
+    label: "Datos y copia",
+    description: "Catálogo, portadas, TMDB y copia de seguridad.",
+    icon: DatabaseIcon,
+    tint: "bg-cyan-600",
+    keywords: "datos tmdb clave caché portadas imágenes copia de seguridad exportar importar catálogo",
+    component: DataSection,
+  },
+  {
+    id: "acerca",
+    label: "Acerca de",
+    description: "Versión, actualizaciones y novedades.",
+    icon: InfoIcon,
+    tint: "bg-neutral-500",
+    keywords: "acerca versión actualizaciones actualizar novedades diagnóstico registro compilación",
+    component: AboutSection,
+  },
+];
 
-/** Pantalla funcional de F2: alta de proveedor y validación en vivo. El diseño visual
- * definitivo llega en F5; aquí lo importante es que funcione contra un proveedor real. */
-export function SettingsScreen() {
-  const queryClient = useQueryClient();
-  const [form, setForm] = useState<FormState>(emptyForm);
-  const [xtreamStatus, setXtreamStatus] = useState<AccountStatus | null>(null);
-  const [m3uStatus, setM3uStatus] = useState<M3uValidation | null>(null);
-  const [progressByProvider, setProgressByProvider] = useState<Record<number, SyncProgress>>({});
-  const [tmdbProgress, setTmdbProgress] = useState<SyncProgress | null>(null);
-  const [tmdbApiKey, setTmdbApiKey] = useState("");
-  const [epgSummary, setEpgSummary] = useState<EpgSyncSummary | null>(null);
-  // Estado de la última sincronización de cada proveedor, para que "Sincronizar" diga
-  // algo: antes no había ninguna respuesta visible, ni al acabar ni al fallar (F15).
-  const [syncState, setSyncState] = useState<Record<number, { running: boolean; message: string | null; failed: boolean }>>({});
-  const [confirmingDelete, setConfirmingDelete] = useState<number | null>(null);
+function matches(section: Section, needle: string): boolean {
+  const text = `${section.label} ${section.keywords}`.toLowerCase();
+  return needle.split(/\s+/).every((word) => text.includes(word));
+}
 
-  const providersQuery = useQuery({
-    queryKey: ["providers"],
-    queryFn: () => invoke<ProviderSummary[]>("list_providers"),
-  });
+/** Ajustes (rediseño 2026-11-02): en el PC y el iPad, las secciones a la izquierda y su
+ * contenido a la derecha, como en Windows 11; en el iPhone, una lista agrupada como la de
+ * iOS en la que cada fila abre su pantalla. Con buscador en los dos. */
+export function SettingsScreen({ section }: { section?: string }) {
+  const navigate = useNavigate();
+  const [query, setQuery] = useState("");
+  const needle = query.trim().toLowerCase();
+  const visible = useMemo(() => (needle ? SECTIONS.filter((s) => matches(s, needle)) : SECTIONS), [needle]);
+  const current = SECTIONS.find((s) => s.id === section);
+  // En el PC, sin sección elegida se ve la primera; en el iPhone, la lista.
+  const shown = current ?? (SECTIONS[0] as Section);
 
-  const tmdbKeyQuery = useQuery({
-    queryKey: ["tmdb-api-key-configured"],
-    queryFn: () => invoke<boolean>("has_tmdb_api_key"),
-  });
-
-  useEffect(() => {
-    const unlistenPromise = listen<SyncProgress>("sync://progress", (event) => {
-      // provider_id 0 es el pase global de TMDB (no está atado a un proveedor
-      // concreto: películas y series ya no distinguen de qué proveedor vinieron).
-      if (event.payload.stage === "tmdb") {
-        setTmdbProgress(event.payload);
-        // La clave pudo llegar por la cuenta desde otro aparato: deja de pedirla.
-        if (queryClient.getQueryData(["tmdb-api-key-configured"]) !== true) queryClient.invalidateQueries({ queryKey: ["tmdb-api-key-configured"] });
-      } else {
-        setProgressByProvider((prev) => ({ ...prev, [event.payload.provider_id]: event.payload }));
-      }
-      if (event.payload.total > 0 && event.payload.current >= event.payload.total) {
-        queryClient.invalidateQueries({ queryKey: ["providers"] });
-      }
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [queryClient]);
-
-  useEffect(() => {
-    const unlistenPromise = listen<SyncFinished>("sync://finished", ({ payload }) => {
-      setSyncState((prev) => ({
-        ...prev,
-        [payload.provider_id]: payload.error
-          ? { running: false, failed: true, message: `La sincronización falló: ${payload.error}` }
-          : {
-              running: false,
-              failed: false,
-              message: `Sincronizado: ${payload.channels} canales, ${payload.movies} películas, ${payload.series} series.`,
-            },
-      }));
-      queryClient.invalidateQueries({ queryKey: ["providers"] });
-    });
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, [queryClient]);
-
-  useEffect(() => {
-    const unlistenPromise = listen<EpgSyncSummary>("epg://summary", (event) => setEpgSummary(event.payload));
-    return () => {
-      unlistenPromise.then((unlisten) => unlisten());
-    };
-  }, []);
-
-  const validateMutation = useMutation({
-    mutationFn: async () => {
-      if (form.kind === "xtream") {
-        const result = await invoke<AccountStatus>("validate_xtream", {
-          baseUrl: form.baseUrl,
-          username: form.username,
-          password: form.password,
-          userAgent: null,
-        });
-        return { kind: "xtream" as const, result };
-      }
-      const result = await invoke<M3uValidation>("validate_m3u", { url: form.m3uUrl });
-      return { kind: "m3u" as const, result };
-    },
-    onSuccess: (data) => {
-      if (data.kind === "xtream") {
-        setXtreamStatus(data.result);
-        setM3uStatus(null);
-      } else {
-        setM3uStatus(data.result);
-        setXtreamStatus(null);
-      }
-    },
-  });
-
-  const addMutation = useMutation({
-    mutationFn: () => {
-      const input: AddProviderInput = {
-        kind: form.kind,
-        name: form.name,
-        base_url: form.kind === "xtream" ? form.baseUrl : "",
-        username: form.kind === "xtream" ? form.username : null,
-        password: form.kind === "xtream" ? form.password : null,
-        m3u_url: form.kind === "m3u" ? form.m3uUrl : null,
-        user_agent: null,
-      };
-      return invoke<ProviderSummary>("add_provider", { input });
-    },
-    onSuccess: (provider) => {
-      setForm(emptyForm);
-      setXtreamStatus(null);
-      setM3uStatus(null);
-      setSyncState((prev) => ({ ...prev, [provider.id]: { running: true, failed: false, message: "Sincronizando el catálogo…" } }));
-      queryClient.invalidateQueries({ queryKey: ["providers"] });
-    },
-  });
-
-  const syncMutation = useMutation({
-    mutationFn: (providerId: number) => invoke<void>("sync_provider", { providerId }),
-    onMutate: (providerId) =>
-      setSyncState((prev) => ({ ...prev, [providerId]: { running: true, failed: false, message: "Sincronizando el catálogo…" } })),
-    onError: (err, providerId) => {
-      const message = errorMessage(err);
-      // Ya había una en marcha (p. ej. la que se lanza al añadir): sigue siendo "en curso".
-      const busy = message.includes("Ya se está sincronizando");
-      setSyncState((prev) => ({ ...prev, [providerId]: { running: busy, failed: !busy, message } }));
-    },
-  });
-
-  const deleteProviderMutation = useMutation({
-    mutationFn: (providerId: number) => invoke<void>("delete_provider", { providerId }),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["providers"] }),
-  });
-
-  // Borrar exige un segundo toque ("Sí, eliminar"): borra canales, películas y series de
-  // ese proveedor y no debe pasar por un clic accidental. Antes era `window.confirm`, que
-  // en el WebView de iPhone devuelve "no" al instante sin enseñar nada: el botón parecía
-  // roto (F15).
-  function handleDeleteProvider(provider: ProviderSummary) {
-    setConfirmingDelete(null);
-    deleteProviderMutation.mutate(provider.id);
-  }
-
-  const saveTmdbKeyMutation = useMutation({
-    mutationFn: (apiKey: string) => invoke<void>("set_tmdb_api_key", { apiKey }),
-    onSuccess: () => {
-      setTmdbApiKey("");
-      queryClient.invalidateQueries({ queryKey: ["tmdb-api-key-configured"] });
-    },
-  });
-
-  const matchTmdbMutation = useMutation({
-    mutationFn: () => invoke<void>("match_tmdb"),
-  });
-
-  function applySuggestion() {
-    const suggestion = m3uStatus?.suggested_xtream;
-    if (!suggestion) return;
-    setForm((prev) => ({
-      ...prev,
-      kind: "xtream",
-      baseUrl: suggestion.base_url,
-      username: suggestion.username,
-      password: suggestion.password,
-    }));
-    setM3uStatus(null);
+  function openFirstMatch(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (e.key !== "Enter" || !visible[0]) return;
+    navigate({ to: "/settings/$section", params: { section: visible[0].id } });
   }
 
   return (
-    <div className="mx-auto max-w-3xl p-4 sm:p-8">
-      <LargeTitle>Ajustes</LargeTitle>
-      <p className="mb-6 mt-1 text-xs text-neutral-500">Compilación {__BUILD_ID__}</p>
-
-      <BinariesStatusBanner />
-
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-        <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Añadir proveedor</h2>
-
-        <div className="mb-4 flex gap-4" role="radiogroup" aria-label="Tipo de proveedor">
-          {(["xtream", "m3u"] as const).map((kind) => (
-            <label key={kind} className="flex items-center gap-2">
-              <input
-                type="radio"
-                name="kind"
-                value={kind}
-                checked={form.kind === kind}
-                onChange={() => setForm((prev) => ({ ...prev, kind }))}
-              />
-              {kind === "xtream" ? "Xtream Codes" : "Lista M3U"}
-            </label>
-          ))}
-        </div>
-
-        <label className="mb-3 block">
-          <span className="mb-1 block text-sm text-neutral-400">Nombre</span>
+    <div className="mx-auto flex w-full max-w-6xl gap-8 p-4 sm:p-8 desk:items-start">
+      {/* Lista de secciones: columna izquierda en el PC; la pantalla entera en el iPhone. */}
+      <nav aria-label="Secciones de ajustes" className={`w-full flex-col gap-4 desk:sticky desk:top-8 desk:flex desk:w-64 desk:shrink-0 ${current ? "hidden" : "flex"}`}>
+        <LargeTitle>Ajustes</LargeTitle>
+        <SettingsProfileHeader />
+        <label className="relative block">
+          <span className="sr-only">Buscar en ajustes</span>
+          <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-neutral-500" />
           <input
-            className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-            value={form.name}
-            onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={openFirstMatch}
+            placeholder="Buscar en ajustes"
+            className="w-full rounded-xl bg-white/[0.06] py-2.5 pl-9 pr-3 text-sm text-white outline-none ring-1 ring-white/[0.06] placeholder:text-neutral-500 focus:ring-white/30 ios:rounded-[12px] ios:bg-ios-surface-1 ios:ring-0"
           />
         </label>
-
-        {form.kind === "xtream" ? (
-          <>
-            <label className="mb-3 block">
-              <span className="mb-1 block text-sm text-neutral-400">URL del panel (http://host:puerto)</span>
-              <input
-                className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-                value={form.baseUrl}
-                onChange={(e) => setForm((prev) => ({ ...prev, baseUrl: e.target.value }))}
-              />
-            </label>
-            <div className="mb-3 flex gap-3">
-              <label className="flex-1">
-                <span className="mb-1 block text-sm text-neutral-400">Usuario</span>
-                <input
-                  className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-                  value={form.username}
-                  onChange={(e) => setForm((prev) => ({ ...prev, username: e.target.value }))}
-                />
-              </label>
-              <label className="flex-1">
-                <span className="mb-1 block text-sm text-neutral-400">Contraseña</span>
-                <input
-                  type="password"
-                  className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-                  value={form.password}
-                  onChange={(e) => setForm((prev) => ({ ...prev, password: e.target.value }))}
-                />
-              </label>
-            </div>
-          </>
-        ) : (
-          <label className="mb-3 block">
-            <span className="mb-1 block text-sm text-neutral-400">URL de la lista M3U</span>
-            <input
-              className="w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-              value={form.m3uUrl}
-              onChange={(e) => setForm((prev) => ({ ...prev, m3uUrl: e.target.value }))}
-            />
-          </label>
-        )}
-
-        <div className="flex flex-wrap gap-3">
-          <button
-            type="button"
-            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 ios:rounded-full ios:bg-white/10 ios:px-5 ios:py-2.5"
-            onClick={() => validateMutation.mutate()}
-            disabled={validateMutation.isPending}
-          >
-            {validateMutation.isPending ? "Comprobando…" : "Validar"}
-          </button>
-          <button
-            type="button"
-            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50 ios:rounded-full ios:px-5 ios:py-2.5 ios:font-semibold"
-            onClick={() => addMutation.mutate()}
-            disabled={addMutation.isPending || !form.name}
-          >
-            {addMutation.isPending ? "Añadiendo…" : "Añadir y sincronizar"}
-          </button>
-        </div>
-
-        {validateMutation.isError && <p className="mt-3 text-red-400">{String(validateMutation.error)}</p>}
-        {addMutation.isError && <p className="mt-3 text-red-400">{String(addMutation.error)}</p>}
-
-        {xtreamStatus && (
-          <div className="mt-4 rounded border border-neutral-700 p-4 ios:rounded-2xl ios:border-0 ios:bg-ios-surface-2">
-            <p>
-              Estado: {xtreamStatus.auth_ok ? "válido" : "credenciales rechazadas"} ({xtreamStatus.status})
-            </p>
-            <p>Conexiones máximas: {xtreamStatus.max_connections}</p>
-            {xtreamStatus.expires_at && <p>Caduca: {new Date(xtreamStatus.expires_at * 1000).toLocaleDateString()}</p>}
-          </div>
-        )}
-
-        {m3uStatus && (
-          <div className="mt-4 rounded border border-neutral-700 p-4 ios:rounded-2xl ios:border-0 ios:bg-ios-surface-2">
-            <p>
-              {m3uStatus.channel_count} canales, {m3uStatus.movie_count} películas, {m3uStatus.series_count} series
-            </p>
-            {m3uStatus.suggested_xtream && (
-              <div className="mt-3 flex flex-col gap-3 rounded border border-red-600/60 bg-neutral-800 p-4">
-                <p className="font-medium">Recomendado: esta lista viene de un panel Xtream.</p>
-                <p className="text-sm text-neutral-300">
-                  Como Xtream, el catálogo se carga en segundos sin descargar la lista entera, y tienes guía, series completas y
-                  contenido pasado de los canales que lo ofrezcan.
-                </p>
-                <button
-                  type="button"
-                  autoFocus
-                  className="self-start rounded bg-red-600 px-4 py-2 font-medium outline-none hover:bg-red-500 focus:ring-2 focus:ring-white/70"
-                  onClick={applySuggestion}
-                >
-                  Usar como Xtream
-                </button>
-              </div>
-            )}
-          </div>
-        )}
-      </section>
-
-      <section className="mb-10">
-        <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Proveedores</h2>
-        {providersQuery.isPending && <SkeletonList count={2} />}
-        {providersQuery.data?.length === 0 && <p className="text-neutral-400">Todavía no has añadido ninguno.</p>}
-        <ul className="flex flex-col gap-3">
-          {providersQuery.data?.map((provider) => {
-            const progress = progressByProvider[provider.id];
+        <ul className="flex flex-col overflow-hidden rounded-xl bg-white/[0.03] ring-1 ring-white/[0.06] desk:bg-transparent desk:ring-0 ios:rounded-[18px] ios:bg-ios-surface-1 ios:ring-0 desk:ios:bg-transparent">
+          {visible.map((s) => {
+            const Icon = s.icon;
+            const active = shown.id === s.id;
             return (
-              <li key={provider.id} className="rounded border border-neutral-800 p-4 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div className="min-w-0 break-words">
-                    <p className="font-medium">{provider.name}</p>
-                    <p className="text-sm text-neutral-400">
-                      {provider.kind === "xtream" ? "Xtream" : "M3U"} · {provider.base_url_display}
-                      {provider.username ? ` · ${provider.username}` : ""}
-                    </p>
-                    <p className="text-sm text-neutral-400">
-                      Conexiones máx.: {provider.max_connections}
-                      {provider.last_sync_at
-                        ? ` · última sincronización: ${new Date(provider.last_sync_at * 1000).toLocaleString()}`
-                        : " · sin sincronizar"}
-                    </p>
-                    <ExpiryWarning expiresAt={provider.expires_at} />
-                  </div>
-                  <div className="flex shrink-0 flex-wrap gap-2">
-                    {confirmingDelete === provider.id ? (
-                      <>
-                        <span className="self-center text-sm text-neutral-300">Se borrará todo su catálogo.</span>
-                        <button
-                          type="button"
-                          className="rounded bg-red-700 px-3 py-2 font-medium text-white hover:bg-red-600 disabled:opacity-50 ios:rounded-full ios:px-4"
-                          onClick={() => handleDeleteProvider(provider)}
-                          disabled={deleteProviderMutation.isPending}
-                        >
-                          Sí, eliminar
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600 ios:rounded-full ios:px-4"
-                          onClick={() => setConfirmingDelete(null)}
-                        >
-                          Cancelar
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                        <button
-                          type="button"
-                          className="rounded bg-neutral-700 px-3 py-2 hover:bg-neutral-600 disabled:opacity-50 ios:rounded-full ios:px-4"
-                          onClick={() => syncMutation.mutate(provider.id)}
-                          disabled={syncState[provider.id]?.running === true}
-                        >
-                          {syncState[provider.id]?.running ? "Sincronizando…" : "Sincronizar"}
-                        </button>
-                        <button
-                          type="button"
-                          className="rounded bg-neutral-800 px-3 py-2 text-red-400 hover:bg-red-950 disabled:opacity-50 ios:rounded-full ios:px-4"
-                          onClick={() => setConfirmingDelete(provider.id)}
-                          disabled={deleteProviderMutation.isPending}
-                        >
-                          Eliminar
-                        </button>
-                      </>
-                    )}
-                  </div>
-                </div>
-                {syncState[provider.id]?.message && (
-                  <p role="status" className={`mt-2 text-sm ${syncState[provider.id]?.failed ? "text-red-400" : "text-neutral-400"}`}>
-                    {syncState[provider.id]?.message}
-                  </p>
-                )}
-                {deleteProviderMutation.isError && deleteProviderMutation.variables === provider.id && (
-                  <p className="mt-2 text-sm text-red-400">{errorMessage(deleteProviderMutation.error)}</p>
-                )}
-                {progress && progress.total > 0 && (
-                  <div className="mt-3">
-                    <p className="mb-1 text-sm text-neutral-400">
-                      {progress.stage}: {progress.current}/{progress.total}
-                    </p>
-                    <div className="h-2 w-full overflow-hidden rounded bg-neutral-800 ios:h-1.5 ios:rounded-full ios:bg-white/10">
-                      <div
-                        className="h-full bg-red-600 transition-[width]"
-                        style={{ width: `${Math.min(100, (progress.current / progress.total) * 100)}%` }}
-                      />
-                    </div>
-                  </div>
-                )}
+              <li key={s.id} className="border-b border-white/[0.05] last:border-0 desk:border-0">
+                <Link
+                  to="/settings/$section"
+                  params={{ section: s.id }}
+                  aria-current={active ? "page" : undefined}
+                  className={`flex items-center gap-3 px-3 py-2.5 text-[15px] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-white/70 desk:rounded-lg ${
+                    active ? "desk:bg-white/10 desk:text-white" : "text-neutral-200 hover:bg-white/[0.05]"
+                  }`}
+                >
+                  <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] text-white ${s.tint}`}>
+                    <Icon className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{s.label}</span>
+                  <ChevronIcon className="h-4 w-4 text-neutral-600 desk:hidden" />
+                </Link>
               </li>
             );
           })}
+          {visible.length === 0 && <li className="px-3 py-3 text-sm text-neutral-500">Nada coincide con «{query}».</li>}
         </ul>
-        {epgSummary && epgSummary.channels_without_epg > 0 && (
-          <p className="mt-4 text-sm text-amber-400">
-            {epgSummary.channels_without_epg} canal{epgSummary.channels_without_epg === 1 ? "" : "es"} sin guía de programación
-            emparejada tras la última importación — el proveedor no dio un identificador que coincidiera con ninguno de
-            la guía XMLTV.
-          </p>
-        )}
+      </nav>
+
+      {/* Contenido de la sección: a la derecha en el PC; pantalla propia en el iPhone. */}
+      <section className={`min-w-0 flex-1 flex-col gap-6 desk:flex ${current ? "flex" : "hidden"}`} aria-labelledby="settings-section-title">
+        <Link to="/settings" className="flex w-fit items-center gap-1 text-[15px] text-red-500 outline-none desk:hidden ios:text-[#0a84ff]">
+          <ChevronIcon className="h-4 w-4 rotate-180" />
+          Ajustes
+        </Link>
+        <header className="flex flex-col gap-1">
+          <h1 id="settings-section-title" className="text-2xl font-bold text-white sm:text-3xl ios:text-[30px] ios:tracking-tight">
+            {shown.label}
+          </h1>
+          <p className="text-sm text-neutral-400 ios:text-ios-label-2">{shown.description}</p>
+        </header>
+        <BinariesStatusBanner />
+        <shown.component key={shown.id} />
       </section>
-
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-        <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">TMDB</h2>
-        <p className="mb-3 text-sm text-neutral-400">
-          {tmdbKeyQuery.data ? "Clave de API guardada." : "Sin clave de API guardada todavía. Sin ella, las películas y series se quedan sin portada ni sinopsis."}
-        </p>
-        <div className="flex flex-wrap gap-3">
-          <input
-            type="password"
-            placeholder="Clave de API de TMDB"
-            className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-            value={tmdbApiKey}
-            onChange={(e) => setTmdbApiKey(e.target.value)}
-          />
-          <button
-            type="button"
-            className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50 ios:rounded-full ios:bg-white/10 ios:px-5 ios:py-2.5"
-            onClick={() => saveTmdbKeyMutation.mutate(tmdbApiKey)}
-            disabled={!tmdbApiKey || saveTmdbKeyMutation.isPending}
-          >
-            {saveTmdbKeyMutation.isPending ? "Guardando…" : "Guardar"}
-          </button>
-          <button
-            type="button"
-            className="rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50 ios:rounded-full ios:px-5 ios:py-2.5 ios:font-semibold"
-            onClick={() => matchTmdbMutation.mutate()}
-            disabled={!tmdbKeyQuery.data || matchTmdbMutation.isPending}
-          >
-            Buscar en TMDB
-          </button>
-        </div>
-        {matchTmdbMutation.isError && <p className="mt-3 text-red-400">{String(matchTmdbMutation.error)}</p>}
-        {tmdbProgress && tmdbProgress.total > 0 && (
-          <div className="mt-4">
-            <p className="mb-1 text-sm text-neutral-400">
-              Emparejando con TMDB: {tmdbProgress.current}/{tmdbProgress.total}
-            </p>
-            <div className="h-2 w-full overflow-hidden rounded bg-neutral-800 ios:h-1.5 ios:rounded-full ios:bg-white/10">
-              <div
-                className="h-full bg-red-600 transition-[width]"
-                style={{ width: `${Math.min(100, (tmdbProgress.current / tmdbProgress.total) * 100)}%` }}
-              />
-            </div>
-          </div>
-        )}
-      </section>
-
-      <AccountSection />
-      <ProfileSection />
-      <SubtitlesSection />
-      <TasteSection />
-      <NotificationsSection />
-      <AdultCategoriesSection />
-      {/* En iPhone y iPad no aplican: la app no sirve a otros dispositivos y el fichero de
-          diagnóstico quedaría donde el usuario no puede abrirlo (F15). */}
-      {!IS_IOS && <DiagnosticsSection />}
     </div>
-  );
-}
-
-/** El control parental global de F8 (un PIN para toda la app) se sustituyó por perfiles
- * reales: cada uno con su propio PIN de entrada y su propio "adulto"/"infantil" — se
- * administran desde el propio selector de perfiles (botón "Administrar perfiles"), no
- * desde Ajustes. Aquí solo queda un atajo para volver a ese selector. */
-const CATEGORY_KIND_LABELS: Record<string, string> = { live: "Directo", movie: "Películas", series: "Series" };
-
-/** Qué categorías son de adultos (F12). Las detecta solas una heurística por nombre al
- * sincronizar; aquí se corrige a mano lo que se le escape o lo que marque de más, y la
- * siguiente sincronización lo respeta. Solo para perfiles de adulto: el núcleo responde
- * 403 a los demás y la sección no aparece. */
-function AdultCategoriesSection() {
-  const queryClient = useQueryClient();
-  const { profileId } = useActiveProfile();
-  const [filter, setFilter] = useState("");
-  const queryKey = ["adult-categories", profileId];
-  const categoriesQuery = useQuery({
-    queryKey,
-    queryFn: () => apiGet<CategoryAdultSetting[]>(`/api/categories/adult?profile_id=${profileId}`),
-    enabled: profileId !== null,
-    retry: false,
-  });
-  const mutation = useMutation({
-    mutationFn: ({ id, isAdult }: { id: number; isAdult: boolean | null }) =>
-      apiPut(`/api/categories/${id}/adult`, { profile_id: profileId, is_adult: isAdult }),
-    onSettled: () => {
-      queryClient.invalidateQueries({ queryKey });
-      // Lo que se ve en Directo, Películas y Series depende de esto.
-      queryClient.invalidateQueries();
-    },
-  });
-
-  if (!categoriesQuery.data) return null;
-  const needle = filter.trim().toLowerCase();
-  const visible = categoriesQuery.data.filter((c) => !needle || c.name.toLowerCase().includes(needle));
-  const markedCount = categoriesQuery.data.filter((c) => c.is_adult).length;
-
-  return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-      <h2 className="mb-2 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Categorías para adultos</h2>
-      <p className="mb-4 text-sm text-neutral-400">
-        Los perfiles que no son de adulto no ven estas categorías. Se detectan solas por el nombre ({markedCount} ahora
-        mismo); marca o desmarca las que se hayan escapado.
-      </p>
-      <input
-        type="search"
-        placeholder="Buscar categoría"
-        aria-label="Buscar categoría"
-        className="mb-3 w-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm"
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-      />
-      <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto">
-        {visible.map((category) => (
-          <li key={category.id} className="flex items-center gap-3 rounded px-2 py-1 text-sm hover:bg-neutral-800">
-            <label className="flex flex-1 items-center gap-3">
-              <input
-                type="checkbox"
-                checked={category.is_adult}
-                onChange={(e) => mutation.mutate({ id: category.id, isAdult: e.target.checked })}
-              />
-              <span className="w-20 shrink-0 text-xs text-neutral-500">{CATEGORY_KIND_LABELS[category.kind] ?? category.kind}</span>
-              <span className="truncate">{category.name}</span>
-            </label>
-            {category.manual ? (
-              <button
-                type="button"
-                className="shrink-0 text-xs text-neutral-500 underline decoration-dotted hover:text-neutral-300"
-                onClick={() => mutation.mutate({ id: category.id, isAdult: null })}
-              >
-                Volver a automático
-              </button>
-            ) : (
-              <span className="shrink-0 text-xs text-neutral-600">automático</span>
-            )}
-          </li>
-        ))}
-        {visible.length === 0 && <li className="px-2 py-1 text-sm text-neutral-500">Ninguna categoría coincide.</li>}
-      </ul>
-    </section>
-  );
-}
-
-function ProfileSection() {
-  const { setProfileId } = useActiveProfile();
-
-  return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-      <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Perfil</h2>
-      <p className="mb-3 text-sm text-neutral-400">
-        Cambia de perfil, o crea/edita/borra perfiles y sus PIN desde el selector — cada perfil tiene su propia lista de
-        favoritos, su "continuar viendo", y su propio PIN opcional.
-      </p>
-      <button type="button" className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 ios:rounded-full ios:bg-white/10 ios:px-5 ios:py-2.5" onClick={() => setProfileId(null)}>
-        Cambiar de perfil
-      </button>
-    </section>
-  );
-}
-
-/** Cuenta de sincronización: perfiles/favoritos/progreso viajan entre dispositivos vía
- * Firebase (excepción consciente a "el PC es el servidor" — ver docs/CLOUD-SYNC.md). El
- * catálogo, las credenciales de proveedor y el streaming en sí nunca pasan por aquí. */
-function AccountSection() {
-  const queryClient = useQueryClient();
-  const { setProfileId } = useActiveProfile();
-  const [mode, setMode] = useState<"login" | "signup">("login");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-
-  const statusQuery = useQuery({
-    queryKey: ["account-status"],
-    queryFn: () => apiGet<AccountStatusResponse>("/api/account/status"),
-    // Solo mientras Ajustes está abierto: para ver bajar los cambios pendientes.
-    refetchInterval: 15_000,
-  });
-
-  function invalidate() {
-    queryClient.invalidateQueries({ queryKey: ["account-status"] });
-  }
-
-  // Cambiar de cuenta (entrar o salir) puede significar que ahora manda otra persona
-  // delante de la pantalla: se vuelve a preguntar el perfil en vez de arrastrar el que
-  // quedó activo, igual que hace `AccountGate` justo después de iniciar sesión.
-  function forgetActiveProfile() {
-    setProfileId(null);
-    queryClient.invalidateQueries({ queryKey: ["profiles"] });
-  }
-
-  const authMutation = useMutation({
-    mutationFn: () => apiPost<AccountStatusResponse>(mode === "login" ? "/api/account/login" : "/api/account/signup", { email, password }),
-    onSuccess: () => {
-      setError(null);
-      setPassword("");
-      invalidate();
-      forgetActiveProfile();
-    },
-    onError: (err) => setError(errorMessage(err)),
-  });
-
-  const logoutMutation = useMutation({
-    mutationFn: () => apiPost("/api/account/logout", {}),
-    onSuccess: () => {
-      // Invalidar "account-status" ya basta para que `AccountGate` (que envuelve toda
-      // la app) vuelva a mostrar la pantalla de cuenta — no hace falta ninguna bandera
-      // aparte de recordar/deshacer.
-      invalidate();
-      forgetActiveProfile();
-    },
-  });
-
-  if (statusQuery.data?.logged_in) {
-    return (
-      <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-        <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Cuenta</h2>
-        <p className="mb-3 text-sm text-neutral-300">Sesión iniciada como {statusQuery.data.email}.</p>
-        {statusQuery.data.sync && <CloudSyncLine sync={statusQuery.data.sync} />}
-        <p className="mb-4 text-xs text-neutral-500">
-          Se sincronizan perfiles, favoritos y progreso — nunca las credenciales de tus proveedores IPTV, que se
-          quedan solo en este PC.
-        </p>
-        <button
-          type="button"
-          className="mb-6 rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600"
-          onClick={() => logoutMutation.mutate()}
-          disabled={logoutMutation.isPending}
-        >
-          Cerrar sesión
-        </button>
-        <ChangePasswordForm />
-      </section>
-    );
-  }
-
-  return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-      <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Cuenta</h2>
-      <p className="mb-4 text-sm text-neutral-400">
-        Inicia sesión para que tus perfiles, favoritos y progreso te sigan a otros dispositivos donde uses VIBE IPTV. Sin
-        cuenta, la app funciona igual, solo en este PC.
-      </p>
-      <div className="mb-4 flex gap-4" role="radiogroup" aria-label="Iniciar sesión o crear cuenta">
-        {(["login", "signup"] as const).map((m) => (
-          <label key={m} className="flex items-center gap-2">
-            <input type="radio" checked={mode === m} onChange={() => setMode(m)} />
-            {m === "login" ? "Iniciar sesión" : "Crear cuenta"}
-          </label>
-        ))}
-      </div>
-      <div className="mb-3 flex gap-3">
-        <input
-          type="email"
-          placeholder="Correo"
-          className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-          value={email}
-          onChange={(e) => setEmail(e.target.value)}
-        />
-        <input
-          type="password"
-          placeholder="Contraseña"
-          className="min-w-0 flex-1 basis-full rounded border border-neutral-700 bg-neutral-950 px-3 py-2 sm:basis-auto ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        <button
-          type="button"
-          className="shrink-0 rounded bg-red-600 px-4 py-2 hover:bg-red-500 disabled:opacity-50"
-          onClick={() => authMutation.mutate()}
-          disabled={!email || !password || authMutation.isPending}
-        >
-          {authMutation.isPending ? "…" : mode === "login" ? "Entrar" : "Crear cuenta"}
-        </button>
-      </div>
-      {error && <p role="alert" className="text-red-400">{error}</p>}
-    </section>
-  );
-}
-
-/** Una línea de estado de la sincronización: si hay cambios esperando y por qué. Sin
- * conexión con la nube la app sigue funcionando igual; esto solo lo hace visible. */
-function CloudSyncLine({ sync }: { sync: CloudSyncStatus }) {
-  const pending = sync.pending_changes;
-  const pendingText = `${pending} cambio${pending === 1 ? "" : "s"} esperando`;
-  if (sync.last_error) {
-    return (
-      <p className="mb-3 text-sm text-amber-400">
-        Sincronización en pausa: {sync.last_error}
-        {pending > 0 && ` ${pendingText}; se enviarán solos cuando vuelva la conexión.`}
-      </p>
-    );
-  }
-  if (pending > 0) {
-    return <p className="mb-3 text-sm text-neutral-400">Sincronizando… {pendingText}.</p>;
-  }
-  if (sync.last_synced_at) {
-    return (
-      <p className="mb-3 text-sm text-emerald-400">
-        Todo sincronizado · {new Date(sync.last_synced_at * 1000).toLocaleTimeString()}
-      </p>
-    );
-  }
-  return <p className="mb-3 text-sm text-neutral-400">Conectando con la nube…</p>;
-}
-
-/** Cambiar contraseña con la sesión ya abierta (F "premium" — confianza de cuenta). El
- * backend vuelve a comprobar la actual contra la nube antes de fijar la nueva, aunque la
- * sesión ya esté abierta: no es cosa de esta pantalla, es la propia API la que lo exige. */
-function ChangePasswordForm() {
-  const [currentPassword, setCurrentPassword] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState(false);
-
-  const mutation = useMutation({
-    mutationFn: () => apiPost("/api/account/change-password", { current_password: currentPassword, new_password: newPassword }),
-    onSuccess: () => {
-      setError(null);
-      setSuccess(true);
-      setCurrentPassword("");
-      setNewPassword("");
-    },
-    onError: (err) => {
-      setSuccess(false);
-      setError(errorMessage(err));
-    },
-  });
-
-  return (
-    <div className="border-t border-neutral-800 pt-4">
-      <h3 className="mb-3 text-sm font-medium text-neutral-300">Cambiar contraseña</h3>
-      <div className="flex flex-wrap gap-3">
-        <input
-          type="password"
-          placeholder="Contraseña actual"
-          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-          value={currentPassword}
-          onChange={(e) => setCurrentPassword(e.target.value)}
-        />
-        <input
-          type="password"
-          placeholder="Contraseña nueva (mínimo 6 caracteres)"
-          className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-2 text-sm ios:rounded-xl ios:border-0 ios:bg-ios-surface-2 ios:px-4 ios:py-3"
-          value={newPassword}
-          onChange={(e) => setNewPassword(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && currentPassword && newPassword.length >= 6) mutation.mutate();
-          }}
-        />
-        <button
-          type="button"
-          className="shrink-0 rounded bg-neutral-700 px-4 py-2 text-sm hover:bg-neutral-600 disabled:opacity-50"
-          onClick={() => mutation.mutate()}
-          disabled={!currentPassword || newPassword.length < 6 || mutation.isPending}
-        >
-          {mutation.isPending ? "…" : "Cambiar"}
-        </button>
-      </div>
-      {error && <p role="alert" className="mt-2 text-sm text-red-400">{error}</p>}
-      {success && <p className="mt-2 text-sm text-emerald-400">Contraseña actualizada.</p>}
-    </div>
-  );
-}
-
-/** "Comprobación de que existen al arrancar" (F10): si falta ffmpeg, ffprobe o mpv —
- * algo que no debería pasar con el instalador (los empaqueta como sidecars), pero sí
- * puede pasar en desarrollo o si una instalación se corrompió — lo dice aquí en vez de
- * dejar que el usuario se entere solo al intentar reproducir algo. No se muestra nada
- * mientras todo está bien: es un aviso, no una sección permanente. */
-const EXPIRY_WARNING_DAYS = 7;
-
-/** Aviso de "Estado" (F "premium" — informe de I+D): el dato ya llegaba en
- * `ProviderSummary.expires_at` desde F2, pero no se mostraba en ningún sitio de forma
- * continua — solo un instante, al validar el proveedor antes de añadirlo. Una cuenta
- * IPTV que caduca sin avisar es justo el tipo de fallo mudo que conviene evitar. */
-function ExpiryWarning({ expiresAt }: { expiresAt: number | null }) {
-  if (expiresAt == null) return null;
-  const daysLeft = Math.floor((expiresAt * 1000 - Date.now()) / (24 * 60 * 60 * 1000));
-  if (daysLeft > EXPIRY_WARNING_DAYS) return null;
-
-  const expired = daysLeft < 0;
-  return (
-    <p className={`mt-1 text-sm font-medium ${expired ? "text-red-400" : "text-amber-400"}`}>
-      {expired
-        ? `La cuenta del proveedor caducó el ${new Date(expiresAt * 1000).toLocaleDateString()}.`
-        : `La cuenta del proveedor caduca en ${daysLeft} día${daysLeft === 1 ? "" : "s"} (${new Date(expiresAt * 1000).toLocaleDateString()}).`}
-    </p>
-  );
-}
-
-function BinariesStatusBanner() {
-  const { data } = useQuery({
-    queryKey: ["binaries-status"],
-    queryFn: () => apiGet<BinariesStatus>("/api/playback/binaries"),
-    // En iPhone y iPad no existen: reproduce VLC (F15).
-    enabled: !IS_IOS,
-  });
-
-  if (IS_IOS || !data) return null;
-  const missing = (["ffmpeg", "ffprobe", "mpv"] as const).filter((name) => !data[name]);
-  if (missing.length === 0) return null;
-
-  // ffmpeg/ffprobe sostienen casi toda la reproducción (directo, MKV); mpv solo el
-  // respaldo para códecs que el reproductor de la app no puede abrir.
-  const missingCore = !data.ffmpeg || !data.ffprobe;
-  return (
-    <div className="mb-6 rounded-lg border border-amber-700 bg-amber-950/40 p-4 text-sm text-amber-200">
-      Falta{missing.length > 1 ? "n" : ""} <strong>{missing.join(", ")}</strong>:{" "}
-      {missingCore
-        ? "no se podrá ver el directo ni la mayoría de películas y series."
-        : "los contenidos con códecs poco habituales (H.265 sin aceleración, VC-1…) no se podrán abrir en mpv; el resto se ve con normalidad."}{" "}
-      Si instalaste la app con el instalador, reinstálala.
-    </div>
-  );
-}
-
-/** Registro de diagnóstico exportable (F9): vuelca a un fichero las últimas líneas de
- * log capturadas en memoria. Ya vienen sin credenciales (ver `util::diag_log` en el
- * núcleo: toda URL de proveedor pasa por `redact()` antes de llegar a un log). */
-function DiagnosticsSection() {
-  const [result, setResult] = useState<{ ok: true; path: string } | { ok: false; error: string } | null>(null);
-  const [exporting, setExporting] = useState(false);
-
-  async function handleExport() {
-    setExporting(true);
-    setResult(null);
-    try {
-      const path = await invoke<string>("export_diagnostics_log");
-      setResult({ ok: true, path });
-    } catch (error) {
-      setResult({ ok: false, error: String(error) });
-    } finally {
-      setExporting(false);
-    }
-  }
-
-  return (
-    <section className="mb-10 rounded-lg border border-neutral-800 bg-neutral-900 p-4 sm:p-6 ios:mb-8 ios:rounded-[22px] ios:border-0 ios:bg-ios-surface-1 ios:p-5">
-      <h2 className="mb-4 text-xl font-medium ios:text-[22px] ios:font-bold ios:tracking-tight">Diagnóstico</h2>
-      <p className="mb-3 text-sm text-neutral-400">
-        Guarda en un fichero las últimas líneas de registro de esta sesión, por si necesitas compartirlas para resolver un
-        problema. Nunca incluye usuario, contraseña ni URLs del proveedor.
-      </p>
-      <button
-        type="button"
-        className="rounded bg-neutral-700 px-4 py-2 hover:bg-neutral-600 disabled:opacity-50 ios:rounded-full ios:bg-white/10 ios:px-5 ios:py-2.5"
-        onClick={handleExport}
-        disabled={exporting}
-      >
-        {exporting ? "Exportando…" : "Exportar registro de diagnóstico"}
-      </button>
-      {result?.ok && <p className="mt-3 text-sm text-neutral-300">Guardado en: {result.path}</p>}
-      {result && !result.ok && <p className="mt-3 text-red-400">{result.error}</p>}
-    </section>
   );
 }

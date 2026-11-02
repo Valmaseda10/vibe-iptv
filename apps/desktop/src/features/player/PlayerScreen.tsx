@@ -29,6 +29,7 @@ import { MiniPlayerOverlay } from "./MiniPlayerOverlay";
 import { useLiveTimeshift } from "./useLiveTimeshift";
 import { SUBTITLE_SIZES, subtitleCueCss, useSubtitleStyle } from "../../lib/subtitleStyle";
 import { findNextEpisode } from "./episodes";
+import { readPlaybackPrefs, trackMatchesLanguage, usePlaybackPrefs } from "../../lib/playbackPrefs";
 
 type Kind = PlayerKind;
 
@@ -49,7 +50,8 @@ const PROGRESS_SAVE_INTERVAL_MS = 10_000;
 /** Cada cuánto se avisa de que se sigue viendo el directo (tiempo visto, F17). */
 const WATCHING_INTERVAL_MS = 30_000;
 const NEXT_EPISODE_TRIGGER_SECONDS = 15;
-const NEXT_EPISODE_COUNTDOWN_SECONDS = 10;
+/** Siguiente episodio ofrecido sin cuenta atrás («Siguiente episodio solo» apagado). */
+const NEXT_WITHOUT_COUNTDOWN = -1;
 /** La siguiente película de la saga (F17) se ofrece en los últimos 30 s, como en el iPhone
  * cuando el fichero no trae capítulos de créditos. */
 const NEXT_SAGA_TRIGGER_SECONDS = 30;
@@ -138,6 +140,7 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
   const [resumeBanner, setResumeBanner] = useState<number | null>(null);
   const [channelOverlayVisible, setChannelOverlayVisible] = useState(true);
   const [nextCountdown, setNextCountdown] = useState<number | null>(null);
+  const [playbackPrefs] = usePlaybackPrefs();
   // «Cancelar» la cuenta atrás: no vuelve a salir para este vídeo.
   const [nextDismissed, setNextDismissed] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -256,7 +259,8 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
     apiGetOrNull<PlaybackProgressResponse>(`/api/playback/progress?profile_id=${profileId}&item_kind=${kind}&item_id=${itemId}`).then((progress) => {
       if (cancelled) return;
       if (progress && !progress.finished && progress.position_s > RESUME_MIN_SECONDS) {
-        setAppliedStart(progress.position_s);
+        // Unos segundos antes de donde se dejó (Ajustes → Reproducción), para situarse.
+        setAppliedStart(Math.max(0, progress.position_s - readPlaybackPrefs(profileId).resumeRewind));
         setResumeBanner(progress.position_s);
       }
       setResumeReady(true);
@@ -644,9 +648,9 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
     const trigger = kind === "episode" && nextEpisode ? NEXT_EPISODE_TRIGGER_SECONDS : kind === "movie" && sagaNext ? NEXT_SAGA_TRIGGER_SECONDS : null;
     if (trigger === null) return;
     if (displayDuration && displayCurrentTime > 0 && displayDuration - displayCurrentTime <= trigger) {
-      setNextCountdown(NEXT_EPISODE_COUNTDOWN_SECONDS);
+      setNextCountdown(playbackPrefs.autoplayNext ? playbackPrefs.nextCountdown : NEXT_WITHOUT_COUNTDOWN);
     }
-  }, [kind, nextEpisode, sagaNext, displayDuration, displayCurrentTime, nextCountdown, nextDismissed]);
+  }, [kind, nextEpisode, sagaNext, displayDuration, displayCurrentTime, nextCountdown, nextDismissed, playbackPrefs]);
 
   const goToNext = useCallback(() => {
     saveProgress(true);
@@ -656,7 +660,7 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
   }, [saveProgress, kind, nextEpisode, sagaNext, onNavigate, search.seriesId]);
 
   useEffect(() => {
-    if (nextCountdown === null) return;
+    if (nextCountdown === null || nextCountdown === NEXT_WITHOUT_COUNTDOWN) return;
     if (nextCountdown <= 0) {
       goToNext();
       return;
@@ -742,6 +746,21 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
     },
     [kind, id, search, onNavigate],
   );
+
+  // Idioma de audio preferido (Ajustes → Reproducción): si la pista que suena no es de ese
+  // idioma y hay otra que sí, se cambia una vez al saber las pistas. Elegir otra a mano en
+  // el reproductor manda (ya hay `audioTrack` en la búsqueda).
+  const audioLanguageApplied = useRef<string | null>(null);
+  useEffect(() => {
+    const tracks = tierQuery.data?.audio_tracks ?? [];
+    const key = `${kind}:${itemId}`;
+    if (kind === "channel" || tracks.length < 2 || search.audioTrack != null || audioLanguageApplied.current === key) return;
+    audioLanguageApplied.current = key;
+    const language = playbackPrefs.audioLanguage;
+    if (trackMatchesLanguage(tracks[0]?.language, language)) return;
+    const wanted = tracks.find((track) => trackMatchesLanguage(track.language, language));
+    if (wanted) setAudioTrack(wanted.index);
+  }, [tierQuery.data, kind, itemId, search.audioTrack, playbackPrefs.audioLanguage, setAudioTrack]);
 
   // Activar o cambiar subtítulos reabre el remux (es él quien los extrae), así que se
   // retoma justo donde se estaba en vez de volver al último punto de arranque.
@@ -1236,11 +1255,13 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
           {kind === "movie" && sagaNext ? (
             <p>
               <span className="block text-xs font-semibold uppercase tracking-wide text-red-500">Siguiente de la saga</span>
-              {sagaNext.title} en {nextCountdown}s
+              {sagaNext.title}
+              {nextCountdown >= 0 && ` en ${nextCountdown}s`}
             </p>
           ) : nextEpisode ? (
             <p>
-              Siguiente: {nextEpisode.number}. {nextEpisode.title || `Episodio ${nextEpisode.number}`} en {nextCountdown}s
+              Siguiente: {nextEpisode.number}. {nextEpisode.title || `Episodio ${nextEpisode.number}`}
+              {nextCountdown >= 0 && ` en ${nextCountdown}s`}
             </p>
           ) : null}
           <div className="flex gap-2">

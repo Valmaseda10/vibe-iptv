@@ -331,7 +331,7 @@ pub async fn initial_merge_if_needed(db_path: &Path, cloud: &dyn CloudBackend, s
 /// Tras aplicar lo de la nube, todo lo local que siga sin pareja arriba (o con una más
 /// vieja) se encola. Si un borrado remoto sobrevivió a `apply_remote`, es que lo local es
 /// más nuevo, así que también se sube.
-fn enqueue_local_missing_from_cloud(conn: &Connection, remote: &[RemoteDoc]) -> crate::db::Result<()> {
+pub(crate) fn enqueue_local_missing_from_cloud(conn: &Connection, remote: &[RemoteDoc]) -> crate::db::Result<()> {
     let by_target: HashMap<String, &RemoteDoc> = remote.iter().map(|doc| (doc.target(), doc)).collect();
 
     let remote_key = match by_target.get(&RemoteDoc::setting_target(super::tmdb_key::SETTING_KEY)) {
@@ -419,7 +419,7 @@ fn enqueue_local_missing_from_cloud(conn: &Connection, remote: &[RemoteDoc]) -> 
 /// (marca del cliente que la hizo), y un cambio local todavía en la cola gana siempre:
 /// se enviará y sobrescribirá lo de arriba. Lo que el catálogo de este PC no tiene
 /// (otro proveedor) se ignora.
-fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
+pub(crate) fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
     if cloud::has_pending_target(conn, &doc.target())? {
         return Ok(());
     }
