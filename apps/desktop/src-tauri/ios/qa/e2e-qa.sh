@@ -275,7 +275,7 @@ relaunch() {
   SIMCTL_CHILD_VIBE_QA_E2E=1 SIMCTL_CHILD_VIBE_QA_PROVIDER_URL="http://127.0.0.1:8899" SIMCTL_CHILD_RUST_BACKTRACE=1 \
     xcrun simctl launch "$UDID" "$bundle" >/dev/null
   sleep 10
-  tap_label "QA" contiene 20; sleep 4
+  tap_label "Entrar como QA" exacta 20; sleep 4
 }
 
 # Sin `grep -q` en tubería: con `pipefail`, grep cierra pronto, launchctl muere por SIGPIPE
@@ -336,7 +336,7 @@ echo "pantalla: ${W}x${H}"
 
 # ───────── 1. Perfil e Inicio ─────────
 shot perfiles
-tap_label "QA" contiene 30; sleep 4
+tap_label "Entrar como QA" exacta 30; sleep 4
 check "perfil: elegirlo lleva a Inicio" 'wait_visible "ruta:/" exacta 20 && visible "Inicio" exacta'
 shot inicio
 if [ "$W" -lt 768 ]; then
@@ -629,7 +629,7 @@ if [ "$W" -lt 768 ]; then
   go "Mi lista"
   tap_label "Cambiar de perfil" exacta 5; sleep 2
   check "perfil: «Cambiar de perfil» vuelve a «¿Quién está viendo?»" 'wait_visible "¿Quién está viendo?" exacta 8'
-  tap_label "QA" contiene 10; sleep 3
+  tap_label "Entrar como QA" exacta 10; sleep 3
   check "perfil: elegirlo de nuevo vuelve a Inicio" 'wait_visible "Inicio" exacta 10'
 fi
 
