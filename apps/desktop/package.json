@@ -11,6 +11,10 @@
     "build:installer": "tauri build --config src-tauri/tauri.bundle.conf.json"
   },
   "dependencies": {
+    "@dicebear/core": "9.4.2",
+    "@dicebear/lorelei": "9.4.2",
+    "@dicebear/notionists": "9.4.2",
+    "@dicebear/open-peeps": "9.4.2",
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-router": "^1.95.0",
     "@tanstack/react-virtual": "^3.10.9",

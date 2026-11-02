@@ -4,6 +4,7 @@ import { Link } from "@tanstack/react-router";
 import { apiGet } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import { parseAvatar } from "../../lib/avatar";
+import { AvatarImage } from "../../components/AvatarImage";
 import type { ProfileSummary } from "../../lib/api-types";
 
 /** Icono del perfil activo, arriba a la izquierda de la barra lateral — igual que el
@@ -40,8 +41,6 @@ export function ProfileSwitcher({ collapsed }: { collapsed: boolean }) {
 
   if (!active) return null;
 
-  const { icon, color } = parseAvatar(active);
-
   return (
     <div ref={rootRef} className="relative px-2">
       <button
@@ -54,12 +53,7 @@ export function ProfileSwitcher({ collapsed }: { collapsed: boolean }) {
           collapsed ? "w-full justify-center px-0" : "w-full px-2"
         }`}
       >
-        <span
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-sm font-semibold"
-          style={{ backgroundColor: color }}
-        >
-          {icon ?? active.name.charAt(0).toUpperCase()}
-        </span>
+        <AvatarImage avatar={parseAvatar(active)} name={active.name} className="h-7 w-7 rounded text-sm" />
         {!collapsed && <span className="truncate text-sm text-neutral-200">{active.name}</span>}
       </button>
 

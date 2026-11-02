@@ -2205,6 +2205,29 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   ya no se monta sobre el título con títulos largos, y las hojas ya no se cierran al borrar
   dentro de un campo de texto.
 
+- **«Ver otras», Mi lista, Deportes y perfiles (2026-11-02, pedido por el usuario).**
+  - Al final de Inicio, Películas y Series, «Ver otras» baraja con otra semilla y manda en
+    `avoid` todo lo que había en pantalla: el núcleo lo pasa al final de cada fila (peso
+    0,02) y, si las recomendadas se agotan, completa con lo que más encaja del catálogo.
+    El Top 10, «Seguir viendo», Mi lista y los episodios nuevos no se barajan.
+  - Seguir un equipo ya no avisa: solo lo destaca en Deportes y en la portada de Inicio.
+    Los avisos van aparte (`profiles.sports_notify`, migración 038, con la cuenta),
+    apagados de serie, en Ajustes → Avisos y en «Mis equipos». «Mis equipos» trae LaLiga y
+    LaLiga Hypermotion enteras desde la lista de equipos de ESPN (con escudo, se renueva
+    sola cada temporada), Primera Federación como competición y sus equipos según la guía
+    (ESPN no la cubre: sin escudo, las iniciales). Un equipo seguido se reconoce también
+    por su nombre (`Follows::team_labels`): la guía dice «Celta» y ESPN «Celta Vigo».
+  - Mi lista: filtro y orden, estado de cada título (empezado, visto, «Nuevo episodio»),
+    canales con lo que emiten ahora y «Editar» para quitar varios.
+  - Perfiles: editor a pantalla completa y más imágenes. Iconos 3D de Microsoft Fluent
+    Emoji (MIT, 87 en WebP de 160 px en `src/assets/avatars/3d` con su licencia),
+    personajes ilustrados generados en el aparato con DiceBear (núcleo MIT; solo estilos
+    con diseño CC0: Lorelei, Notionists y Open Peeps; dependencias nuevas
+    `@dicebear/core` y esos tres estilos) e imágenes de películas y series del catálogo
+    (rutas de TMDB, que se ven igual en todos los aparatos). Fondos de color o degradado.
+    El campo `avatar` sigue siendo texto libre (`fluent:`, `char:`, `tmdb:`): una versión
+    antigua enseña la inicial.
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la
