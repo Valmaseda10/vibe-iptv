@@ -144,7 +144,9 @@ scroll_tap_label() {
       read -r x y _ <<< "$xy"
       if [ "${y%.*}" -lt $((H - 100)) ]; then tap_point "$x" "$y"; return 0; fi
     fi
-    idb ui swipe --udid "$UDID" $((W / 2)) $((H * 7 / 10)) $((W / 2)) $((H * 4 / 10)) 2>/dev/null; sleep 1.5
+    # Recorrido largo: con uno corto, la lista del directo del iPhone apenas bajaba tres
+    # canales por intento y «Reloj» (el último) no llegaba a verse (2026-11-02).
+    idb ui swipe --udid "$UDID" --duration 0.25 $((W / 2)) $((H * 8 / 10)) $((W / 2)) $((H * 3 / 10)) 2>/dev/null; sleep 1.5
   done
   echo "  (no encontré «${label}» ni bajando por la página)"
   return 1
@@ -490,7 +492,7 @@ check "episodio: cerrar vuelve a la ficha de la serie" 'wait_player_closed 10 &&
 # ───────── 7. Directo: pausa, ir al directo, lista de canales y zapping ─────────
 section "directo"
 go Directo
-scroll_tap_label "Reloj" contiene
+scroll_tap_label "Reloj" contiene 14
 check "directo: se abre el reproductor" 'wait_player_open 25'
 check "directo: marca EN DIRECTO" 'wait_native "EN DIRECTO" 10 && [ "$(player_field live)" = "True" ]'
 sleep 4
