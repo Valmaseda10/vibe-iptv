@@ -1,6 +1,6 @@
 [package]
 name = "vibe-iptv"
-version = "0.3.2"
+version = "0.3.3"
 description = "VIBE IPTV — reproductor de escritorio para proveedores IPTV del usuario"
 edition = "2021"
 rust-version = "1.82"
