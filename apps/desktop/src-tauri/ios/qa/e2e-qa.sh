@@ -471,7 +471,7 @@ tap_label "✕ Quitar de Continuar viendo" exacta 3; sleep 2
 check "continuar viendo: desaparece al quitarla" 'wait_gone "Continuar viendo" exacta 8'
 long_press "Toy Story" contiene; sleep 1
 tap_label "Quitar de Mi lista" ultima 3; sleep 2
-check "mi lista: quitarla vacía la fila" 'wait_gone "Mi lista" exacta 8'
+check "mi lista: quitarla vacía la fila" 'wait_gone "titulo:Mi lista" exacta 8'
 
 # ───────── 6. Serie: temporadas, episodios y lista dentro del reproductor ─────────
 section "serie"
