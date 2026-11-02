@@ -603,7 +603,9 @@ go Ajustes
 check "ajustes: enseña la compilación" 'wait_visible "Compilación" contiene 5'
 check "ajustes: lista el proveedor" 'wait_visible "Proveedor de pruebas" contiene 8'
 tap_label "Sincronizar" exacta 5; sleep 1
-check "ajustes: «Sincronizar» arranca la sincronización" 'wait_visible "Sincronizando" contiene 5'
+# Con el proveedor de pruebas termina en un instante: «Sincronizado:» (que solo sale tras
+# tocar el botón en esta pantalla) también demuestra que arrancó.
+check "ajustes: «Sincronizar» arranca la sincronización" 'wait_visible "Sincronizando" contiene 5 || visible "Sincronizado:" contiene'
 check "ajustes: la sincronización termina y dice qué trajo" 'wait_visible "Sincronizado:" contiene 90'
 tap_label "Eliminar" exacta 5; sleep 1
 check "ajustes: eliminar pide confirmación" 'wait_visible "Se borrará todo su catálogo." exacta 5'
