@@ -13,7 +13,7 @@ export function MyListChannel({ item, editing, selected, onOpen }: { item: Favor
         selected ? "ring-red-500" : "ring-white/[0.06] ios:ring-0"
       }`}
     >
-      <ChannelLogo url={item.logo_url} className="h-11 w-11 rounded-lg" />
+      <ChannelLogo url={item.logo_url} name={item.title} className="h-11 w-11 rounded-lg text-base" />
       <span className="flex min-w-0 flex-1 flex-col">
         <span className="truncate text-sm font-semibold text-white">{item.title}</span>
         <span className="truncate text-xs text-neutral-400">{item.now_playing ? `Ahora: ${item.now_playing}` : "Sin guía ahora"}</span>

@@ -9,6 +9,7 @@ import { createPortal } from "react-dom";
 import { IS_IOS } from "../../lib/platform";
 import { useIsDesk, useVisibleBottom } from "../../lib/viewport";
 import { SearchIcon } from "../../components/icons";
+import { ChannelLogo } from "../../components/ChannelLogo";
 
 /** Buscador instantáneo con rebote de 150 ms sobre `GET /api/search` (FTS5). Portadas en
  * vez de una lista de texto plano, y flechas para moverse entre resultados — mismo
@@ -115,7 +116,7 @@ export function SearchScreen() {
           <ResultSection title="Series" hits={data.series} onOpen={(id) => navigate({ to: "/series/$seriesId", params: { seriesId: String(id) } })} />
         )}
         {data && data.channels.length > 0 && (
-          <ResultSection title="Canales" hits={data.channels} onOpen={(id) => navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(id) } })} />
+          <ChannelResults hits={data.channels} onOpen={(id) => navigate({ to: "/player/$kind/$id", params: { kind: "channel", id: String(id) } })} />
         )}
         {data && data.people.length > 0 && <PeopleSection people={data.people} onOpen={(id) => navigate({ to: "/people/$personId", params: { personId: String(id) } })} />}
       </div>
@@ -159,6 +160,28 @@ function ResultSection({ title, hits, onOpen }: { title: string; hits: SearchRes
       <div className="grid grid-cols-3 gap-3 sm:flex sm:flex-wrap sm:gap-4">
         {hits.map((hit) => (
           <SearchResultCard key={`${hit.item_kind}-${hit.item_id}`} title={hit.title} posterPath={hit.poster_path} onOpen={() => onOpen(hit.item_id)} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+/** Canales encontrados: su logo entero en una tarjeta apaisada, no como una portada. */
+function ChannelResults({ hits, onOpen }: { hits: SearchResults["channels"]; onOpen: (id: number) => void }) {
+  return (
+    <section className="flex flex-col gap-3">
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-500 ios:text-[20px] ios:font-bold ios:normal-case ios:tracking-tight ios:text-white">Canales</h2>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-[repeat(auto-fill,minmax(11rem,1fr))]">
+        {hits.map((hit) => (
+          <button
+            key={hit.item_id}
+            type="button"
+            onClick={() => onOpen(hit.item_id)}
+            className="group flex min-w-0 flex-col gap-2 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-white/70"
+          >
+            <ChannelLogo url={hit.poster_path} name={hit.title} className="aspect-video w-full rounded-lg bg-white/[0.05] p-4 text-2xl ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] ios:bg-ios-surface-1" />
+            <span className="truncate text-sm text-neutral-200">{hit.title}</span>
+          </button>
         ))}
       </div>
     </section>

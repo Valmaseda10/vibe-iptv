@@ -13,7 +13,7 @@
 //! en vez de seguir aproximando con solo el `id`.
 
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row, ToSql};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::util::redact;
 
@@ -972,10 +972,30 @@ pub fn search(conn: &Connection, query: &str, limit_per_kind: i64, access: Profi
     // Lo que el perfil no puede ver no sale, ni por búsqueda (F14). Se pidieron de más
     // (`limit_per_kind * 3`) para que filtrar no deje la lista corta.
     let mut visible = Vec::with_capacity(raw_hits.len());
+    // Un canal con varias versiones (HD, FHD, 4K, «1080p»...) sale una vez: la primera que
+    // encaja, cambiada por una hermana con logo si esa no lo tiene.
+    let mut seen_channels: HashSet<String> = HashSet::new();
     for hit in raw_hits {
-        if item_allowed(conn, &hit.0, hit.1, access)? {
-            visible.push(hit);
+        if !item_allowed(conn, &hit.0, hit.1, access)? {
+            continue;
         }
+        if hit.0 == "channel" {
+            if !seen_channels.insert(hit.2.trim().to_lowercase()) {
+                continue;
+            }
+            let with_logo: Option<i64> = conn
+                .query_row(
+                    "SELECT c2.id FROM channels c JOIN channels c2 ON c2.display_name = c.display_name
+                     WHERE c.id = ?1 AND c2.logo_url IS NOT NULL AND c2.logo_url <> ''
+                     ORDER BY (c2.id = c.id) DESC LIMIT 1",
+                    params![hit.1],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            visible.push((hit.0, with_logo.unwrap_or(hit.1), hit.2));
+            continue;
+        }
+        visible.push(hit);
     }
     Ok(visible
         .into_iter()

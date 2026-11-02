@@ -87,7 +87,7 @@ export function SportEventCard({ event, reminders }: { event: SportEventResponse
         <div className="flex items-center gap-2 text-xs text-neutral-400">
           {first && (
             <span className="flex min-w-0 items-center gap-1.5">
-              <ChannelLogo url={first.logo_url} />
+              <ChannelLogo url={first.logo_url} name={first.name} />
               <span className="truncate">
                 {onNow ? "▶ " : ""}
                 {first.name}
