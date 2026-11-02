@@ -491,6 +491,9 @@ final class VibePlayerController: UIViewController {
     /// lenta, con la misma regla que el PC. Cuándo empezó a abrirse lo que se ve, el último
     /// salto (esperar a que cargue el punto nuevo no es un parón) y el parón en curso.
     private var mediaStartedAt = Date()
+    /// Ya se está viendo (no solo abriendo). VLC dice `.buffering` a menudo aunque ya
+    /// reproduzca, así que no basta con esperar a `.playing`: vale que avance el tiempo.
+    private var mediaStarted = false
     private var lastJumpAt = Date.distantPast
     private var stallStartedAt: Date?
     private var stallReported = false
@@ -670,6 +673,7 @@ final class VibePlayerController: UIViewController {
         errorRetries = 0
         shownForThisMedia = false
         mediaStartedAt = Date()
+        mediaStarted = false
         lastStartWaitSent = Date()
         tracksApplied = false
         nextDismissed = false
@@ -953,7 +957,10 @@ final class VibePlayerController: UIViewController {
     private func trackSlowness() {
         let now = Date()
         let waiting = (player.state == .opening || player.state == .buffering) && !player.isPlaying
-        if !shownForThisMedia {
+        if !mediaStarted, player.state == .playing || (player.isPlaying && player.time.intValue > 0) {
+            mediaStarted = true
+        }
+        if !mediaStarted {
             if now.timeIntervalSince(lastStartWaitSent) >= 5 {
                 lastStartWaitSent = now
                 sendEvent(["type": "start_wait", "ms": Int(now.timeIntervalSince(mediaStartedAt) * 1000)])
