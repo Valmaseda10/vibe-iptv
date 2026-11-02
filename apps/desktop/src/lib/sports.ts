@@ -43,9 +43,8 @@ export function useFollowables() {
       if (item.followed) {
         await apiDelete(`/api/sports/follows?profile_id=${profileId}&kind=${item.kind}&key=${encodeURIComponent(item.key)}`);
       } else {
+        // Seguir ya no avisa (2026-11-02): los avisos se encienden aparte.
         await apiPost("/api/sports/follows", { profile_id: profileId, kind: item.kind, key: item.key, label: item.label });
-        // Seguir algo es pedir avisos de sus partidos: el permiso, ahora.
-        void ensureNotificationPermission();
       }
     },
     onMutate: async (item) => {
@@ -116,16 +115,28 @@ export function useHomePreference() {
     enabled: profileId !== null,
   });
   const set = useMutation({
-    mutationFn: (value: string) => apiPost("/api/sports/home-preference", { profile_id: profileId, value }),
-    onMutate: (value) => {
-      queryClient.setQueryData<SportsHomePreference>(["sports-home-preference", profileId], (old) => (old ? { ...old, value } : old));
+    mutationFn: (next: { value: string; notify: boolean }) => apiPost("/api/sports/home-preference", { profile_id: profileId, ...next }),
+    onMutate: (next) => {
+      queryClient.setQueryData<SportsHomePreference>(["sports-home-preference", profileId], (old) => (old ? { ...old, ...next } : old));
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["sports-home-preference"] });
       queryClient.invalidateQueries({ queryKey: ["sports-featured"] });
     },
   });
-  return { value: query.data?.value ?? "mine_and_big", set: (value: string) => set.mutate(value) };
+  const value = query.data?.value ?? "mine_and_big";
+  const notify = query.data?.notify ?? false;
+  return {
+    value,
+    /** Avisar de los partidos de lo que se sigue (apagado de serie). */
+    notify,
+    loaded: query.isSuccess,
+    set: (next: string) => set.mutate({ value: next, notify }),
+    setNotify: (on: boolean) => {
+      if (on) void ensureNotificationPermission();
+      set.mutate({ value, notify: on });
+    },
+  };
 }
 
 function startOfDay(epoch: number): number {

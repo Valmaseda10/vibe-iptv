@@ -6,7 +6,7 @@ import { RELEASE_NOTES } from "../lib/releaseNotes";
 export function WhatsNewSheet({ onClose }: { onClose: () => void }) {
   return (
     <GlassSheet title={`Novedades de la versión ${RELEASE_NOTES.version}`} showTitle={false} onClose={onClose}>
-      <div className="flex max-h-[80vh] flex-col gap-5 overflow-y-auto px-4 pb-4 pt-2">
+      <div className="flex max-h-[80vh] flex-col gap-5 overflow-y-auto px-4 pb-4 pt-2 [&>*]:shrink-0">
         <div className="flex items-center gap-3">
           <BrandMark className="h-10 w-10" />
           <div className="flex flex-col">

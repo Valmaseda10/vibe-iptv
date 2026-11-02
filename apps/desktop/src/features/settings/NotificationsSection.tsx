@@ -6,6 +6,7 @@ import { IS_IOS } from "../../lib/platform";
 import { SettingsCard } from "../../components/SettingsCard";
 import { SettingsRow } from "../../components/SettingsRow";
 import { Toggle } from "../../components/Toggle";
+import { useHomePreference } from "../../lib/sports";
 
 /** Ajustes → Avisos (F17): los de episodios nuevos de las series que sigue el perfil, a
  * mano y en cada aparato (apagados de serie). Los recordatorios y los partidos de «Mis
@@ -15,6 +16,7 @@ export function NotificationsSection() {
   const [newEpisodes, setNewEpisodes] = useState<boolean | null>(null);
   const [permission, setPermission] = useState<NotificationPermission | null>(null);
   const [saving, setSaving] = useState(false);
+  const sports = useHomePreference();
 
   useEffect(() => {
     if (profileId === null) return;
@@ -55,9 +57,17 @@ export function NotificationsSection() {
         </SettingsRow>
       </SettingsCard>
 
+      <SettingsCard
+        title="Deportes"
+        footer="Seguir un equipo hace que sus partidos salgan destacados en Deportes y, en directo, en la portada de Inicio. Los avisos son aparte. Viaja con tu cuenta."
+      >
+        <SettingsRow inline title="Partidos de mis equipos" description="Un aviso 5 minutos antes de que jueguen los equipos y competiciones que sigues.">
+          <Toggle checked={sports.notify} onChange={sports.setNotify} disabled={!sports.loaded} label="Partidos de mis equipos" />
+        </SettingsRow>
+      </SettingsCard>
+
       <SettingsCard title="Siempre activos">
-        <SettingsRow title="Recordatorios de la guía" description="Los programas que marcas con «Avísame» en la guía o en Deportes." />
-        <SettingsRow title="Partidos de «Mis equipos»" description="Cuando juegan los equipos y competiciones que sigues (en Deportes)." />
+        <SettingsRow title="Recordatorios" description="Lo que marcas con «Avísame» en la guía o en un partido." />
       </SettingsCard>
 
       {permission === "denied" && (

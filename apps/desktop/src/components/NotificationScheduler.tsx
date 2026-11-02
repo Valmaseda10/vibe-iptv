@@ -1,12 +1,12 @@
 import { useEffect, useRef } from "react";
 import { useReminders } from "../lib/reminders";
-import { useSportsEvents } from "../lib/sports";
+import { useHomePreference, useSportsEvents } from "../lib/sports";
 import { canScheduleNotifications, markShownOnce, noticeId, replaceScheduledNotifications, showNotification } from "../lib/notifications";
 import type { ScheduledNotice } from "../lib/api-types";
 
 /** Con cuánta antelación avisa un recordatorio (como el aviso de dentro de la app). */
 const REMINDER_BEFORE_S = 60;
-/** Y un partido de «Mis equipos», que no se ha marcado a mano. */
+/** Y un partido de «Mis equipos» (si el perfil quiere esos avisos), sin marcarlo a mano. */
 const MATCH_BEFORE_S = 5 * 60;
 /** El PC mira cada tanto si toca algún aviso. */
 const CHECK_EVERY_MS = 15_000;
@@ -17,6 +17,8 @@ const CHECK_EVERY_MS = 15_000;
 export function NotificationScheduler() {
   const reminders = useReminders();
   const sports = useSportsEvents(7);
+  // Seguir un equipo no avisa solo: hace falta «Partidos de mis equipos» en Ajustes → Avisos.
+  const { notify: notifyMatches } = useHomePreference();
 
   const notices: ScheduledNotice[] = [];
   for (const r of reminders.list) {
@@ -28,7 +30,7 @@ export function NotificationScheduler() {
     });
   }
   const reminded = new Set(reminders.list.map((r) => `${r.start_ts}:${r.title}`));
-  for (const event of sports.data ?? []) {
+  for (const event of notifyMatches ? (sports.data ?? []) : []) {
     // Las repeticiones (diferido) no avisan: solo lo que se juega de verdad.
     if (!event.followed || event.status === "replay" || event.status === "finished" || reminded.has(`${event.start_ts}:${event.name}`)) continue;
     notices.push({

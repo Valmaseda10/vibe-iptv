@@ -18,6 +18,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use rusqlite::{params, Connection};
 
+use super::live_sports::{same_team, EspnTeam};
 use crate::db::{now_epoch, reads, Result};
 
 /// Lo que tiene que valer un partido para salir en la portada.
@@ -48,6 +49,7 @@ const COMPETITIONS: &[(&str, &str, &[&str], &str, i64)] = &[
     // Antes que «LaLiga»: «LALIGA HyperMotion» también contiene «laliga».
     ("laliga2", "LaLiga Hypermotion", &["hypermotion", "segunda division"], "futbol", 5),
     ("laliga", "LaLiga", &["laliga ea sports", "liga ea sports", "primera division", "laliga"], "futbol", 30),
+    ("primera-federacion", "Primera Federación", &["primera federacion", "primera rfef", "1a rfef", "1 rfef"], "futbol", 3),
     ("copa-del-rey", "Copa del Rey", &["copa del rey"], "futbol", 25),
     ("premier", "Premier League", &["premier league"], "futbol", 20),
     ("serie-a", "Serie A", &["serie a"], "futbol", 10),
@@ -363,12 +365,16 @@ pub struct SportEvent {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Follows {
     pub teams: Vec<String>,
+    /// Nombre de cada equipo seguido: la guía no siempre lo escribe igual que ESPN («Celta»
+    /// y «Celta Vigo»), así que también se reconoce por el nombre.
+    pub team_labels: Vec<String>,
     pub competitions: Vec<String>,
 }
 
 impl Follows {
     pub fn follows(&self, event: &ParsedEvent) -> bool {
-        event.participants.iter().any(|p| self.teams.contains(&p.key)) || event.competition_key.as_ref().is_some_and(|k| self.competitions.contains(k))
+        event.participants.iter().any(|p| self.teams.contains(&p.key) || self.team_labels.iter().any(|label| same_team(&p.name, &EspnTeam::named(label))))
+            || event.competition_key.as_ref().is_some_and(|k| self.competitions.contains(k))
     }
 }
 
@@ -460,12 +466,13 @@ pub fn events(conn: &Connection, from: i64, until: i64, access: reads::ProfileAc
 
 /// Lo que sigue un perfil.
 pub fn follows(conn: &Connection, profile_id: i64) -> Result<Follows> {
-    let mut stmt = conn.prepare("SELECT kind, key FROM sport_follows WHERE profile_id = ?1")?;
+    let mut stmt = conn.prepare("SELECT kind, key, label FROM sport_follows WHERE profile_id = ?1")?;
     let mut follows = Follows::default();
-    for row in stmt.query_map(params![profile_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))? {
-        let (kind, key) = row?;
+    for row in stmt.query_map(params![profile_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?)))? {
+        let (kind, key, label) = row?;
         if kind == "team" {
             follows.teams.push(key);
+            follows.team_labels.push(label);
         } else {
             follows.competitions.push(key);
         }
@@ -480,20 +487,54 @@ pub struct Followable {
     pub key: String,
     pub label: String,
     pub sport: Option<String>,
+    /// Dónde sale en «Mis equipos»: «LaLiga», «LaLiga Hypermotion», «Primera Federación»...
+    pub group: &'static str,
+    pub logo: Option<String>,
 }
 
-/// Lo que se ofrece para seguir: los equipos y competiciones conocidos, y los que salen en
-/// la guía de los próximos días (los que más salen, primero).
-pub fn suggestions(upcoming: &[SportEvent]) -> Vec<Followable> {
-    let mut out: Vec<Followable> = TEAMS.iter().map(|(key, label, ..)| Followable { kind: "team", key: (*key).into(), label: (*label).into(), sport: Some("futbol".into()) }).collect();
-    out.extend(COMPETITIONS.iter().map(|(key, label, _, sport, _)| Followable { kind: "competition", key: (*key).into(), label: (*label).into(), sport: Some((*sport).into()) }));
+/// Nombre de cada liga de ESPN en «Mis equipos».
+fn league_group(league: &str) -> &'static str {
+    match league {
+        "soccer/esp.1" => "LaLiga",
+        "soccer/esp.2" => "LaLiga Hypermotion",
+        _ => "Otros equipos",
+    }
+}
+
+/// Lo que se ofrece para seguir: los equipos de LaLiga y LaLiga Hypermotion (de ESPN, con
+/// escudo, al día cada temporada), los conocidos, las competiciones y quien sale en la guía
+/// de los próximos días (Primera Federación aparte; los que más salen, primero).
+pub fn suggestions(upcoming: &[SportEvent], espn_teams: &[(&'static str, EspnTeam)]) -> Vec<Followable> {
+    let espn_of = |label: &str| espn_teams.iter().find(|(_, t)| same_team(label, t));
+    let mut out: Vec<Followable> = Vec::new();
+    let already = |out: &[Followable], key: &str, label: &str| out.iter().any(|f| f.kind == "team" && (f.key == key || same_team(label, &EspnTeam::named(&f.label))));
+    for (key, label, ..) in TEAMS {
+        let espn = espn_of(label);
+        let group = if *key == "espana" { "Selecciones" } else { espn.map_or("Otros equipos", |(league, _)| league_group(league)) };
+        out.push(Followable { kind: "team", key: (*key).into(), label: (*label).into(), sport: Some("futbol".into()), group, logo: espn.and_then(|(_, t)| t.logo.clone()) });
+    }
+    for (league, team) in espn_teams {
+        let key = participant(&team.name).key;
+        if already(&out, &key, &team.name) {
+            continue;
+        }
+        out.push(Followable { kind: "team", key, label: team.name.clone(), sport: Some("futbol".into()), group: league_group(league), logo: team.logo.clone() });
+    }
+    out.extend(
+        COMPETITIONS
+            .iter()
+            .map(|(key, label, _, sport, _)| Followable { kind: "competition", key: (*key).into(), label: (*label).into(), sport: Some((*sport).into()), group: "Competiciones", logo: None }),
+    );
     let mut seen: HashMap<String, (usize, Followable)> = HashMap::new();
     for event in upcoming {
+        let group = if event.event.competition_key.as_deref() == Some("primera-federacion") { "Primera Federación" } else { "En tu guía" };
         for p in &event.event.participants {
-            if out.iter().any(|f| f.key == p.key) {
+            if already(&out, &p.key, &p.name) {
                 continue;
             }
-            let entry = seen.entry(p.key.clone()).or_insert_with(|| (0, Followable { kind: "team", key: p.key.clone(), label: p.name.clone(), sport: event.event.sport.clone() }));
+            let entry = seen.entry(p.key.clone()).or_insert_with(|| {
+                (0, Followable { kind: "team", key: p.key.clone(), label: p.name.clone(), sport: event.event.sport.clone(), group, logo: None })
+            });
             entry.0 += 1;
         }
     }
@@ -578,7 +619,7 @@ mod tests {
         assert!(score(&clasico, &none) >= FEATURE_MIN_SCORE);
         assert!(score(&madrid, &none) >= FEATURE_MIN_SCORE);
         assert!(score(&small, &none) < FEATURE_MIN_SCORE);
-        let sevillista = Follows { teams: vec!["sevilla".into()], competitions: vec![] };
+        let sevillista = Follows { teams: vec!["sevilla".into()], ..Default::default() };
         assert!(score(&small, &sevillista) >= FEATURE_MIN_SCORE, "su equipo, aunque sea pequeño");
         assert!(sevillista.follows(&small));
         assert_eq!(participant("Barça").key, "barcelona");
@@ -608,7 +649,22 @@ mod tests {
         assert_eq!(found[0].channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["DAZN LaLiga", "M+ LaLiga"]);
         assert_eq!(found[0].channels[0].id, 2, "de DAZN LaLiga, el de FHD");
         assert!(is_big_match(&found[0].event));
-        let offered = suggestions(&found);
-        assert!(offered.iter().any(|f| f.key == "real-madrid") && offered.iter().any(|f| f.key == "champions"));
+        let madrid = EspnTeam { logo: Some("escudo-madrid".into()), ..EspnTeam::named("Real Madrid") };
+        let espn = [("soccer/esp.1", madrid), ("soccer/esp.2", EspnTeam::named("Racing Santander"))];
+        let offered = suggestions(&found, &espn);
+        assert!(offered.iter().any(|f| f.key == "champions"));
+        let madrids: Vec<&Followable> = offered.iter().filter(|f| f.kind == "team" && f.label.contains("Madrid") && !f.label.contains("Atl")).collect();
+        assert_eq!(madrids.len(), 1, "ni repetido entre los conocidos, ESPN y la guía");
+        assert_eq!((madrids[0].key.as_str(), madrids[0].group, madrids[0].logo.as_deref()), ("real-madrid", "LaLiga", Some("escudo-madrid")));
+        assert!(offered.iter().any(|f| f.label == "Racing Santander" && f.group == "LaLiga Hypermotion"));
+    }
+
+    #[test]
+    fn a_team_followed_with_the_espn_name_is_recognised_with_the_guide_name() {
+        let follows = Follows { teams: vec!["celta-vigo".into()], team_labels: vec!["Celta Vigo".into()], competitions: vec![] };
+        let event = parse_programme("DIRECTO Jornada 12: Celta - Rayo Vallecano · LALIGA EA SPORTS", Some("Deportes,Fútbol"), true, NOW).unwrap();
+        assert!(follows.follows(&event));
+        let other = parse_programme("DIRECTO Jornada 12: Sevilla - Betis · LALIGA EA SPORTS", Some("Deportes,Fútbol"), true, NOW).unwrap();
+        assert!(!follows.follows(&other));
     }
 }

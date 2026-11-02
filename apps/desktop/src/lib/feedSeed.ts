@@ -29,6 +29,16 @@ export function feedVisit(): { seed: number; avoid: string } {
   return { seed: current.seed, avoid: current.avoid };
 }
 
+/** «Ver otras» al final de Inicio, Películas o Series: visita nueva que evita, además de
+ * las portadas recientes, todo lo que se acaba de enseñar (`movie:12`, `series:4`). Se
+ * queda como visita actual: ir a una ficha y volver no la deshace. */
+export function reshuffleVisit(shown: string[]): { seed: number; avoid: string } {
+  const now = Date.now();
+  const avoid = [...new Set([...recentFeatured(), ...shown])].join(",");
+  current = { seed: Math.floor(Math.random() * 2 ** 48), avoid, createdAt: now, usedAt: now };
+  return { seed: current.seed, avoid: current.avoid };
+}
+
 /** Portadas de las últimas visitas (`movie:12`), para no repetirlas. Solo en este aparato. */
 export function recentFeatured(): string[] {
   try {

@@ -438,6 +438,9 @@ pub(crate) fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Res
                 if let Some(value) = r.sports_home.as_deref() {
                     cloud::set_profile_sports_home(conn, id, value)?;
                 }
+                if let Some(on) = r.sports_notify {
+                    cloud::set_profile_sports_notify(conn, id, on)?;
+                }
             }
         }
         RemoteDoc::Favorite(f) => {

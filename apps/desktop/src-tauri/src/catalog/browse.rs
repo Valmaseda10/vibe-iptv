@@ -310,19 +310,34 @@ fn discovery_matches(discovery: Discovery, entry: &BrowseIndexRow, series: bool,
 }
 
 /// Elige los títulos de una fila de descubrimiento entre sus mejores candidatas.
-fn pick_discovery(rng: &mut Rng, input: &KindInputs, discovery: Discovery, used: &HashSet<i64>, prominent: &HashSet<i64>) -> Vec<i64> {
+fn pick_discovery(rng: &mut Rng, input: &KindInputs, discovery: Discovery, used: &HashSet<i64>, prominent: &HashSet<i64>, avoided: &HashSet<i64>) -> Vec<i64> {
     let series = input.kind == "series";
     let mut pool: Vec<(i64, f64)> = input
         .index
         .iter()
         .filter(|e| !input.taste.known.contains(&e.id) && !input.taste.disliked.contains(&e.id) && !used.contains(&e.id))
         .filter(|e| discovery_matches(discovery, e, series, input.now_year, prominent))
-        .map(|e| (e.id, discovery_weight(e, input.taste, input.now_year)))
+        .map(|e| (e.id, discovery_weight(e, input.taste, input.now_year) * if avoided.contains(&e.id) { AVOIDED_WEIGHT } else { 1.0 }))
         .collect();
     pool.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
     pool.truncate(POOL_SIZE);
     weighted_sample(rng, &pool, ROW_SIZE)
 }
+
+/// Los títulos de un tipo que hay que evitar (portadas recientes y, con «Ver otras», todo
+/// lo que se acababa de enseñar).
+fn avoided_ids(avoid: &HashSet<(&'static str, i64)>, kind: &str) -> HashSet<i64> {
+    avoid.iter().filter(|(k, _)| *k == kind).map(|(_, id)| *id).collect()
+}
+
+/// Lo evitado pasa al final (sigue ahí por si no hay bastante de lo demás).
+fn prefer_fresh(ids: Vec<i64>, avoided: &HashSet<i64>) -> Vec<i64> {
+    let (fresh, shown): (Vec<i64>, Vec<i64>) = ids.into_iter().partition(|id| !avoided.contains(id));
+    fresh.into_iter().chain(shown).collect()
+}
+
+/// Peso de un título ya enseñado: casi nunca sale si hay otros.
+const AVOIDED_WEIGHT: f64 = 0.02;
 
 fn cards(kind: &'static str, ids: impl IntoIterator<Item = i64>) -> Vec<Card> {
     ids.into_iter().map(|id| Card { kind, id, reason: None }).collect()
@@ -350,14 +365,31 @@ fn cold_start(input: &KindInputs) -> Vec<(i64, String)> {
 
 /// Recomendadas: siempre de las mejores, pero no las mismas ni en el mismo orden cada vez.
 /// Sin gustos todavía, lo popular (ver [`cold_start`]).
-fn pick_recommended(rng: &mut Rng, input: &KindInputs, take: usize) -> Vec<Card> {
+fn pick_recommended(rng: &mut Rng, input: &KindInputs, take: usize, avoided: &HashSet<i64>) -> Vec<Card> {
     let source = if input.recommended.is_empty() { cold_start(input) } else { input.recommended.to_vec() };
-    let pool: Vec<((i64, String), f64)> = source
+    let mut pool: Vec<((i64, String), f64)> = source
         .into_iter()
         .filter(|(id, _)| !input.taste.disliked.contains(id))
         .enumerate()
-        .map(|(rank, item)| (item, 1.0 / (1.0 + 0.12 * rank as f64)))
+        .map(|(rank, item)| {
+            let penalty = if avoided.contains(&item.0) { AVOIDED_WEIGHT } else { 1.0 };
+            (item, penalty / (1.0 + 0.12 * rank as f64))
+        })
         .collect();
+    // «Ver otras» con la lista agotada: antes que repetir, lo que más encaja con sus gustos
+    // del resto del catálogo.
+    let fresh = pool.iter().filter(|((id, _), _)| !avoided.contains(id)).count();
+    if !avoided.is_empty() && fresh < take {
+        let in_pool: HashSet<i64> = pool.iter().map(|((id, _), _)| *id).collect();
+        let mut extra: Vec<(i64, f64)> = input
+            .index
+            .iter()
+            .filter(|e| !in_pool.contains(&e.id) && !avoided.contains(&e.id) && !input.taste.known.contains(&e.id) && !input.taste.disliked.contains(&e.id) && credible(e, 6.5))
+            .map(|e| (e.id, discovery_weight(e, input.taste, input.now_year)))
+            .collect();
+        extra.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal).then(a.0.cmp(&b.0)));
+        pool.extend(extra.into_iter().take(POOL_SIZE).enumerate().map(|(rank, (id, _))| ((id, String::new()), 0.3 / (1.0 + 0.05 * rank as f64))));
+    }
     weighted_sample(rng, &pool, take)
         .into_iter()
         .map(|(id, reason)| Card { kind: input.kind, id, reason: (!reason.is_empty()).then_some(reason) })
@@ -413,6 +445,7 @@ pub fn plan_kind(input: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i
     let series = input.kind == "series";
     let mut rows = Vec::new();
     let mut used: HashSet<i64> = HashSet::new();
+    let avoided = avoided_ids(avoid, input.kind);
     let push = |rows: &mut Vec<PlannedRow>, key: &str, title: String, style: RowStyle, cards: Vec<Card>, min: usize| {
         if cards.len() >= min {
             rows.push(PlannedRow { key: key.to_string(), title, style, cards });
@@ -429,7 +462,7 @@ pub fn plan_kind(input: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i
     let top_title = if series { "Top 10 series en España hoy" } else { "Top 10 películas en España hoy" };
     push(&mut rows, "top", top_title.to_string(), RowStyle::Top10, cards(input.kind, top), 3);
 
-    let recommended = pick_recommended(&mut rng, input, ROW_SIZE);
+    let recommended = pick_recommended(&mut rng, input, ROW_SIZE, &avoided);
     used.extend(recommended.iter().map(|c| c.id));
     let recommended_title = match (series, input.recommended.is_empty()) {
         (true, false) => "Series recomendadas para ti",
@@ -445,7 +478,7 @@ pub fn plan_kind(input: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i
     let because_row = |index: usize, used: &HashSet<i64>| -> Option<(String, Vec<i64>)> {
         let (row_title, ids) = input.because.get(index)?;
         let clean: Vec<i64> = ids.iter().copied().filter(|id| !input.taste.disliked.contains(id) && !input.taste.known.contains(id)).collect();
-        let fresh: Vec<i64> = clean.iter().copied().filter(|id| !used.contains(id)).collect();
+        let fresh: Vec<i64> = clean.iter().copied().filter(|id| !used.contains(id) && !avoided.contains(id)).collect();
         Some((row_title.clone(), if fresh.len() >= MIN_ROW { fresh } else { clean }))
     };
     if let Some((row_title, ids)) = because_order.first().and_then(|i| because_row(*i, &used)) {
@@ -456,7 +489,8 @@ pub fn plan_kind(input: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i
 
     push(&mut rows, "my-list", "Mi lista".to_string(), RowStyle::Poster, cards(input.kind, input.my_list.iter().copied().take(40)), 1);
 
-    let trending: Vec<i64> = input.trending.iter().copied().filter(|id| !input.taste.disliked.contains(id)).take(ROW_SIZE).collect();
+    let trending: Vec<i64> = input.trending.iter().copied().filter(|id| !input.taste.disliked.contains(id)).collect();
+    let trending: Vec<i64> = prefer_fresh(trending, &avoided).into_iter().take(ROW_SIZE).collect();
     used.extend(&trending);
     let trending_title = if series { "Series en tendencia" } else { "Tendencias esta semana" };
     push(&mut rows, "trending", trending_title.to_string(), RowStyle::Poster, cards(input.kind, trending), MIN_ROW);
@@ -466,8 +500,8 @@ pub fn plan_kind(input: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i
         .iter()
         .copied()
         .filter(|id| !input.taste.disliked.contains(id) && !input.taste.known.contains(id))
-        .take(ROW_SIZE)
         .collect();
+    let recent: Vec<i64> = prefer_fresh(recent, &avoided).into_iter().take(ROW_SIZE).collect();
     push(&mut rows, "new", "Novedades".to_string(), RowStyle::Poster, cards(input.kind, recent), MIN_ROW);
 
     // Descubrimiento: géneros con títulos de sobra y unas cuantas filas temáticas,
@@ -518,7 +552,8 @@ pub fn plan_kind(input: &KindInputs, seed: u64, avoid: &HashSet<(&'static str, i
                     Discovery::Gems => "gems".into(),
                     _ => "releases".into(),
                 };
-                (key, discovery_title(input.kind, discovery, input.genre_names, input.taste, home, None), pick_discovery(&mut rng, input, discovery, &used, &prominent))
+                let ids = pick_discovery(&mut rng, input, discovery, &used, &prominent, &avoided);
+                (key, discovery_title(input.kind, discovery, input.genre_names, input.taste, home, None), ids)
             }
         };
         let Some(title) = title else { continue };
@@ -628,7 +663,11 @@ pub fn plan_home(movies: &KindInputs, series: &KindInputs, seed: u64, avoid: &Ha
     let not_featured = |cards: Vec<Card>| -> Vec<Card> { cards.into_iter().filter(|c| featured.as_ref().is_none_or(|f| !(f.kind == c.kind && f.id == c.id))).collect() };
 
     let mut rows = Vec::new();
-    let recommended = interleave(not_featured(pick_recommended(&mut rng, movies, 12)), not_featured(pick_recommended(&mut rng, series, 10)), ROW_SIZE);
+    let recommended = interleave(
+        not_featured(pick_recommended(&mut rng, movies, 12, &avoided_ids(avoid, "movie"))),
+        not_featured(pick_recommended(&mut rng, series, 10, &avoided_ids(avoid, "series"))),
+        ROW_SIZE,
+    );
     if recommended.len() >= MIN_ROW {
         let personal = !movies.recommended.is_empty() || !series.recommended.is_empty();
         let title = if personal { "Recomendado para ti" } else { "Populares ahora" };
@@ -786,6 +825,23 @@ mod tests {
             let featured = plan_kind(&input, seed, &avoid, false).featured.unwrap();
             assert_ne!(featured.id, 60);
         }
+    }
+
+    #[test]
+    fn see_others_brings_rows_with_titles_that_were_not_on_screen() {
+        // Un catálogo de verdad tiene miles: con 1500 hay de sobra para cambiarlo todo.
+        let index: Vec<BrowseIndexRow> = (1..=1500).map(|id| entry(id, 5.0 + (id % 40) as f64 / 10.0, 1960 + (id % 66) as i32, &[[28, 35, 18][(id % 3) as usize]])).collect();
+        let (taste, names) = (Taste::default(), names());
+        let recommended: Vec<(i64, String)> = (50..150).map(|id| (id, "X".to_string())).collect();
+        let input = KindInputs { trending: &[], recent: &[], ..inputs(&index, &taste, &names, &recommended) };
+        let first = plan_kind(&input, 7, &HashSet::new(), false);
+        // «Ver otras»: se evita todo lo que había en pantalla menos el Top 10 (es un ranking).
+        let shown: HashSet<(&'static str, i64)> = first.rows.iter().filter(|r| r.key != "top").flat_map(|r| r.cards.iter().map(|c| ("movie", c.id))).collect();
+        let second = plan_kind(&input, 8, &shown, false);
+        let repeated = second.rows.iter().filter(|r| r.key != "top").flat_map(|r| r.cards.iter()).filter(|c| shown.contains(&("movie", c.id))).count();
+        let total: usize = second.rows.iter().filter(|r| r.key != "top").map(|r| r.cards.len()).sum();
+        assert!(total > 0);
+        assert!(repeated * 5 < total, "casi todo es nuevo: {repeated} de {total} repetidos");
     }
 
     #[test]

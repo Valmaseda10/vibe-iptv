@@ -66,6 +66,7 @@ pub fn profile_doc(conn: &Connection, profile_id: i64) -> Result<Option<RemoteDo
         max_age: profile.max_age,
         pin_hash: profile.pin_hash,
         sports_home: Some(profile.sports_home),
+        sports_notify: Some(profile.sports_notify),
         updated_at: profile.updated_at,
         deleted: false,
     })))
@@ -85,6 +86,7 @@ pub fn enqueue_profile_deleted(conn: &Connection, remote_id: &str) -> Result<()>
         max_age: None,
         pin_hash: None,
         sports_home: None,
+        sports_notify: None,
         updated_at: now,
         deleted: true,
     });

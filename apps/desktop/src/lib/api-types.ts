@@ -699,7 +699,15 @@ export type SportFollow = {
 /**
  * `team` o `competition`.
  */
-kind: string, key: string, label: string, sport: string | null, followed: boolean, };
+kind: string, key: string, label: string, sport: string | null, followed: boolean, 
+/**
+ * Grupo en «Mis equipos» («LaLiga», «Competiciones», «En tu guía»...).
+ */
+group: string | null, 
+/**
+ * Escudo (ESPN), si se conoce.
+ */
+logo: string | null, };
 
 export type SportFollowInput = { profile_id: number, kind: string, key: string, label: string, };
 
@@ -714,9 +722,10 @@ logo: string | null,
 color: string | null, score: string | null, };
 
 /**
- * «Partidos en Inicio» del perfil: `mine`, `mine_and_big` o `never`.
+ * «Partidos en Inicio» del perfil (`mine`, `mine_and_big` o `never`) y si avisa de los
+ * partidos de lo que sigue (apagado de serie: seguir no implica avisar).
  */
-export type SportsHomePreference = { profile_id: number, value: string, };
+export type SportsHomePreference = { profile_id: number, value: string, notify: boolean, };
 
 export type StreamFailure = { status: number, message: string, };
 

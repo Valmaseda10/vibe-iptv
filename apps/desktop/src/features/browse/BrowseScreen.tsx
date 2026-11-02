@@ -3,7 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import { apiGet } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type { BrowseResponse } from "../../lib/api-types";
-import { feedVisit, rememberFeatured } from "../../lib/feedSeed";
+import { feedVisit, rememberFeatured, reshuffleVisit } from "../../lib/feedSeed";
 import { HeroBanner, HeroBannerSkeleton } from "../../components/HeroBanner";
 import { PosterCardSkeleton } from "../../components/PosterCard";
 import { BrowseRows } from "./BrowseRows";
@@ -27,7 +27,7 @@ type BrowseScreenProps = {
 export function BrowseScreen({ page, title, actions, before }: BrowseScreenProps) {
   const { profileId } = useActiveProfile();
   // Una semilla y unas portadas a evitar por visita (ver `lib/feedSeed`).
-  const [{ seed, avoid }] = useState(feedVisit);
+  const [{ seed, avoid }, setVisit] = useState(feedVisit);
   const query = useQuery({
     queryKey: ["browse", page, profileId, seed],
     queryFn: () => apiGet<BrowseResponse>(`/api/browse/${page}?profile_id=${profileId}&seed=${seed}${avoid ? `&avoid=${encodeURIComponent(avoid)}` : ""}`),
@@ -83,6 +83,35 @@ export function BrowseScreen({ page, title, actions, before }: BrowseScreenProps
       ) : (
         <BrowseRows rows={query.data?.rows ?? []} page={page} />
       )}
+
+      {query.isSuccess && (query.data.rows.length > 0 || query.data.featured) && (
+        <div className="flex flex-col items-center gap-3 px-4 pt-4 text-center sm:px-10">
+          <p className="text-sm text-neutral-400">¿Nada te convence?</p>
+          <button
+            type="button"
+            onClick={() => {
+              setVisit(reshuffleVisit(shownTitles(query.data)));
+              document.querySelector("[data-shell-main]")?.scrollTo({ top: 0, behavior: "smooth" });
+            }}
+            className="flex items-center gap-2 rounded-full bg-white/10 px-5 py-2.5 text-sm font-semibold text-white outline-none ring-1 ring-white/10 transition-colors hover:bg-white/20 focus-visible:ring-2 focus-visible:ring-white/80"
+          >
+            <span aria-hidden className="text-base leading-none">↻</span>
+            Ver otras
+          </button>
+        </div>
+      )}
     </div>
   );
+}
+
+/** Filas que no se barajan: el Top 10 es un ranking y Mi lista y lo empezado son del perfil. */
+const FIXED_ROWS = new Set(["top", "my-list", "continue", "new-episodes"]);
+
+/** Lo que hay ahora en pantalla (portada y filas que se barajan), para no repetirlo. */
+function shownTitles(data: BrowseResponse): string[] {
+  const keys = data.rows
+    .filter((row) => !FIXED_ROWS.has(row.key))
+    .flatMap((row) => row.items.filter((item) => item.kind === "movie" || item.kind === "series").map((item) => `${item.kind}:${item.id}`));
+  if (data.featured) keys.push(`${data.featured.kind}:${data.featured.id}`);
+  return keys;
 }

@@ -65,7 +65,7 @@ export function AddProviderSheet({ onClose, onAdded }: { onClose: () => void; on
 
   return (
     <GlassSheet title="Añadir proveedor" onClose={onClose}>
-      <div className="flex max-h-[80vh] flex-col gap-4 overflow-y-auto px-3 pb-3">
+      <div className="flex max-h-[80vh] flex-col gap-4 overflow-y-auto px-3 pb-3 [&>*]:shrink-0">
         <div role="radiogroup" aria-label="Tipo de proveedor" className="grid grid-cols-2 gap-2">
           {KINDS.map(({ kind, title, text }) => {
             const selected = form.kind === kind;

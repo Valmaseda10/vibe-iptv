@@ -269,21 +269,26 @@ fn is_big(event: &SportEventResponse) -> bool {
     sports::is_big_match(&parsed)
 }
 
-/// «Partidos en Inicio» del perfil: `mine`, `mine_and_big` o `never`.
+/// «Partidos en Inicio» del perfil (`mine`, `mine_and_big` o `never`) y si avisa de los
+/// partidos de lo que sigue (apagado de serie: seguir no implica avisar).
 #[derive(Serialize, Deserialize, TS)]
 #[ts(export, export_to = "api-types.ts")]
 pub struct SportsHomePreference {
     #[ts(type = "number")]
     pub profile_id: i64,
     pub value: String,
+    #[serde(default)]
+    pub notify: bool,
 }
 
 async fn get_home_preference(State(state): State<SportsState>, Query(query): Query<ProfileQuery>) -> Result<Json<SportsHomePreference>, SportsError> {
-    let value = with_db(state.db_path, move |conn| {
-        Ok(conn.query_row("SELECT sports_home FROM profiles WHERE id = ?1", rusqlite::params![query.profile_id], |r| r.get::<_, String>(0)).unwrap_or_else(|_| "mine_and_big".into()))
+    let (value, notify) = with_db(state.db_path, move |conn| {
+        Ok(conn
+            .query_row("SELECT sports_home, sports_notify FROM profiles WHERE id = ?1", rusqlite::params![query.profile_id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)? != 0)))
+            .unwrap_or_else(|_| ("mine_and_big".into(), false)))
     })
     .await?;
-    Ok(Json(SportsHomePreference { profile_id: query.profile_id, value }))
+    Ok(Json(SportsHomePreference { profile_id: query.profile_id, value, notify }))
 }
 
 async fn post_home_preference(State(state): State<SportsState>, Json(input): Json<SportsHomePreference>) -> Result<StatusCode, SportsError> {
@@ -291,7 +296,10 @@ async fn post_home_preference(State(state): State<SportsState>, Json(input): Jso
         return Err(SportsError::BadRequest("value debe ser mine, mine_and_big o never".into()));
     }
     with_db(state.db_path, move |conn| {
-        conn.execute("UPDATE profiles SET sports_home = ?1, updated_at = ?2 WHERE id = ?3", rusqlite::params![input.value, now_epoch(), input.profile_id])?;
+        conn.execute(
+            "UPDATE profiles SET sports_home = ?1, sports_notify = ?2, updated_at = ?3 WHERE id = ?4",
+            rusqlite::params![input.value, input.notify as i64, now_epoch(), input.profile_id],
+        )?;
         // Viaja con el perfil, a sus otros aparatos.
         outbox::enqueue_profile(conn, input.profile_id)
     })
@@ -310,13 +318,19 @@ pub struct SportFollow {
     pub label: String,
     pub sport: Option<String>,
     pub followed: bool,
+    /// Grupo en «Mis equipos» («LaLiga», «Competiciones», «En tu guía»...).
+    #[serde(default)]
+    pub group: Option<String>,
+    /// Escudo (ESPN), si se conoce.
+    #[serde(default)]
+    pub logo: Option<String>,
 }
 
 async fn get_follows(State(state): State<SportsState>, Query(query): Query<ProfileQuery>) -> Result<Json<Vec<SportFollow>>, SportsError> {
     let rows = with_db(state.db_path, move |conn| {
         let mut stmt = conn.prepare("SELECT kind, key, label FROM sport_follows WHERE profile_id = ?1 ORDER BY created_at")?;
         let rows = stmt
-            .query_map(rusqlite::params![query.profile_id], |r| Ok(SportFollow { kind: r.get(0)?, key: r.get(1)?, label: r.get(2)?, sport: None, followed: true }))?
+            .query_map(rusqlite::params![query.profile_id], |r| Ok(SportFollow { kind: r.get(0)?, key: r.get(1)?, label: r.get(2)?, sport: None, followed: true, group: None, logo: None }))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     })
@@ -327,16 +341,18 @@ async fn get_follows(State(state): State<SportsState>, Query(query): Query<Profi
 /// Lo que se ofrece en «Mis equipos»: los conocidos y quien sale en la guía, con lo que ya
 /// se sigue marcado (y lo seguido que ya no sale en la guía, también).
 async fn get_followables(State(state): State<SportsState>, Query(query): Query<ProfileQuery>) -> Result<Json<Vec<SportFollow>>, SportsError> {
+    // Las plantillas de LaLiga y LaLiga Hypermotion, al día cada temporada (caché de un día).
+    let espn_teams = live_sports::league_teams(&["soccer/esp.1", "soccer/esp.2"]).await;
     let list = with_db(state.db_path, move |conn| {
         let now = now_epoch();
         let access = reads::profile_access(conn, query.profile_id)?;
         let events = sports::events(conn, now - LIVE_LOOKBACK_S, now + MAX_DAYS * 86_400, access)?;
         let follows = sports::follows(conn, query.profile_id)?;
-        let mut out: Vec<SportFollow> = sports::suggestions(&events)
+        let mut out: Vec<SportFollow> = sports::suggestions(&events, &espn_teams)
             .into_iter()
             .map(|f| {
                 let followed = if f.kind == "team" { follows.teams.contains(&f.key) } else { follows.competitions.contains(&f.key) };
-                SportFollow { kind: f.kind.to_string(), key: f.key, label: f.label, sport: f.sport, followed }
+                SportFollow { kind: f.kind.to_string(), key: f.key, label: f.label, sport: f.sport, followed, group: Some(f.group.to_string()), logo: f.logo }
             })
             .collect();
         let mut stmt = conn.prepare("SELECT kind, key, label FROM sport_follows WHERE profile_id = ?1")?;
@@ -344,7 +360,7 @@ async fn get_followables(State(state): State<SportsState>, Query(query): Query<P
         for row in saved {
             let (kind, key, label) = row?;
             if !out.iter().any(|f| f.kind == kind && f.key == key) {
-                out.insert(0, SportFollow { kind, key, label, sport: None, followed: true });
+                out.insert(0, SportFollow { kind, key, label, sport: None, followed: true, group: None, logo: None });
             }
         }
         Ok(out)

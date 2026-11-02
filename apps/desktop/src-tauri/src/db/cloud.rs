@@ -120,9 +120,10 @@ pub struct SyncProfile {
     pub pin_hash: Option<String>,
     pub updated_at: i64,
     pub sports_home: String,
+    pub sports_notify: bool,
 }
 
-const PROFILE_COLUMNS: &str = "id, remote_id, name, avatar, adult_ok, pin_hash, updated_at, max_age, sports_home";
+const PROFILE_COLUMNS: &str = "id, remote_id, name, avatar, adult_ok, pin_hash, updated_at, max_age, sports_home, sports_notify";
 
 fn row_to_sync_profile(row: &rusqlite::Row) -> rusqlite::Result<SyncProfile> {
     Ok(SyncProfile {
@@ -135,7 +136,14 @@ fn row_to_sync_profile(row: &rusqlite::Row) -> rusqlite::Result<SyncProfile> {
         updated_at: row.get(6)?,
         max_age: row.get(7)?,
         sports_home: row.get(8)?,
+        sports_notify: row.get::<_, i64>(9)? != 0,
     })
+}
+
+/// Avisos de los partidos de lo que sigue el perfil, desde la nube.
+pub fn set_profile_sports_notify(conn: &Connection, profile_id: i64, on: bool) -> Result<()> {
+    conn.execute("UPDATE profiles SET sports_notify = ?1 WHERE id = ?2", params![on as i64, profile_id])?;
+    Ok(())
 }
 
 /// Valores válidos de «Partidos en Inicio» (F17).

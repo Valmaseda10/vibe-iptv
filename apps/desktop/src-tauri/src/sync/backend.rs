@@ -99,6 +99,9 @@ pub struct RemoteProfile {
     /// Partidos en la portada de Inicio (F17); `None` en documentos de antes.
     #[serde(default)]
     pub sports_home: Option<String>,
+    /// Avisos de los partidos de sus equipos (2026-11-02); `None` en documentos de antes.
+    #[serde(default)]
+    pub sports_notify: Option<bool>,
     pub updated_at: i64,
     pub deleted: bool,
 }

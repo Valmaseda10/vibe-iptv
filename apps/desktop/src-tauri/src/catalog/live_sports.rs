@@ -64,6 +64,13 @@ pub struct EspnTeam {
     pub score: Option<String>,
 }
 
+impl EspnTeam {
+    /// Un equipo del que solo se sabe el nombre (para compararlo con `same_team`).
+    pub fn named(name: &str) -> Self {
+        Self { name: name.to_string(), short_name: None, abbreviation: None, logo: None, color: None, alternate_color: None, score: None }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EspnState {
     Scheduled,
@@ -367,19 +374,9 @@ pub async fn boards_for(events: &[SportEvent], now: i64) -> Boards {
     }
     let mut out = Boards::default();
     let mut to_fetch = Vec::new();
-    let leagues: HashSet<&'static str> = wanted.iter().map(|(league, _)| *league).collect();
-    let mut teams_to_fetch = Vec::new();
+    let leagues: Vec<&'static str> = wanted.iter().map(|(league, _)| *league).collect::<HashSet<_>>().into_iter().collect();
+    out.teams = league_teams(&leagues).await;
     if let Ok(cache) = CACHE.lock() {
-        for league in &leagues {
-            match cache.teams.get(league) {
-                Some((at, teams)) if at.elapsed() < TEAMS_TTL => out.teams.extend(teams.iter().map(|t| (*league, t.clone()))),
-                Some((_, teams)) if cache.teams_failed.get(league).is_some_and(|at| at.elapsed() < RETRY_AFTER_FAILURE) => {
-                    out.teams.extend(teams.iter().map(|t| (*league, t.clone())));
-                }
-                None if cache.teams_failed.get(league).is_some_and(|at| at.elapsed() < RETRY_AFTER_FAILURE) => {}
-                _ => teams_to_fetch.push(*league),
-            }
-        }
         for (league, day) in &wanted {
             let key = (*league, yyyymmdd(*day));
             let ttl = if (*day - today).abs() <= 1 { LIVE_TTL } else { LATER_TTL };
@@ -399,32 +396,10 @@ pub async fn boards_for(events: &[SportEvent], now: i64) -> Boards {
             }
         }
     }
-    if to_fetch.is_empty() && teams_to_fetch.is_empty() {
+    if to_fetch.is_empty() {
         return out;
     }
-    let Ok(client) = reqwest::Client::builder().timeout(TIMEOUT).user_agent("Mozilla/5.0 VIBE-IPTV").build() else { return out };
-    let fetched_teams = futures_util::future::join_all(teams_to_fetch.iter().map(|league| {
-        let client = &client;
-        async move { (*league, fetch_teams(client, league).await) }
-    }))
-    .await;
-    if let Ok(mut cache) = CACHE.lock() {
-        for (league, result) in fetched_teams {
-            match result {
-                Some(teams) => {
-                    out.teams.extend(teams.iter().map(|t| (league, t.clone())));
-                    cache.teams_failed.remove(league);
-                    cache.teams.insert(league, (Instant::now(), teams));
-                }
-                None => {
-                    cache.teams_failed.insert(league, Instant::now());
-                    if let Some((_, teams)) = cache.teams.get(league) {
-                        out.teams.extend(teams.iter().map(|t| (league, t.clone())));
-                    }
-                }
-            }
-        }
-    }
+    let Ok(client) = http_client() else { return out };
     let fetched = futures_util::future::join_all(to_fetch.iter().map(|(league, day)| {
         let client = &client;
         async move { (*league, *day, fetch_board(client, league, &yyyymmdd(*day)).await) }
@@ -452,6 +427,56 @@ pub async fn boards_for(events: &[SportEvent], now: i64) -> Boards {
     }
     let failed = to_fetch.len().saturating_sub(out.known.len().min(to_fetch.len()));
     tracing::debug!(pedidos = to_fetch.len(), failed, "marcadores de ESPN");
+    out
+}
+
+fn http_client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder().timeout(TIMEOUT).user_agent("Mozilla/5.0 VIBE-IPTV").build()
+}
+
+/// Los equipos de unas ligas (con escudo), de la caché del día o de ESPN. Si ESPN falla,
+/// lo último que se tuviera; si nunca respondió, nada.
+pub async fn league_teams(leagues: &[&'static str]) -> Vec<(&'static str, EspnTeam)> {
+    let mut out = Vec::new();
+    let mut to_fetch = Vec::new();
+    if let Ok(cache) = CACHE.lock() {
+        for league in leagues {
+            match cache.teams.get(league) {
+                Some((at, teams)) if at.elapsed() < TEAMS_TTL => out.extend(teams.iter().map(|t| (*league, t.clone()))),
+                Some((_, teams)) if cache.teams_failed.get(league).is_some_and(|at| at.elapsed() < RETRY_AFTER_FAILURE) => {
+                    out.extend(teams.iter().map(|t| (*league, t.clone())));
+                }
+                None if cache.teams_failed.get(league).is_some_and(|at| at.elapsed() < RETRY_AFTER_FAILURE) => {}
+                _ => to_fetch.push(*league),
+            }
+        }
+    }
+    if to_fetch.is_empty() {
+        return out;
+    }
+    let Ok(client) = http_client() else { return out };
+    let fetched = futures_util::future::join_all(to_fetch.iter().map(|league| {
+        let client = &client;
+        async move { (*league, fetch_teams(client, league).await) }
+    }))
+    .await;
+    if let Ok(mut cache) = CACHE.lock() {
+        for (league, result) in fetched {
+            match result {
+                Some(teams) => {
+                    out.extend(teams.iter().map(|t| (league, t.clone())));
+                    cache.teams_failed.remove(league);
+                    cache.teams.insert(league, (Instant::now(), teams));
+                }
+                None => {
+                    cache.teams_failed.insert(league, Instant::now());
+                    if let Some((_, teams)) = cache.teams.get(league) {
+                        out.extend(teams.iter().map(|t| (league, t.clone())));
+                    }
+                }
+            }
+        }
+    }
     out
 }
 

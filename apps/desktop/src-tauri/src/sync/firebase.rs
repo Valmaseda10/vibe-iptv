@@ -369,6 +369,9 @@ fn encode_fields(doc: &RemoteDoc) -> Value {
             fields.insert("max_age".into(), p.max_age.map_or(json!({ "nullValue": null }), fs_int));
             fields.insert("pin_hash".into(), fs_opt_string(p.pin_hash.as_deref()));
             fields.insert("sports_home".into(), fs_opt_string(p.sports_home.as_deref()));
+            if let Some(on) = p.sports_notify {
+                fields.insert("sports_notify".into(), fs_bool(on));
+            }
             fields.insert("updated_at".into(), fs_int(p.updated_at));
             fields.insert("deleted".into(), fs_bool(p.deleted));
         }
@@ -473,6 +476,7 @@ fn decode_doc(collection: Collection, name: &str, document: &Value) -> Option<Re
             max_age: fields.int("max_age"),
             pin_hash: fields.string("pin_hash"),
             sports_home: fields.string("sports_home"),
+            sports_notify: fields.bool("sports_notify"),
             updated_at,
             deleted,
         }),
