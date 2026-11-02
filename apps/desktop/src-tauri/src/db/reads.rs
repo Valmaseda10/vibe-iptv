@@ -2011,6 +2011,10 @@ pub struct FavoriteRow {
     pub item_id: i64,
     pub title: String,
     pub poster_path: Option<String>,
+    pub added_at: i64,
+    pub year: Option<i32>,
+    /// Logo del canal (solo canales).
+    pub logo_url: Option<String>,
 }
 
 /// Favoritos con título y portada de verdad (F8) — antes solo `item_kind`/`item_id` en
@@ -2018,21 +2022,23 @@ pub struct FavoriteRow {
 /// Solo canal/película/serie tienen sentido aquí (no episodios sueltos): coincide con
 /// dónde vive el conmutador en la interfaz.
 pub fn list_favorites(conn: &Connection, profile_id: i64) -> Result<Vec<FavoriteRow>> {
-    let mut stmt = conn.prepare("SELECT item_kind, item_id FROM favorites WHERE profile_id = ?1 ORDER BY added_at DESC")?;
-    let raw: Vec<(String, i64)> = stmt.query_map(params![profile_id], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stmt = conn.prepare("SELECT item_kind, item_id, added_at FROM favorites WHERE profile_id = ?1 ORDER BY added_at DESC")?;
+    let raw: Vec<(String, i64, i64)> = stmt.query_map(params![profile_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?.collect::<rusqlite::Result<Vec<_>>>()?;
 
     let mut items = Vec::with_capacity(raw.len());
-    for (item_kind, item_id) in raw {
-        let enriched: Option<(String, Option<String>)> = match item_kind.as_str() {
-            "movie" => conn.query_row("SELECT clean_title, COALESCE(poster_path, provider_poster_url) AS poster_path FROM movies WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
-            "series" => conn.query_row("SELECT clean_title, COALESCE(poster_path, provider_poster_url) AS poster_path FROM series WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
-            "channel" => conn.query_row("SELECT display_name, NULL FROM channels WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, row.get(1)?))).optional()?,
+    for (item_kind, item_id, added_at) in raw {
+        type Enriched = (String, Option<String>, Option<i32>, Option<String>);
+        let title_row = |row: &rusqlite::Row| -> rusqlite::Result<Enriched> { Ok((row.get(0)?, row.get(1)?, row.get(2)?, None)) };
+        let enriched: Option<Enriched> = match item_kind.as_str() {
+            "movie" => conn.query_row("SELECT clean_title, COALESCE(poster_path, provider_poster_url) AS poster_path, year FROM movies WHERE id = ?1", params![item_id], title_row).optional()?,
+            "series" => conn.query_row("SELECT clean_title, COALESCE(poster_path, provider_poster_url) AS poster_path, year FROM series WHERE id = ?1", params![item_id], title_row).optional()?,
+            "channel" => conn.query_row("SELECT display_name, logo_url FROM channels WHERE id = ?1", params![item_id], |row| Ok((row.get(0)?, None, None, row.get(1)?))).optional()?,
             _ => None,
         };
         // El ítem pudo borrarse del catálogo desde que se marcó como favorito: se
         // salta, no se enseña un favorito roto.
-        if let Some((title, poster_path)) = enriched {
-            items.push(FavoriteRow { item_kind, item_id, title, poster_path });
+        if let Some((title, poster_path, year, logo_url)) = enriched {
+            items.push(FavoriteRow { item_kind, item_id, title, poster_path, added_at, year, logo_url });
         }
     }
     Ok(items)

@@ -33,7 +33,10 @@ export function useFavorites() {
         // instante después; el marcador optimista no los necesita porque nada lo
         // pinta antes de que eso ocurra (isFavorite() solo mira kind+id).
         return next
-          ? [...list, { item_kind: itemKind, item_id: itemId, title: "", poster_path: null }]
+          ? [
+              ...list,
+              { item_kind: itemKind, item_id: itemId, title: "", poster_path: null, added_at: Date.now() / 1000, year: null, progress: null, watched: false, is_new: false, logo_url: null, now_playing: null },
+            ]
           : list.filter((f) => !(f.item_kind === itemKind && f.item_id === itemId));
       });
       return { previous };

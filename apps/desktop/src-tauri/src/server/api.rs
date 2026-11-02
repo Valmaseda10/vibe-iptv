@@ -695,12 +695,19 @@ pub struct FavoriteItem {
     pub item_id: i64,
     pub title: String,
     pub poster_path: Option<String>,
-}
-
-impl From<reads::FavoriteRow> for FavoriteItem {
-    fn from(row: reads::FavoriteRow) -> Self {
-        Self { item_kind: row.item_kind, item_id: row.item_id, title: row.title, poster_path: row.poster_path }
-    }
+    /// Cuándo se añadió a Mi lista (epoch), para ordenar.
+    #[ts(type = "number")]
+    pub added_at: i64,
+    pub year: Option<i32>,
+    /// Lo visto de una película empezada (0–1).
+    pub progress: Option<f64>,
+    /// Película vista entera.
+    pub watched: bool,
+    /// Serie con episodios nuevos desde la última vez.
+    pub is_new: bool,
+    /// Canal: su logo y lo que emite ahora.
+    pub logo_url: Option<String>,
+    pub now_playing: Option<String>,
 }
 
 #[derive(Deserialize, TS)]
@@ -1860,19 +1867,48 @@ async fn get_episode_sources(
     ))
 }
 
+/// «Nuevo episodio» en Mi lista: episodios llegados en los últimos días.
+const NEW_EPISODES_BADGE_DAYS: i64 = 14;
+
 async fn get_favorites(State(state): State<CatalogState>, Query(query): Query<ProfileQuery>) -> Result<Json<Vec<FavoriteItem>>, ApiError> {
     let items = with_db(state.db_path, move |conn| {
         let access = reads::profile_access(conn, query.profile_id)?;
         let mut visible = Vec::new();
-        for item in reads::list_favorites(conn, query.profile_id)? {
-            if reads::item_allowed(conn, &item.item_kind, item.item_id, access)? {
-                visible.push(item);
-            }
+        let now = crate::db::now_epoch();
+        let new_series: std::collections::HashSet<i64> =
+            reads::series_with_new_episodes(conn, query.profile_id, now, NEW_EPISODES_BADGE_DAYS, 200)?.into_iter().map(|r| r.series_id).collect();
+        let rows: Vec<reads::FavoriteRow> = reads::list_favorites(conn, query.profile_id)?
+            .into_iter()
+            .map(|item| Ok((reads::item_allowed(conn, &item.item_kind, item.item_id, access)?, item)))
+            .collect::<crate::db::Result<Vec<_>>>()?
+            .into_iter()
+            .filter_map(|(allowed, item)| allowed.then_some(item))
+            .collect();
+        let channel_ids: Vec<i64> = rows.iter().filter(|r| r.item_kind == "channel").map(|r| r.item_id).collect();
+        let on_air: std::collections::HashMap<i64, String> = reads::epg_now_and_next(conn, &channel_ids, now)?
+            .into_iter()
+            .filter_map(|r| r.current.map(|p| (r.channel_id, p.title)))
+            .collect();
+        for row in rows {
+            let progress = if row.item_kind == "movie" { reads::get_playback_progress(conn, query.profile_id, "movie", row.item_id)? } else { None };
+            visible.push(FavoriteItem {
+                progress: progress.as_ref().filter(|p| !p.finished).and_then(|p| p.duration_s.filter(|d| *d > 0).map(|d| (p.position_s as f64 / d as f64).clamp(0.0, 1.0))),
+                watched: progress.is_some_and(|p| p.finished),
+                is_new: row.item_kind == "series" && new_series.contains(&row.item_id),
+                now_playing: on_air.get(&row.item_id).filter(|_| row.item_kind == "channel").cloned(),
+                item_kind: row.item_kind,
+                item_id: row.item_id,
+                title: row.title,
+                poster_path: row.poster_path,
+                added_at: row.added_at,
+                year: row.year,
+                logo_url: row.logo_url,
+            });
         }
         Ok(visible)
     })
     .await?;
-    Ok(Json(items.into_iter().map(Into::into).collect()))
+    Ok(Json(items))
 }
 
 async fn post_favorite(State(state): State<CatalogState>, Json(input): Json<FavoriteInput>) -> Result<StatusCode, ApiError> {

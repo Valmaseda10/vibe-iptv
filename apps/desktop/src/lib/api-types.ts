@@ -195,7 +195,27 @@ watched: boolean, };
 
 export type FavoriteInput = { profile_id: number, item_kind: string, item_id: number, };
 
-export type FavoriteItem = { item_kind: string, item_id: number, title: string, poster_path: string | null, };
+export type FavoriteItem = { item_kind: string, item_id: number, title: string, poster_path: string | null, 
+/**
+ * Cuándo se añadió a Mi lista (epoch), para ordenar.
+ */
+added_at: number, year: number | null, 
+/**
+ * Lo visto de una película empezada (0–1).
+ */
+progress: number | null, 
+/**
+ * Película vista entera.
+ */
+watched: boolean, 
+/**
+ * Serie con episodios nuevos desde la última vez.
+ */
+is_new: boolean, 
+/**
+ * Canal: su logo y lo que emite ahora.
+ */
+logo_url: string | null, now_playing: string | null, };
 
 export type FeaturedItem = { id: number, clean_title: string, year: number | null, overview: string | null, poster_path: string | null, backdrop_path: string | null, rating: number | null, };
 
