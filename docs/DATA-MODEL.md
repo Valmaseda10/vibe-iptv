@@ -239,6 +239,7 @@ CREATE TABLE sport_follows (profile_id INTEGER, kind TEXT /* team | competition 
 CREATE TABLE new_episode_marks (profile_id INTEGER, series_id INTEGER, season INTEGER,
   number INTEGER, checked_at INTEGER, PRIMARY KEY (profile_id, series_id));
 -- 036: la cola de salida admite 'watch_time' (el tiempo visto viaja con la cuenta).
+-- 037: profiles.sports_home ('mine' | 'mine_and_big' | 'never'): partidos en Inicio.
 ```
 
 ---

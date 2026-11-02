@@ -368,6 +368,7 @@ fn encode_fields(doc: &RemoteDoc) -> Value {
             fields.insert("adult_ok".into(), fs_bool(p.adult_ok));
             fields.insert("max_age".into(), p.max_age.map_or(json!({ "nullValue": null }), fs_int));
             fields.insert("pin_hash".into(), fs_opt_string(p.pin_hash.as_deref()));
+            fields.insert("sports_home".into(), fs_opt_string(p.sports_home.as_deref()));
             fields.insert("updated_at".into(), fs_int(p.updated_at));
             fields.insert("deleted".into(), fs_bool(p.deleted));
         }
@@ -471,6 +472,7 @@ fn decode_doc(collection: Collection, name: &str, document: &Value) -> Option<Re
             adult_ok: fields.bool("adult_ok").unwrap_or(false),
             max_age: fields.int("max_age"),
             pin_hash: fields.string("pin_hash"),
+            sports_home: fields.string("sports_home"),
             updated_at,
             deleted,
         }),

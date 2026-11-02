@@ -29,7 +29,8 @@ export function NotificationScheduler() {
   }
   const reminded = new Set(reminders.list.map((r) => `${r.start_ts}:${r.title}`));
   for (const event of sports.data ?? []) {
-    if (!event.followed || reminded.has(`${event.start_ts}:${event.name}`)) continue;
+    // Las repeticiones (diferido) no avisan: solo lo que se juega de verdad.
+    if (!event.followed || event.status === "replay" || event.status === "finished" || reminded.has(`${event.start_ts}:${event.name}`)) continue;
     notices.push({
       id: noticeId(`match:${event.key}`),
       title: event.name,

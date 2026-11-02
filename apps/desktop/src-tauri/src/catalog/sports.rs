@@ -20,8 +20,6 @@ use rusqlite::{params, Connection};
 
 use crate::db::{now_epoch, reads, Result};
 
-/// Un partido entra en la portada desde este tiempo antes de empezar.
-pub const FEATURE_BEFORE_S: i64 = 3 * 3600;
 /// Lo que tiene que valer un partido para salir en la portada.
 pub const FEATURE_MIN_SCORE: i64 = 70;
 /// Lo que suma seguir a un equipo o una competición.
@@ -54,6 +52,7 @@ const COMPETITIONS: &[(&str, &str, &[&str], &str, i64)] = &[
     ("premier", "Premier League", &["premier league"], "futbol", 20),
     ("serie-a", "Serie A", &["serie a"], "futbol", 10),
     ("bundesliga", "Bundesliga", &["bundesliga"], "futbol", 10),
+    ("ligue-1", "Ligue 1", &["ligue 1"], "futbol", 5),
     ("mundial", "Mundial", &["copa mundial", "mundial de futbol", "copa del mundo de la fifa", "fifa world cup"], "futbol", 50),
     ("eurocopa", "Eurocopa", &["eurocopa"], "futbol", 50),
     ("nba", "NBA", &["nba"], "baloncesto", 15),
@@ -62,6 +61,7 @@ const COMPETITIONS: &[(&str, &str, &[&str], &str, i64)] = &[
     ("f1", "Fórmula 1", &["formula 1", "f1"], "motor", 25),
     ("motogp", "MotoGP", &["motogp"], "motor", 20),
     ("nfl", "NFL", &["nfl"], "futbol-americano", 5),
+    ("mlb", "MLB", &["mlb"], "beisbol", 0),
 ];
 
 /// Deportes por la primera línea de la descripción («Deportes,Fútbol»).
@@ -92,7 +92,8 @@ const NOT_EVENT_WORDS: &[&str] = &[
 /// Lo que no puede ser un rival: «Eslalon gigante - 1ª manga», «Día 1 - Primera ronda».
 const NOT_PARTICIPANT_WORDS: &[&str] = &[
     "manga", "ronda", "dia", "etapa", "jornada", "final", "semifinal", "semifinales", "cuartos", "octavos", "episodio", "capitulo", "parte",
-    "programa", "masculino", "femenino", "clasificacion", "entrenamientos", "carrera",
+    "programa", "masculino", "femenino", "clasificacion", "entrenamientos", "carrera", "finales", "eliminatoria", "clasificatoria",
+    "velocidad", "bloque", "dificultad", "sprint", "prueba",
 ];
 
 static SEASON: LazyLock<Option<Regex>> = LazyLock::new(|| Regex::new(r"\bT(\d{2})/(\d{2})\b").ok());
@@ -155,6 +156,11 @@ pub fn participant(name: &str) -> Participant {
     Participant { key: normalized.replace(' ', "-"), name: name.trim().to_string() }
 }
 
+/// Si la clave es la de un equipo conocido (con sus alias), no la de un nombre suelto.
+pub fn is_known_team(key: &str) -> bool {
+    TEAMS.iter().any(|(k, ..)| *k == key)
+}
+
 fn team_weight(key: &str) -> i64 {
     TEAMS.iter().find(|(k, ..)| *k == key).map_or(0, |(.., weight)| *weight)
 }
@@ -191,9 +197,14 @@ fn is_round(text: &str) -> bool {
     ["final", "semifinal", "semifinales", "cuartos", "octavos", "jornada", "ronda", "dia", "etapa", "manga", "grupo"].contains(&first)
 }
 
+/// Lo que delata una carrera o una prueba, no un rival: «GP de Malasia», «Mundial F1»,
+/// «Copa del mundo de escalada» (visto en su guía el 2026-11-02).
+const EVENT_NOT_TEAM: &[&str] = &["gp", "gran premio", "mundial", "copa del mundo", "motogp", "formula 1", "f1", "moto2", "moto3", "rally", "campeonato", "open", "torneo", "masters"];
+
 fn valid_participant(side: &str) -> bool {
     let normalized = normalize(side);
-    !normalized.is_empty()
+    !EVENT_NOT_TEAM.iter().any(|w| has_phrase(&normalized, w))
+        && !normalized.is_empty()
         && side.chars().count() <= 40
         && !normalized.starts_with(|c: char| c.is_ascii_digit())
         && normalized.split(' ').count() <= 5
@@ -287,6 +298,11 @@ pub fn parse_programme(title: &str, description: Option<&str>, sporty_channel: b
         // Sin rivales, solo si la guía dice que es en directo (una final de tenis, un gran
         // premio): si no, es imposible distinguirlo de una repetición.
         None if live && sport.is_some() => (segments.iter().map(|s| strip_season(s)).collect::<Vec<_>>().join(" · "), Vec::new()),
+        // Una carrera (gran premio) es una carrera aunque la guía no diga «DIRECTO»: sin
+        // rivales, con su nombre.
+        None if sport.as_deref() == Some("motor") && (has_phrase(&normalized_title, "gp") || has_phrase(&normalized_title, "gran premio")) => {
+            (segments.iter().map(|s| strip_season(s)).collect::<Vec<_>>().join(" · "), Vec::new())
+        }
         None => return None,
     };
     let competition = known.map(|(_, name, _)| name.to_string()).or(competition_text);
@@ -309,6 +325,28 @@ pub struct EventChannel {
     pub id: i64,
     pub name: String,
     pub logo_url: Option<String>,
+    pub quality: Option<String>,
+}
+
+/// Cuánto vale una calidad para elegir canal: 4K/UHD > FHD > HD > SD > sin marca.
+pub fn quality_rank(quality: Option<&str>) -> i64 {
+    match quality.map(|q| q.to_ascii_uppercase()) {
+        Some(q) if q.contains("4K") || q.contains("UHD") => 4,
+        Some(q) if q.contains("FHD") || q.contains("1080") => 3,
+        Some(q) if q.contains("HD") || q.contains("720") => 2,
+        Some(q) if q.contains("SD") => 1,
+        _ => 0,
+    }
+}
+
+/// Partido grande para la portada de Inicio cuando el perfil quiere «sus equipos y los
+/// grandes» (decidido con el usuario): Madrid, Barça o Atlético en LaLiga, Copa o
+/// Champions; la selección; y la Champions con cualquier equipo español.
+pub fn is_big_match(event: &ParsedEvent) -> bool {
+    let competition = event.competition_key.as_deref().unwrap_or("");
+    let big = event.participants.iter().any(|p| matches!(p.key.as_str(), "real-madrid" | "barcelona" | "atletico" | "espana"));
+    let spanish = event.participants.iter().any(|p| is_known_team(&p.key));
+    (matches!(competition, "laliga" | "copa-del-rey" | "champions" | "mundial" | "eurocopa") && big) || (competition == "champions" && spanish)
 }
 
 /// Un evento con todos sus canales.
@@ -355,7 +393,7 @@ fn event_key(event: &ParsedEvent, start_ts: i64) -> String {
 pub fn events(conn: &Connection, from: i64, until: i64, access: reads::ProfileAccess) -> Result<Vec<SportEvent>> {
     let now = now_epoch();
     let mut stmt = conn.prepare(
-        "SELECT p.title, p.description, p.start_ts, p.stop_ts, c.id, c.display_name, c.logo_url, cat.name
+        "SELECT p.title, p.description, p.start_ts, p.stop_ts, c.id, c.display_name, c.logo_url, cat.name, c.quality
          FROM epg_programmes p
          JOIN channels c ON c.epg_channel_id = p.channel_id AND (p.provider_id IS NULL OR p.provider_id = c.provider_id)
          LEFT JOIN categories cat ON cat.id = c.category_id
@@ -372,13 +410,14 @@ pub fn events(conn: &Connection, from: i64, until: i64, access: reads::ProfileAc
             r.get::<_, String>(5)?,
             r.get::<_, Option<String>>(6)?,
             r.get::<_, Option<String>>(7)?,
+            r.get::<_, Option<String>>(8)?,
         ))
     })?;
     let mut allowed: HashMap<i64, bool> = HashMap::new();
     let mut by_key: HashMap<String, usize> = HashMap::new();
     let mut out: Vec<SportEvent> = Vec::new();
     for row in rows {
-        let (title, description, start_ts, stop_ts, channel_id, channel_name, logo_url, category) = row?;
+        let (title, description, start_ts, stop_ts, channel_id, channel_name, logo_url, category, quality) = row?;
         let sporty = is_sporty_channel(&channel_name, category.as_deref());
         let Some(parsed) = parse_programme(&title, description.as_deref(), sporty, now) else { continue };
         let ok = match allowed.get(&channel_id) {
@@ -393,7 +432,7 @@ pub fn events(conn: &Connection, from: i64, until: i64, access: reads::ProfileAc
             continue;
         }
         let key = event_key(&parsed, start_ts);
-        let channel = EventChannel { id: channel_id, name: channel_name, logo_url };
+        let channel = EventChannel { id: channel_id, name: channel_name, logo_url, quality };
         match by_key.get(&key) {
             Some(&index) => {
                 let existing = &mut out[index];
@@ -402,9 +441,12 @@ pub fn events(conn: &Connection, from: i64, until: i64, access: reads::ProfileAc
                     existing.event.competition = parsed.competition;
                     existing.event.competition_key = parsed.competition_key;
                 }
-                // El mismo canal en otra calidad no es otro canal para elegir.
-                if !existing.channels.iter().any(|c| c.name.eq_ignore_ascii_case(&channel.name)) {
-                    existing.channels.push(channel);
+                // El mismo canal en otra calidad no es otro canal para elegir: se queda el
+                // de mejor calidad.
+                match existing.channels.iter_mut().find(|c| c.name.eq_ignore_ascii_case(&channel.name)) {
+                    Some(same) if quality_rank(channel.quality.as_deref()) > quality_rank(same.quality.as_deref()) => *same = channel,
+                    Some(_) => {}
+                    None => existing.channels.push(channel),
                 }
             }
             None => {
@@ -512,6 +554,11 @@ mod tests {
         let segunda = parse("DIRECTO LALIGA HYPERMOTION T26/27 · Jornada 13: Ceuta FC - Real Sporting", "Deportes,Fútbol | 2026 | TP").unwrap();
         assert_eq!(segunda.competition_key.as_deref(), Some("laliga2"), "Segunda no es LaLiga");
         assert!(parse("Final T2026 · Torneo de Viena", "Deportes,Tenis | 2026 | TP").is_none(), "sin rivales ni directo, puede ser una repetición");
+        // Una carrera no tiene dos rivales.
+        let gp = parse("MotoGP - GP de Malasia T2026", "Deportes,Motor | 2026 | TP").unwrap();
+        assert!(gp.participants.is_empty(), "{gp:?}");
+        assert_eq!(gp.name, "MotoGP - GP de Malasia");
+        assert!(parse("Copa del mundo de escalada - Santiago de Chile T2026 · Velocidad - Finales", "Deportes,Escalada deportiva | 2026 | TP").is_none_or(|e| e.participants.is_empty()));
     }
 
     #[test]
@@ -559,6 +606,8 @@ mod tests {
         assert_eq!(found.len(), 1, "{found:?}");
         assert_eq!(found[0].event.name, "Real Madrid - FC Barcelona");
         assert_eq!(found[0].channels.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["DAZN LaLiga", "M+ LaLiga"]);
+        assert_eq!(found[0].channels[0].id, 2, "de DAZN LaLiga, el de FHD");
+        assert!(is_big_match(&found[0].event));
         let offered = suggestions(&found);
         assert!(offered.iter().any(|f| f.key == "real-madrid") && offered.iter().any(|f| f.key == "champions"));
     }

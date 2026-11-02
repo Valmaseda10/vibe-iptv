@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useReminders } from "../../lib/reminders";
-import { SPORT_LABELS, dayLabel, isOnNow, sportEmoji, useSportsEvents } from "../../lib/sports";
+import { SPORT_LABELS, dayLabel, isLive, isOnNow, sportEmoji, useSportsEvents } from "../../lib/sports";
 import type { SportEventResponse } from "../../lib/api-types";
 import { SportEventCard } from "./SportEventCard";
 import { FollowTeamsSheet } from "./FollowTeamsSheet";
@@ -15,6 +15,7 @@ export function SportsScreen() {
   const [sport, setSport] = useState<string | null>(null);
   const [onlyMine, setOnlyMine] = useState(false);
   const [picking, setPicking] = useState(false);
+  const [showReplays, setShowReplays] = useState(false);
 
   const events = data ?? [];
   const sports = useMemo(() => {
@@ -25,10 +26,14 @@ export function SportsScreen() {
 
   const visible = events.filter((e) => (!sport || e.sport === sport) && (!onlyMine || e.followed));
   const now = Date.now() / 1000;
-  const live = visible.filter((e) => isOnNow(e, now));
+  // En juego de verdad; lo que se emite sin saber si es en directo; y los diferidos
+  // (repeticiones, como las de los canales de los clubes), escondidos salvo que se pidan.
+  const live = visible.filter((e) => isLive(e));
+  const onAir = visible.filter((e) => !isLive(e) && e.status !== "replay" && isOnNow(e, now));
+  const replays = visible.filter((e) => e.status === "replay" && isOnNow(e, now));
   const byDay = new Map<string, SportEventResponse[]>();
   for (const e of visible) {
-    if (isOnNow(e, now)) continue;
+    if (isLive(e) || isOnNow(e, now) || e.status === "finished" || e.status === "replay") continue;
     const label = dayLabel(e.start_ts, now);
     byDay.set(label, [...(byDay.get(label) ?? []), e]);
   }
@@ -73,6 +78,18 @@ export function SportsScreen() {
       )}
 
       {live.length > 0 && <EventSection title="En directo ahora" events={live} reminders={reminders} />}
+      {onAir.length > 0 && <EventSection title="Ahora en la tele" events={onAir} reminders={reminders} />}
+      {replays.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowReplays((v) => !v)}
+          className="w-fit text-sm text-neutral-400 outline-none hover:text-white focus-visible:text-white"
+          aria-expanded={showReplays}
+        >
+          {showReplays ? "Ocultar" : "Ver"} {replays.length === 1 ? "1 partido en diferido" : `${replays.length} partidos en diferido`} ahora mismo
+        </button>
+      )}
+      {showReplays && replays.length > 0 && <EventSection title="En diferido" events={replays} reminders={reminders} />}
       {[...byDay.entries()].map(([day, list]) => (
         <EventSection key={day} title={day.charAt(0).toUpperCase() + day.slice(1)} events={list} reminders={reminders} />
       ))}

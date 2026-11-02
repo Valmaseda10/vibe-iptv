@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { apiDelete, apiGet, apiPost } from "./api-client";
 import { useActiveProfile } from "./activeProfile";
 import { ensureNotificationPermission } from "./notifications";
-import type { SportEventResponse, SportFollow } from "./api-types";
+import type { SportEventResponse, SportFollow, SportsHomePreference } from "./api-types";
 
 /** Deportes (F17): la guía de partidos, el de la portada y «Mis equipos» del perfil. El
  * núcleo lo saca de la guía ya guardada (`catalog::sports`); aquí solo se pide y se pinta. */
@@ -96,9 +96,36 @@ export function sportEmoji(sport: string | null): string {
   return (sport && SPORT_EMOJI[sport]) || "🏆";
 }
 
-/** Si está en juego ahora. */
+/** Se está viendo ahora en la tele (en directo, en diferido o sin saberlo). */
 export function isOnNow(event: SportEventResponse, now = Date.now() / 1000): boolean {
-  return event.start_ts <= now && now < event.stop_ts;
+  return event.start_ts <= now && now < event.stop_ts && event.status !== "finished";
+}
+
+/** En juego de verdad (comprobado con ESPN, o «DIRECTO» en la guía si ESPN no lo cubre). */
+export function isLive(event: SportEventResponse): boolean {
+  return event.status === "live";
+}
+
+/** «Partidos en Inicio» del perfil (F17): `mine`, `mine_and_big` o `never`. */
+export function useHomePreference() {
+  const { profileId } = useActiveProfile();
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: ["sports-home-preference", profileId],
+    queryFn: () => apiGet<SportsHomePreference>(`/api/sports/home-preference?profile_id=${profileId}`),
+    enabled: profileId !== null,
+  });
+  const set = useMutation({
+    mutationFn: (value: string) => apiPost("/api/sports/home-preference", { profile_id: profileId, value }),
+    onMutate: (value) => {
+      queryClient.setQueryData<SportsHomePreference>(["sports-home-preference", profileId], (old) => (old ? { ...old, value } : old));
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["sports-home-preference"] });
+      queryClient.invalidateQueries({ queryKey: ["sports-featured"] });
+    },
+  });
+  return { value: query.data?.value ?? "mine_and_big", set: (value: string) => set.mutate(value) };
 }
 
 function startOfDay(epoch: number): number {
@@ -119,9 +146,12 @@ export function timeLabel(epoch: number): string {
   return new Date(epoch * 1000).toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
 }
 
-/** «Empieza en 25 min», «Hoy · 21:00», «EN DIRECTO» (ya empezado). */
+/** «Empieza en 25 min», «Hoy · 21:00», «En directo», «Diferido». */
 export function whenLabel(event: SportEventResponse, now = Date.now() / 1000): string {
-  if (isOnNow(event, now)) return "En directo";
+  if (isLive(event)) return "En directo";
+  if (event.status === "replay") return "Diferido";
+  if (event.status === "finished") return "Final";
+  if (isOnNow(event, now)) return "Ahora";
   const minutes = Math.round((event.start_ts - now) / 60);
   if (minutes <= 60) return `Empieza en ${Math.max(1, minutes)} min`;
   return `${dayLabel(event.start_ts, now)} · ${timeLabel(event.start_ts)}`;

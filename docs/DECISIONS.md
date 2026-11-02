@@ -2153,6 +2153,24 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   (`components/Skeleton`) en lugar de «Cargando…» y de los bloques que parpadeaban, en
   todas las pantallas, y el logotipo latiendo al abrir la app. Con «reducir movimiento»
   del sistema no hay animaciones.
+- **Partidos de verdad (2026-11-02, pedido por el usuario).** En Inicio salía un Real
+  Madrid - Leipzig que Real Madrid TV repetía semanas después. Ahora cada partido de la
+  guía se contrasta con los marcadores públicos de ESPN (`catalog::live_sports`, sin clave;
+  no es un servicio oficial: si falla, todo sigue como antes). Si ESPN dice que se está
+  jugando, es directo; si conoce la competición ese día y a los equipos y ese partido no
+  se juega, es diferido. Con su guía real: los cuatro diferidos de ese momento (Madrid TV,
+  M+, LaLiga TV, DAZN) salieron como tales. De ESPN salen también los escudos (de la lista
+  de equipos de cada liga, para todos los partidos), los colores, el marcador y el minuto.
+  TheSportsDB se descartó: gratis solo da 3 eventos por día. Solo se piden las ligas y días
+  con partidos en la guía (ESPN no admite rangos): hoy cada 2 min, el resto cada 6 h, los
+  equipos cada día. En Inicio solo sale un partido en juego de verdad, y de los que quiere
+  cada perfil en «Partidos en Inicio» (sus equipos / sus equipos y los grandes / nunca;
+  migración 037, viaja con el perfil); los grandes: Madrid, Barça o Atlético en LaLiga,
+  Copa o Champions, la Champions con equipos españoles y la selección. Tocar un partido que
+  se emite abre el mejor canal (un favorito y la mejor calidad, primero); «Otros canales»,
+  aparte; uno que no ha empezado enseña sus canales y «Avísame». Los diferidos se esconden
+  en Deportes salvo que se pidan y no avisan. Las carreras («MotoGP - GP de Malasia») ya no
+  se leen como dos equipos.
 
 ## Deuda técnica conocida desde el diseño
 

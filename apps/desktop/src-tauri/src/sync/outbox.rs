@@ -59,6 +59,7 @@ pub fn enqueue_profile(conn: &Connection, profile_id: i64) -> Result<()> {
         adult_ok: profile.adult_ok,
         max_age: profile.max_age,
         pin_hash: profile.pin_hash,
+        sports_home: Some(profile.sports_home),
         updated_at: profile.updated_at,
         deleted: false,
     });
@@ -78,6 +79,7 @@ pub fn enqueue_profile_deleted(conn: &Connection, remote_id: &str) -> Result<()>
         adult_ok: false,
         max_age: None,
         pin_hash: None,
+        sports_home: None,
         updated_at: now,
         deleted: true,
     });

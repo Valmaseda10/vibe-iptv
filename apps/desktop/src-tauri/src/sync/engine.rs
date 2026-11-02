@@ -434,7 +434,10 @@ fn apply_remote(conn: &Connection, doc: &RemoteDoc) -> crate::db::Result<()> {
                     }
                 }
             } else if local.is_none_or(|l| r.updated_at > l.updated_at) {
-                cloud::upsert_profile_from_remote(conn, &r.id, &r.name, r.avatar.as_deref(), r.adult_ok, r.max_age, r.pin_hash.as_deref(), r.updated_at)?;
+                let id = cloud::upsert_profile_from_remote(conn, &r.id, &r.name, r.avatar.as_deref(), r.adult_ok, r.max_age, r.pin_hash.as_deref(), r.updated_at)?;
+                if let Some(value) = r.sports_home.as_deref() {
+                    cloud::set_profile_sports_home(conn, id, value)?;
+                }
             }
         }
         RemoteDoc::Favorite(f) => {

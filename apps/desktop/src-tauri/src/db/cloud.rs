@@ -119,9 +119,10 @@ pub struct SyncProfile {
     pub max_age: Option<i64>,
     pub pin_hash: Option<String>,
     pub updated_at: i64,
+    pub sports_home: String,
 }
 
-const PROFILE_COLUMNS: &str = "id, remote_id, name, avatar, adult_ok, pin_hash, updated_at, max_age";
+const PROFILE_COLUMNS: &str = "id, remote_id, name, avatar, adult_ok, pin_hash, updated_at, max_age, sports_home";
 
 fn row_to_sync_profile(row: &rusqlite::Row) -> rusqlite::Result<SyncProfile> {
     Ok(SyncProfile {
@@ -133,7 +134,19 @@ fn row_to_sync_profile(row: &rusqlite::Row) -> rusqlite::Result<SyncProfile> {
         pin_hash: row.get(5)?,
         updated_at: row.get(6)?,
         max_age: row.get(7)?,
+        sports_home: row.get(8)?,
     })
+}
+
+/// Valores válidos de «Partidos en Inicio» (F17).
+pub const SPORTS_HOME_VALUES: [&str; 3] = ["mine", "mine_and_big", "never"];
+
+/// Cambia «Partidos en Inicio» de un perfil desde la nube (si el valor es válido).
+pub fn set_profile_sports_home(conn: &Connection, profile_id: i64, value: &str) -> Result<()> {
+    if SPORTS_HOME_VALUES.contains(&value) {
+        conn.execute("UPDATE profiles SET sports_home = ?1 WHERE id = ?2", params![value, profile_id])?;
+    }
+    Ok(())
 }
 
 pub fn sync_profile(conn: &Connection, profile_id: i64) -> Result<Option<SyncProfile>> {

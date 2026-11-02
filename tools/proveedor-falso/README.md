@@ -38,7 +38,8 @@ usuario `qa`, contraseña `qa`. El puerto se cambia con la variable `PORT`.
     que hace falta para verla (se para enseguida) y la de 720p va bien. El reproductor
     tiene que pasar solo a la segunda, con el aviso y «Volver» (F17).
   - en la guía de los canales de deportes, partidos al estilo Movistar Plus (F17): un
-    Real Madrid - Barcelona en juego en dos canales (sale en la portada de Inicio), un
+    Real Madrid - Barcelona «en juego» en dos canales (contrastado con ESPN sale como
+    diferido, porque ese partido no se juega de verdad: así se prueba lo de Real Madrid TV), un
     tenis dentro de unas horas, un Sevilla - Betis mañana, y un resumen y una repetición de
     otra temporada que no deben salir en Deportes.
 

@@ -653,7 +653,17 @@ sport: string | null, start_ts: number, stop_ts: number,
 /**
  * La guía lo da como directo (no una repetición).
  */
-live: boolean, channels: Array<SportChannel>, 
+live: boolean, 
+/**
+ * Lo que se sabe de verdad: `live` (en juego), `scheduled`, `finished`, `replay`
+ * (diferido: ese partido no se juega hoy), `on_air` (se emite y no se sabe si es en
+ * directo) o `upcoming` (aún no empieza y no se sabe más).
+ */
+status: string, 
+/**
+ * «67'», «Descanso», «Final».
+ */
+clock: string | null, league_logo: string | null, channels: Array<SportChannel>, 
 /**
  * De un equipo o una competición que sigue el perfil.
  */
@@ -674,7 +684,20 @@ kind: string, key: string, label: string, sport: string | null, followed: boolea
 
 export type SportFollowInput = { profile_id: number, kind: string, key: string, label: string, };
 
-export type SportParticipant = { key: string, name: string, };
+export type SportParticipant = { key: string, name: string, 
+/**
+ * Escudo de verdad (ESPN), si se conoce.
+ */
+logo: string | null, 
+/**
+ * Color del equipo («#a50044»), para el fondo de la portada.
+ */
+color: string | null, score: string | null, };
+
+/**
+ * «Partidos en Inicio» del perfil: `mine`, `mine_and_big` o `never`.
+ */
+export type SportsHomePreference = { profile_id: number, value: string, };
 
 export type StreamFailure = { status: number, message: string, };
 

@@ -96,6 +96,9 @@ pub struct RemoteProfile {
     #[serde(default)]
     pub max_age: Option<i64>,
     pub pin_hash: Option<String>,
+    /// Partidos en la portada de Inicio (F17); `None` en documentos de antes.
+    #[serde(default)]
+    pub sports_home: Option<String>,
     pub updated_at: i64,
     pub deleted: bool,
 }

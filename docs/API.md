@@ -119,8 +119,13 @@ mismo; terminado, el siguiente; tras el último o sin nada visto, el primero.
   competition, competition_key, sport, start_ts, stop_ts, live, channels: [{ id, name,
   logo_url }], followed, score }]`, en orden de hora (lo empezado hace menos de 4 h
   incluido). Sale de la guía guardada; nada se pide al proveedor.
-- `GET /api/sports/featured?profile_id=` → el partido de la portada de Inicio o `null`
-  (70 o más de `score`, desde 3 h antes hasta que acaba; antes el que ya ha empezado).
+- Cada evento lleva además `status` (`live`, `scheduled`, `finished`, `replay`, `on_air`,
+  `upcoming`: contrastado con ESPN), `clock`, `league_logo` y, en cada rival, `logo`,
+  `color` y `score`. Los canales vienen ordenados: el mejor primero.
+- `GET /api/sports/featured?profile_id=` → el partido de la portada de Inicio o `null`:
+  solo en juego de verdad y según «Partidos en Inicio» del perfil.
+- `GET /api/sports/home-preference?profile_id=` y `POST` con `{ profile_id, value }`
+  (`mine`, `mine_and_big`, `never`).
 - `GET /api/sports/follows?profile_id=`, `POST /api/sports/follows` con `{ profile_id,
   kind, key, label }`, `DELETE /api/sports/follows?profile_id=&kind=&key=`.
 - `GET /api/sports/followables?profile_id=` → lo que se puede seguir (los conocidos y

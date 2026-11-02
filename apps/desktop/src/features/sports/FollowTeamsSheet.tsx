@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { GlassSheet } from "../../components/GlassSheet";
 import { TeamCrest } from "../../components/TeamCrest";
 import { SkeletonList } from "../../components/Skeleton";
-import { SPORT_LABELS, sportEmoji, useFollowables } from "../../lib/sports";
+import { SPORT_LABELS, sportEmoji, useFollowables, useHomePreference } from "../../lib/sports";
 import type { SportFollow } from "../../lib/api-types";
 
 /** «Mis equipos» (F17): equipos, jugadores y competiciones que sigue el perfil. Lo que se
@@ -10,6 +10,7 @@ import type { SportFollow } from "../../lib/api-types";
  * con la cuenta, en cada perfil por separado. */
 export function FollowTeamsSheet({ onClose }: { onClose: () => void }) {
   const { list, isPending, toggle } = useFollowables();
+  const home = useHomePreference();
   const [filter, setFilter] = useState("");
 
   const groups = useMemo(() => {
@@ -25,7 +26,31 @@ export function FollowTeamsSheet({ onClose }: { onClose: () => void }) {
   return (
     <GlassSheet title="Mis equipos" onClose={onClose}>
       <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto px-1 pb-4">
-        <p className="text-sm text-neutral-400">Te avisaremos cuando jueguen y sus partidos importantes saldrán en Inicio.</p>
+        <p className="text-sm text-neutral-400">Te avisaremos cuando jueguen.</p>
+        <div className="flex flex-col gap-2">
+          <p className="px-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">Partidos en Inicio (en directo)</p>
+          <div role="radiogroup" aria-label="Partidos en Inicio" className="grid grid-cols-3 gap-1 rounded-xl bg-white/[0.06] p-1">
+            {[
+              { value: "mine", label: "Mis equipos" },
+              { value: "mine_and_big", label: "Mis equipos y los grandes" },
+              { value: "never", label: "Nunca" },
+            ].map((option) => (
+              <button
+                key={option.value}
+                type="button"
+                role="radio"
+                aria-checked={home.value === option.value}
+                onClick={() => home.set(option.value)}
+                className={`rounded-lg px-2 py-2 text-xs font-medium leading-tight outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/70 ${
+                  home.value === option.value ? "bg-white text-black" : "text-neutral-300 hover:bg-white/10"
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+          <p className="px-1 text-xs text-neutral-500">«Los grandes»: Madrid, Barça y Atlético en LaLiga, la Copa y la Champions, y la selección.</p>
+        </div>
         <input
           type="search"
           value={filter}
