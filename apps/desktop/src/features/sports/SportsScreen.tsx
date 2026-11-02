@@ -5,6 +5,10 @@ import type { SportEventResponse } from "../../lib/api-types";
 import { SportEventCard } from "./SportEventCard";
 import { FollowTeamsSheet } from "./FollowTeamsSheet";
 import { SkeletonBlock } from "../../components/Skeleton";
+import { useQuery } from "@tanstack/react-query";
+import { invoke } from "@tauri-apps/api/core";
+import { apiGet } from "../../lib/api-client";
+import type { ProviderAvailability, ProviderSummary } from "../../lib/api-types";
 
 /** Deportes (F17): lo que hay en directo ahora y lo de los próximos días, sacado de la guía,
  * con el mismo partido en todos sus canales juntos. Filtros por deporte y por «Mis
@@ -72,9 +76,7 @@ export function SportsScreen() {
 
       {isPending && <SportsSkeleton />}
       {!isPending && visible.length === 0 && (
-        <p className="max-w-lg text-neutral-400">
-          {onlyMine ? "Tus equipos no juegan en los próximos días (o la guía aún no lo trae)." : "La guía no trae partidos para estos días. Prueba a sincronizar la guía en Ajustes."}
-        </p>
+        <p className="max-w-lg text-neutral-400">{onlyMine ? "Tus equipos no juegan en los próximos días (o la guía aún no lo trae)." : <EmptyGuideReason />}</p>
       )}
 
       {live.length > 0 && <EventSection title="En directo ahora" events={live} reminders={reminders} />}
@@ -120,4 +122,27 @@ function SportsSkeleton() {
       ))}
     </div>
   );
+}
+
+/** Por qué no hay partidos: casi siempre, que la guía se ha quedado sin actualizar porque el
+ * proveedor no responde. Mira lo que ya sabe el indicador de Inicio (no pregunta de nuevo al
+ * proveedor) y cuándo fue la última sincronización. */
+function EmptyGuideReason() {
+  const status = useQuery({ queryKey: ["provider-status"], queryFn: () => apiGet<ProviderAvailability[]>("/api/providers/status") });
+  const providers = useQuery({ queryKey: ["providers"], queryFn: () => invoke<ProviderSummary[]>("list_providers") });
+  const down = status.data?.find((p) => !p.available);
+  const lastSync = Math.max(0, ...(providers.data ?? []).map((p) => p.last_sync_at ?? 0));
+  const since = lastSync ? new Date(lastSync * 1000).toLocaleDateString(undefined, { day: "numeric", month: "long" }) : null;
+  if (down) {
+    return (
+      <>
+        Tu proveedor no responde{down.message ? ` (${down.message.replace(/\.$/, "")})` : ""}, así que la guía no se actualiza
+        {since ? ` desde el ${since}` : ""} y se ha quedado sin partidos. En cuanto vuelva a responder se pone al día sola.
+      </>
+    );
+  }
+  if (lastSync && Date.now() / 1000 - lastSync > 36 * 3600) {
+    return <>La guía no se actualiza desde el {since} y ya no trae partidos. Sincroniza tu lista en Ajustes → Proveedores.</>;
+  }
+  return <>La guía no trae partidos para estos días.</>;
 }
