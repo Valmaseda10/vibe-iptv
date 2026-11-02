@@ -54,15 +54,12 @@ bump(join(tauriDir, "Cargo.toml"), /^version = "[^"]+"/m, `version = "${version}
 // Acerca de), también en la de iPhone, que se compila desde el repositorio.
 if (notesFile) {
   const notes = readFileSync(notesFile, "utf8")
-    .split(/?
-/)
+    .split(/\r?\n/)
     .filter((line) => line.startsWith("- "))
     .map((line) => line.slice(2).trim());
   writeFileSync(
     join(desktop, "src", "lib", "releaseNotes.generated.ts"),
-    `// Generado por tools/publicar-version.mjs a partir de las notas de la versión: no se edita a mano.
-export const RELEASE_NOTES: { version: string; notes: readonly string[] } = ${JSON.stringify({ version, notes }, null, 2)};
-`,
+    `// Generado por tools/publicar-version.mjs a partir de las notas de la versión: no se edita a mano.\nexport const RELEASE_NOTES: { version: string; notes: readonly string[] } = ${JSON.stringify({ version, notes }, null, 2)};\n`,
   );
 }
 
