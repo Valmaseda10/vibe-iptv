@@ -1,11 +1,12 @@
 // Generado por tools/publicar-version.mjs a partir de las notas de la versión: no se edita a mano.
 export const RELEASE_NOTES: { version: string; notes: readonly string[] } = {
-  "version": "0.3.1",
+  "version": "0.3.2",
   "notes": [
-    "Partidos de verdad: escudos, colores, marcador y minuto de cada partido, y se distingue lo que es en directo de lo que es un diferido (los partidos repetidos ya no salen en Inicio).",
-    "En Inicio solo sale un partido mientras se está jugando, y tú eliges cuáles: los de tus equipos, también los grandes, o ninguno («Mis equipos» → «Partidos en Inicio»).",
-    "Tocar un partido que se está emitiendo abre directamente el mejor canal.",
-    "Menú más compacto: Inicio, Directo, Deportes, Buscar y Mi lista. Películas y Series están arriba de Inicio, y la Guía dentro de Directo. «Favoritos» pasa a llamarse «Mi lista».",
-    "La guía ya no repite programas en los canales con dos guías."
+    "Logo nuevo.",
+    "Ajustes rediseñados: secciones con buscador, todo más claro y ordenado. Tus proveedores, con su estado y caducidad de un vistazo (la dirección y el usuario salen ocultos).",
+    "Reproducción: elige si el siguiente episodio empieza solo y con cuánta cuenta atrás, cuántos segundos retroceder al reanudar y tu idioma de audio preferido.",
+    "Copia de seguridad: guarda tus perfiles, Mi lista, valoraciones y progreso en un fichero para llevarlos a otro aparato.",
+    "«Buscar actualizaciones» cuando quieras, y estas novedades al abrir cada versión nueva.",
+    "Inicio: el texto de la portada ya no se monta sobre el título con nombres largos."
   ]
 };
