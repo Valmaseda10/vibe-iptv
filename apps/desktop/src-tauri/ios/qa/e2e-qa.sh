@@ -345,6 +345,8 @@ if [ "$W" -lt 768 ]; then
   check "inicio: la barra de pestañas flota pegada abajo" '[ -n "$tab_bottom" ] && [ $((H - tab_bottom)) -le 40 ]'
 fi
 check "inicio: el indicador dice que la lista responde" 'wait_visible "Lista disponible" exacta 30'
+# Si no hay catálogo, la app dice cómo fue el alta del proveedor de pruebas.
+a11y; echo "  $(grep -o 'semilla:[^"]*' "$OUT/a11y.json" | head -1)"
 tap_label "Lista disponible"; sleep 1
 check "inicio: tocar el indicador explica el estado" 'wait_visible "Tu lista responde" contiene 5'
 tap_label "Comprobar otra vez" exacta 5; sleep 4

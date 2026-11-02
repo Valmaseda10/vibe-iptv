@@ -144,6 +144,7 @@ pub fn run() {
             native_player::reduce_transparency,
             commands::qa_e2e_enabled,
             commands::qa_ui_snapshot,
+            commands::qa_seed_status,
             list_providers,
             validate_xtream,
             validate_m3u,

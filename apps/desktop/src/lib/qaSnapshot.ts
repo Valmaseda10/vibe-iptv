@@ -9,8 +9,10 @@ export function startQaSnapshots() {
     .then((enabled) => {
       if (!enabled) return;
       let last = "";
+      let seed = "";
       window.setInterval(() => {
-        const json = JSON.stringify(snapshot());
+        void invoke<string>("qa_seed_status").then((status) => (seed = status)).catch(() => {});
+        const json = JSON.stringify([...snapshot(), { AXLabel: `semilla:${seed}`, frame: { x: 0, y: 0, width: 0, height: 0 } }]);
         if (json === last) return;
         last = json;
         invoke("qa_ui_snapshot", { json }).catch(() => {});

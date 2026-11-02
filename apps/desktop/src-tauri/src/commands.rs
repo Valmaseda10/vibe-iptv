@@ -259,11 +259,35 @@ pub fn seed_qa_e2e(app: AppHandle, stream_guard: Arc<StreamGuard>) {
                 m3u_url: None,
                 user_agent: None,
             };
-            if let Err(err) = add_provider_inner(app, stream_guard, input).await {
-                tracing::error!(error = %err, "no se pudo dar de alta el proveedor de pruebas");
+            set_qa_seed_status("dando de alta");
+            match add_provider_inner(app, stream_guard, input).await {
+                Ok(_) => set_qa_seed_status("proveedor dado de alta"),
+                Err(err) => {
+                    tracing::error!(error = %err, "no se pudo dar de alta el proveedor de pruebas");
+                    set_qa_seed_status(&format!("error: {err}"));
+                }
             }
+        } else {
+            set_qa_seed_status("ya había proveedor");
         }
     });
+}
+
+/// Pruebas del simulador: cómo fue el alta del proveedor de pruebas (sale en el mapa de la
+/// pantalla, para saber por qué falta el catálogo si falta).
+static QA_SEED_STATUS: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
+fn set_qa_seed_status(status: &str) {
+    if let Ok(mut slot) = QA_SEED_STATUS.lock() {
+        *slot = status.to_string();
+    }
+}
+
+/// Pruebas del simulador: el estado del alta del proveedor de pruebas.
+#[tauri::command]
+pub fn qa_seed_status() -> String {
+    QA_SEED_STATUS.lock().map(|s| s.clone()).unwrap_or_default()
 }
 
 /// Pruebas del simulador: `true` si la app arrancó en modo de punta a punta (`VIBE_QA_E2E`).
