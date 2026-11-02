@@ -8,6 +8,7 @@ import { useSurpriseMe } from "../lib/surprise";
 import { NAV_ITEMS, isNavActive } from "../lib/navigation";
 import { SettingsIcon, ChevronIcon, DiceIcon } from "./icons";
 import { NotificationScheduler } from "./NotificationScheduler";
+import { BrandLockup, BrandMark } from "./BrandMark";
 
 
 /** Cascarón de F5: barra lateral colapsable + contenido (en pantallas estrechas, una
@@ -79,8 +80,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
         aria-label="Navegación principal"
       >
         <div className={`mb-3 flex items-center gap-2 px-4 ${collapsed ? "justify-center px-0" : ""}`}>
-          <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-red-600" />
-          {!collapsed && <span className="text-sm font-semibold tracking-wide">VIBE IPTV</span>}
+          {collapsed ? <BrandMark className="h-6 w-6" /> : <BrandLockup />}
         </div>
 
         <div className="mb-4">

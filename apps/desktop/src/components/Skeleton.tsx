@@ -1,4 +1,5 @@
 import type { CSSProperties } from "react";
+import { BrandLockup } from "./BrandMark";
 
 /** Siluetas de carga (F17): la forma de lo que va a aparecer, con un brillo que pasa, en
  * vez de «Cargando…». La misma familia en todas las pantallas, en el PC y en el iPhone. */
@@ -77,9 +78,8 @@ export function SkeletonDetail() {
 export function AppSplash() {
   return (
     <div className="flex h-full min-h-screen flex-col items-center justify-center gap-4 bg-neutral-950 ios:bg-black" aria-busy aria-label="Abriendo VIBE IPTV">
-      <div className="splash-logo flex items-center gap-2 text-2xl font-bold tracking-wide text-white">
-        <span className="h-3.5 w-3.5 rounded-full bg-red-600" />
-        VIBE IPTV
+      <div className="splash-logo">
+        <BrandLockup size="lg" />
       </div>
     </div>
   );

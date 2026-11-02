@@ -35,7 +35,7 @@ export function HeroBanner({ featured }: { featured: BrowseFeatured }) {
     : "flex items-center gap-2 rounded-lg bg-neutral-700/80 px-5 py-2.5 font-semibold text-white outline-none transition hover:bg-neutral-600/80 focus-visible:ring-2 focus-visible:ring-red-600";
 
   return (
-    <div ref={heroRef} className="relative h-[56vh] min-h-[340px] w-full overflow-hidden sm:h-[62vh] sm:min-h-[380px]" style={{ ["--trailer-h" as string]: "62vh" }}>
+    <div ref={heroRef} className="relative flex min-h-[max(56vh,340px)] w-full flex-col justify-end overflow-hidden sm:min-h-[max(62vh,380px)]" style={{ ["--trailer-h" as string]: "62vh" }}>
       {backdrop && <img key={backdrop} src={backdrop} alt="" className="hero-fade absolute inset-0 h-full w-full object-cover" />}
       {backdrop && featured.trailer_key && (
         <BackdropTrailer key={featured.trailer_key} youtubeKey={featured.trailer_key} desktop active={trailerActive} delayMs={2500} soundToggle />
@@ -43,12 +43,12 @@ export function HeroBanner({ featured }: { featured: BrowseFeatured }) {
       <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent ios:from-black ios:via-black/40" />
       <div className="absolute inset-0 bg-gradient-to-r from-neutral-950/85 via-neutral-950/20 to-transparent ios:from-black/60" />
 
-      <div className="absolute bottom-0 left-0 flex max-w-xl flex-col gap-3 px-4 pb-8 sm:gap-4 sm:px-10 sm:pb-10">
+      <div className="relative flex max-w-xl flex-col gap-3 px-4 pb-8 pt-36 sm:gap-4 sm:px-10 sm:pb-10 sm:pt-32">
         <p className="flex items-center gap-2 text-sm font-semibold text-neutral-100 drop-shadow">
           {isTop && <span className="rounded bg-red-600 px-1.5 py-0.5 text-[11px] font-bold leading-none tracking-wide text-white">TOP 10</span>}
           {featured.reason}
         </p>
-        <h2 className="text-3xl font-bold drop-shadow-lg sm:text-5xl">{featured.clean_title}</h2>
+        <h2 className={`line-clamp-2 font-bold drop-shadow-lg ${featured.clean_title.length > 26 ? "text-2xl sm:text-4xl" : "text-3xl sm:text-5xl"}`}>{featured.clean_title}</h2>
         <p className="flex items-center gap-3 text-sm text-neutral-300">
           {featured.year && <span>{featured.year}</span>}
           {featured.rating != null && featured.rating > 0 && <span>★ {featured.rating.toFixed(1).replace(".", ",")}</span>}

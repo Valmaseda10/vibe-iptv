@@ -29,14 +29,14 @@ export function MatchHero({ event }: { event: SportEventResponse }) {
     : "flex items-center gap-2 rounded-lg bg-neutral-700/80 px-5 py-2.5 font-semibold text-white outline-none transition hover:bg-neutral-600/80 focus-visible:ring-2 focus-visible:ring-red-600";
 
   return (
-    <div className="relative h-[56vh] min-h-[360px] w-full overflow-hidden sm:h-[62vh] sm:min-h-[400px]">
+    <div className="relative flex min-h-[max(56vh,360px)] w-full flex-col justify-end overflow-hidden sm:min-h-[max(62vh,400px)]">
       {/* Los colores de los dos equipos, en diagonal, con luz de estadio por arriba. */}
       <div className="absolute inset-0" style={{ background: `linear-gradient(115deg, ${homeColor} 0%, ${homeColor} 42%, ${awayColor} 58%, ${awayColor} 100%)` }} />
       <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_-20%,rgba(255,255,255,0.35),transparent_60%)]" />
       <div className="absolute inset-0 bg-black/45" />
       <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/30 to-transparent ios:from-black ios:via-black/30" />
 
-      <div className="absolute inset-x-0 bottom-0 flex flex-col items-center gap-5 px-4 pb-8 text-center sm:px-10 sm:pb-10">
+      <div className="relative flex flex-col items-center gap-5 px-4 pb-8 pt-36 text-center sm:px-10 sm:pb-10 sm:pt-32">
         <p className="flex items-center gap-2 text-sm font-semibold text-neutral-100 drop-shadow">
           <span className="flex items-center gap-1.5 rounded bg-red-600 px-1.5 py-0.5 text-[11px] font-bold uppercase leading-none tracking-wide text-white">
             <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white" />

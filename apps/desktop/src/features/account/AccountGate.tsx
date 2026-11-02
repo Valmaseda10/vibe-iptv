@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiGet, apiPost, errorMessage } from "../../lib/api-client";
 import { useActiveProfile } from "../../lib/activeProfile";
 import type { AccountStatusResponse } from "../../lib/api-types";
+import { BrandLockup } from "../../components/BrandMark";
 
 type View = "auth" | "forgot" | "reset";
 
@@ -160,7 +161,9 @@ function AuthShell({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-full min-h-screen flex-col items-center justify-center gap-8 bg-neutral-950 px-6 py-10 text-white ios:bg-black">
       <div className="flex flex-col items-center gap-2">
-        <h1 className="text-3xl font-semibold sm:text-4xl">VIBE IPTV</h1>
+        <h1 aria-label="VIBE IPTV">
+          <BrandLockup size="lg" />
+        </h1>
         <p className="text-neutral-400">Crea tu cuenta o inicia sesión para ver tus perfiles y que te sigan a otros dispositivos.</p>
       </div>
       <div className="w-full max-w-sm rounded-lg border border-neutral-800 bg-neutral-900 p-6">{children}</div>
