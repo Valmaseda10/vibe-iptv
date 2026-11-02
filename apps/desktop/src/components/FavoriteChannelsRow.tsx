@@ -5,6 +5,7 @@ import { useActiveProfile } from "../lib/activeProfile";
 import type { ChannelsPage, EpgNowNextResponse } from "../lib/api-types";
 import { uniqueChannelsByName } from "../lib/channels";
 import { Row } from "./Row";
+import { ChannelLogoImage } from "./ChannelLogoImage";
 
 const EPG_REFRESH_MS = 60_000;
 
@@ -54,7 +55,7 @@ export function FavoriteChannelsRow({ title = "Tus canales, ahora" }: { title?: 
           >
             <span className="flex items-center gap-3">
               <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-neutral-800 text-[10px] text-neutral-500 ios:bg-ios-surface-2">
-                {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
+                <ChannelLogoImage channelId={channel.id} name={channel.display_name} />
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-semibold text-white">{channel.display_name}</span>

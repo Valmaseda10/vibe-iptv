@@ -2228,6 +2228,24 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
     El campo `avatar` sigue siendo texto libre (`fluent:`, `char:`, `tmdb:`): una versión
     antigua enseña la inicial.
 
+- **Logos de canal (2026-11-02, pedido por el usuario).** Medido con su lista: de 633
+  canales, 76 sin logo y 251 con uno roto (casi la mitad en una web caída). El proveedor no
+  aloja los logos: apuntan a webs de terceros. Ahora el núcleo resuelve cada logo
+  (`catalog::logos`, `GET /logo/:id`) probando por orden el elegido a mano, el del
+  proveedor y sus otras versiones, el de la guía XMLTV (`<channel><icon>`, ahora se lee),
+  el del directorio abierto de iptv-org (datos de dominio público, renovado cada semana,
+  comparando nombres normalizados y nombres alternativos, con preferencia por España) y el
+  del canal «hermano» sin número. Cada imagen se comprueba (que sea una imagen de verdad,
+  por sus primeros bytes) y se guarda en `logos/`; lo que falla no se reintenta en 7 días y
+  una web que falla varias veces seguidas se salta media hora. Se revisan todos un rato
+  después de abrir y cada 12 h, nunca con algo reproduciéndose (R1). Resultado con su
+  lista: de unos 150 a 234 de 340 canales con logo; lo que queda son sobre todo canales de
+  eventos y canales 24 h de una serie, que no tienen logo en ningún sitio: iniciales.
+  Descartado tv-logo/tv-logos: solo uso personal y pide permiso para usarlo en una app.
+  De paso, en el iPhone lo último de cada pantalla volvía a quedar debajo de la barra de
+  pestañas (desde las transiciones de F17): solo Directo, Guía y «Catálogo completo»
+  tienen ya la altura justa; el resto crece con su contenido.
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

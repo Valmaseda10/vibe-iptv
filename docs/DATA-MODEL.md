@@ -240,6 +240,14 @@ CREATE TABLE new_episode_marks (profile_id INTEGER, series_id INTEGER, season IN
   number INTEGER, checked_at INTEGER, PRIMARY KEY (profile_id, series_id));
 -- 036: la cola de salida admite 'watch_time' (el tiempo visto viaja con la cuenta).
 -- 037: profiles.sports_home ('mine' | 'mine_and_big' | 'never'): partidos en Inicio.
+-- 038: profiles.sports_notify (0/1): avisos de los partidos de lo que sigue (aparte de seguir).
+-- 039: logos de canal (catalog::logos):
+CREATE TABLE epg_channel_icons (provider_id INTEGER, channel_id TEXT, icon_url TEXT,
+  PRIMARY KEY (provider_id, channel_id));          -- <channel><icon> de la guía XMLTV
+CREATE TABLE logo_directory (name_key TEXT PRIMARY KEY, logo_url TEXT, source_id TEXT,
+  country TEXT);                                    -- iptv-org, renovado cada semana
+CREATE TABLE logo_checks (url TEXT PRIMARY KEY, ok INTEGER, file TEXT, checked_at INTEGER);
+CREATE TABLE channel_logo_choices (name_key TEXT PRIMARY KEY, url TEXT, updated_at INTEGER);
 ```
 
 ---

@@ -179,7 +179,7 @@ function ChannelResults({ hits, onOpen }: { hits: SearchResults["channels"]; onO
             onClick={() => onOpen(hit.item_id)}
             className="group flex min-w-0 flex-col gap-2 rounded-lg text-left outline-none focus-visible:ring-2 focus-visible:ring-white/70"
           >
-            <ChannelLogo url={hit.poster_path} name={hit.title} className="aspect-video w-full rounded-lg bg-white/[0.05] p-4 text-2xl ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] ios:bg-ios-surface-1" />
+            <ChannelLogo channelId={hit.item_id} name={hit.title} className="aspect-video w-full rounded-lg bg-white/[0.05] p-4 text-2xl ring-1 ring-white/5 transition-transform group-hover:scale-[1.03] ios:bg-ios-surface-1" />
             <span className="truncate text-sm text-neutral-200">{hit.title}</span>
           </button>
         ))}

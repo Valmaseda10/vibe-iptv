@@ -6,6 +6,7 @@ import type { CategorySummary, ChannelsPage, EpgNowNextResponse } from "../../li
 import { groupChannelsByName } from "../../lib/channels";
 import { CloseIcon } from "../../components/icons";
 import type { PlayerSearch } from "../../lib/playerSession";
+import { ChannelLogoImage } from "../../components/ChannelLogoImage";
 
 const ROW_HEIGHT = 64;
 const FAVORITES_SCOPE = "fav";
@@ -197,7 +198,7 @@ export function ChannelPanel({ profileId, currentChannelId, currentName, initial
                     >
                       <span className="w-7 shrink-0 text-right text-xs tabular-nums text-neutral-500">{channel.number ?? ""}</span>
                       <span className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500">
-                        {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
+                        <ChannelLogoImage channelId={channel.id} name={channel.display_name} />
                       </span>
                       <span className="min-w-0 flex-1">
                         <span className={`block truncate text-sm ${current ? "font-semibold text-white" : "text-neutral-100"}`}>{group.displayName}</span>

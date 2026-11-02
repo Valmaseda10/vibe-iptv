@@ -59,6 +59,23 @@ async fn serve_image(State(cache_dir): State<PathBuf>, AxumPath((size, image_id)
     image_response(&image_id, bytes.to_vec())
 }
 
+/// El logo de un canal, el que encuentre `catalog::logos` (ya guardado en el aparato). 404
+/// si no hay ninguno que funcione: la interfaz enseña las iniciales.
+async fn serve_logo(State((db_path, dir)): State<(PathBuf, PathBuf)>, AxumPath(channel_id): AxumPath<i64>) -> Response {
+    let Some(path) = crate::catalog::logos::resolve(&db_path, &dir, channel_id).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            // Un día: si el logo cambia (otra fuente, uno elegido a mano), se ve al día siguiente
+            // o al reabrir la pantalla.
+            ([(header::CONTENT_TYPE, content_type_for(name)), (header::CACHE_CONTROL, "public, max-age=86400")], bytes).into_response()
+        }
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
 /// Las imágenes de TMDB no cambian nunca para un mismo nombre: la WebView puede guardarlas
 /// sin volver a preguntar (las listas virtualizadas montan y desmontan portadas sin parar).
 fn image_response(image_id: &str, bytes: Vec<u8>) -> Response {
@@ -113,10 +130,12 @@ fn trim_image_cache_to(dir: &std::path::Path, limit: u64, target: u64) -> usize 
 }
 
 fn content_type_for(filename: &str) -> &'static str {
-    if filename.ends_with(".png") {
-        "image/png"
-    } else {
-        "image/jpeg"
+    match filename.rsplit('.').next().unwrap_or_default() {
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "webp" => "image/webp",
+        "gif" => "image/gif",
+        _ => "image/jpeg",
     }
 }
 
@@ -152,13 +171,16 @@ async fn log_stall(Json(report): Json<StallReport>) -> StatusCode {
 /// del WebView a `/api/playback/tier/*` fallaba en silencio; `<video src>` no lo notó
 /// porque cargar un recurso de vídeo no pasa por CORS, solo `fetch`/`XHR`).
 pub fn build_router(image_cache_dir: PathBuf, db_path: PathBuf) -> Router {
+    // Los logos de canal se guardan junto a la caché de portadas (`<datos>/logos`).
+    let logos_dir = image_cache_dir.parent().map(|p| p.join("logos")).unwrap_or_else(|| image_cache_dir.join("logos"));
+    let logos = Router::new().route("/logo/:channel_id", get(serve_logo)).with_state((db_path.clone(), logos_dir));
     let health_and_images = Router::new()
         .route("/api/health", get(health))
         .route("/img/:size/:image_id", get(serve_image))
         .route("/api/diag/stall", post(log_stall))
         .with_state(image_cache_dir);
 
-    health_and_images.merge(super::api::catalog_router(db_path))
+    health_and_images.merge(logos).merge(super::api::catalog_router(db_path))
 }
 
 #[cfg(test)]

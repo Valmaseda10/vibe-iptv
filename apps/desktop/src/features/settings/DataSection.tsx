@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { apiGet, errorMessage } from "../../lib/api-client";
-import type { BackupSummary, LibraryStats, ProfileSummary, SyncProgress } from "../../lib/api-types";
+import type { BackupSummary, LibraryStats, LogoCoverage, ProfileSummary, SyncProgress } from "../../lib/api-types";
 import { applyUiBackup, collectUiBackup } from "../../lib/backupPrefs";
 import { SettingsCard } from "../../components/SettingsCard";
 import { SettingsRow } from "../../components/SettingsRow";
@@ -19,6 +19,15 @@ export function DataSection() {
   const fileInput = useRef<HTMLInputElement>(null);
 
   const statsQuery = useQuery({ queryKey: ["library-stats"], queryFn: () => invoke<LibraryStats>("library_stats") });
+  const logosQuery = useQuery({ queryKey: ["logo-coverage"], queryFn: () => invoke<LogoCoverage>("logo_coverage") });
+  const findLogos = useMutation({
+    mutationFn: () => invoke<LogoCoverage>("find_logos"),
+    onSuccess: (coverage) => {
+      queryClient.setQueryData(["logo-coverage"], coverage);
+      // Las listas de canales vuelven a pedir los logos.
+      queryClient.invalidateQueries({ queryKey: ["live-channels"] });
+    },
+  });
   const tmdbKeyQuery = useQuery({ queryKey: ["tmdb-api-key-configured"], queryFn: () => invoke<boolean>("has_tmdb_api_key") });
   const profilesQuery = useQuery({ queryKey: ["profiles"], queryFn: () => apiGet<ProfileSummary[]>("/api/profiles") });
 
@@ -84,6 +93,18 @@ export function DataSection() {
         >
           <button type="button" className={BUTTON} onClick={() => clearCache.mutate()} disabled={clearCache.isPending || !stats?.image_cache_files}>
             {clearCache.isPending ? "Vaciando…" : "Vaciar"}
+          </button>
+        </SettingsRow>
+        <SettingsRow
+          title="Logos de canales"
+          description={
+            logosQuery.data
+              ? `${logosQuery.data.with_logo} de ${logosQuery.data.total} canales con logo. Si el del proveedor no funciona se busca en la guía, en el directorio abierto de iptv-org y en canales hermanos; se revisa solo cada 12 horas.`
+              : "…"
+          }
+        >
+          <button type="button" className={BUTTON} onClick={() => findLogos.mutate()} disabled={findLogos.isPending}>
+            {findLogos.isPending ? "Buscando…" : "Buscar ahora"}
           </button>
         </SettingsRow>
       </SettingsCard>

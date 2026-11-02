@@ -20,6 +20,12 @@ import { BrandLockup, BrandMark } from "./BrandMark";
 export function AppLayout({ children }: { children: ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  // Directo, Guía y «Catálogo completo» desplazan su propia lista y necesitan la altura justa
+  // de la pantalla; el resto crece con su contenido, y así el hueco de la barra de pestañas
+  // del iPhone queda al final de lo último (antes se quedaba tapado debajo).
+  const fixedHeight = useRouterState({
+    select: (s) => s.location.pathname === "/live" || s.location.pathname === "/guide" || (s.location.search as { view?: string }).view === "all",
+  });
   const { surpriseMe, surprising } = useSurpriseMe();
   const [whatsNew, dismissWhatsNew] = useWhatsNewOnLaunch();
   const navRef = useRef<HTMLElement>(null);
@@ -147,7 +153,7 @@ export function AppLayout({ children }: { children: ReactNode }) {
       </nav>
 
       <main ref={mainRef} data-shell-main className="min-h-0 min-w-0 flex-1 overflow-y-auto overflow-x-hidden">
-        <div key={pathname} className="page-enter h-full">
+        <div key={pathname} className={`page-enter ${fixedHeight ? "h-full" : "min-h-full"}`}>
           {children}
         </div>
       </main>

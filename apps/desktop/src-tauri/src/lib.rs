@@ -121,6 +121,24 @@ pub fn run() {
             native_player::install(app.handle().clone());
             updater::start(app.handle().clone(), stream_guard.clone());
 
+            // Logos de canal (2026-11-02): un rato después de abrir y cada 12 h se busca el de
+            // los canales que aún no tienen uno que funcione. Nunca con algo reproduciéndose
+            // (R1: no competir con el vídeo); las listas piden los suyos al enseñarse.
+            if let Ok(db_path) = db::schema::resolve_db_path(app.handle()) {
+                let logos_dir = app_data_dir.join("logos");
+                let guard = stream_guard.clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_secs(90)).await;
+                    loop {
+                        if !guard.is_busy() {
+                            let (found, total) = catalog::logos::resolve_all(&db_path, &logos_dir).await;
+                            tracing::info!(found, total, "logos de canal revisados");
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(12 * 3600)).await;
+                    }
+                });
+            }
+
             // Episodios nuevos de las series seguidas (F17), si algún perfil lo quiere.
             if let Ok(db_path) = db::schema::resolve_db_path(app.handle()) {
                 notifications::start_new_episode_checks(app.handle().clone(), db_path, stream_guard.clone());
@@ -162,6 +180,8 @@ pub fn run() {
             library::clear_image_cache,
             library::export_backup,
             library::import_backup,
+            library::logo_coverage,
+            library::find_logos,
             notifications::notifications_permission,
             notifications::notifications_request,
             notifications::notifications_show,

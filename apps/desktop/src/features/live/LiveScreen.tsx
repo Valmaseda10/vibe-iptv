@@ -11,6 +11,7 @@ import { useFavorites } from "../../lib/favorites";
 import { HeartIcon } from "../../components/icons";
 import { LargeTitle } from "../../components/LargeTitle";
 import { LIVE_SECTIONS, SectionSwitch } from "../../components/SectionSwitch";
+import { ChannelLogoImage } from "../../components/ChannelLogoImage";
 
 const ROW_HEIGHT = 60;
 const EPG_REFRESH_MS = 60_000;
@@ -184,7 +185,7 @@ export function LiveScreen() {
                 className="flex shrink-0 items-center gap-2 rounded-lg bg-neutral-900 px-3 py-2 text-sm outline-none hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-red-600 ios:rounded-full ios:bg-ios-surface-1 ios:py-1.5 ios:pl-1.5 ios:pr-4 ios:text-[15px]"
               >
                 <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500 ios:rounded-full ios:bg-ios-surface-2">
-                  {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
+                  <ChannelLogoImage channelId={channel.id} name={channel.display_name} />
                 </span>
                 <span className="max-w-40 truncate">{channel.display_name}</span>
               </button>
@@ -211,7 +212,7 @@ export function LiveScreen() {
                 className="flex shrink-0 items-center gap-2 rounded-lg bg-neutral-900 px-3 py-2 text-sm outline-none hover:bg-neutral-800 focus-visible:ring-2 focus-visible:ring-red-600 ios:rounded-full ios:bg-ios-surface-1 ios:py-1.5 ios:pl-1.5 ios:pr-4 ios:text-[15px]"
               >
                 <span className="flex h-7 w-7 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500 ios:rounded-full ios:bg-ios-surface-2">
-                  {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
+                  <ChannelLogoImage channelId={channel.id} name={channel.display_name} />
                 </span>
                 <span className="max-w-40 truncate">{channel.display_name}</span>
               </button>
@@ -257,7 +258,7 @@ export function LiveScreen() {
                       >
                         <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500">{channel.number ?? ""}</span>
                         <div className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[10px] text-neutral-500 ios:rounded-[10px] ios:bg-ios-surface-2">
-                          {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
+                          <ChannelLogoImage channelId={channel.id} name={channel.display_name} />
                         </div>
                         <div className="min-w-0 flex-1">
                           <span className="block truncate text-sm ios:text-[17px] ios:text-white">{group.displayName}</span>

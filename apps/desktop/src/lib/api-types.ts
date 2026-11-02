@@ -275,6 +275,11 @@ genre_rows: Array<GenreRowResponse>, };
  */
 export type LibraryStats = { channels: number, movies: number, series: number, episodes: number, image_cache_bytes: number, image_cache_files: number, };
 
+/**
+ * Cuántos canales (por nombre) tienen un logo que funciona.
+ */
+export type LogoCoverage = { with_logo: number, total: number, };
+
 export type M3uValidation = { channel_count: number, movie_count: number, series_count: number, 
 /**
  * Presente si la URL es en realidad un `get.php` de Xtream (ver

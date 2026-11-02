@@ -12,6 +12,7 @@ import { BellIcon } from "../../components/icons";
 import { GuideSearchResults } from "./GuideSearchResults";
 import { LargeTitle } from "../../components/LargeTitle";
 import { LIVE_SECTIONS, SectionSwitch } from "../../components/SectionSwitch";
+import { ChannelLogoImage } from "../../components/ChannelLogoImage";
 
 const WINDOW_HOURS = 4;
 const SHIFT_SECONDS = 3600;
@@ -291,7 +292,7 @@ export function GuideScreen() {
                         <div className="flex w-[5.5rem] shrink-0 items-center gap-2 pr-3 sm:w-48">
                           {channel.number != null && <span className="w-8 shrink-0 text-right text-xs tabular-nums text-neutral-500">{channel.number}</span>}
                           <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded bg-neutral-800 text-[9px] text-neutral-500 ios:rounded-lg ios:bg-ios-surface-2">
-                            {channel.logo_url ? <img src={channel.logo_url} alt="" className="h-full w-full object-contain" /> : "TV"}
+                            <ChannelLogoImage channelId={channel.id} name={channel.display_name} />
                           </div>
                           <span className="hidden truncate text-sm sm:inline">{channel.display_name}</span>
                         </div>

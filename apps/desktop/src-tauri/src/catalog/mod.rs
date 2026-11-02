@@ -3,6 +3,7 @@ pub mod browse;
 pub mod collections;
 pub mod epg;
 pub mod live_sports;
+pub mod logos;
 pub mod new_episodes;
 pub mod normalize;
 pub mod people;

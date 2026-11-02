@@ -52,7 +52,7 @@ export function SportEventSheet({ event, reminders, onClose }: { event: SportEve
               autoFocus={index === 0}
               className="flex items-center gap-3 rounded-xl px-2 py-2.5 text-left outline-none transition-colors hover:bg-white/[0.06] focus-visible:bg-white/10"
             >
-              <ChannelLogo url={channel.logo_url} name={channel.name} className="h-9 w-9 text-sm" />
+              <ChannelLogo channelId={channel.id} name={channel.name} className="h-9 w-9 text-sm" />
               <span className="flex-1 text-sm font-medium text-white">{channel.name}</span>
               {index === 0 && <span className="text-xs text-neutral-500">Recomendado</span>}
               <span className="text-neutral-400">▶</span>

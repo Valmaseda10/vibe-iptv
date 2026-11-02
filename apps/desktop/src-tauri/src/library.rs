@@ -97,3 +97,34 @@ pub fn import_backup(app: AppHandle, contents: String) -> Result<BackupSummary, 
     let conn = schema::open_connection(&app).map_err(|err| err.to_string())?;
     backup::import(&conn, file).map_err(|err| err.to_string())
 }
+
+/// Cuántos canales (por nombre) tienen un logo que funciona.
+#[derive(Debug, Serialize, TS)]
+#[ts(export, export_to = "api-types.ts")]
+pub struct LogoCoverage {
+    #[ts(type = "number")]
+    pub with_logo: i64,
+    #[ts(type = "number")]
+    pub total: i64,
+}
+
+fn logos_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|_| "no se pudo resolver el directorio de datos".to_string())?.join("logos"))
+}
+
+/// Comando Tauri: cuántos canales tienen ya logo (solo mira lo guardado, no baja nada).
+#[tauri::command]
+pub fn logo_coverage(app: AppHandle) -> Result<LogoCoverage, String> {
+    let conn = schema::open_connection(&app).map_err(|err| err.to_string())?;
+    let (with_logo, total) = crate::catalog::logos::coverage(&conn, &logos_dir(&app)?).map_err(|err| err.to_string())?;
+    Ok(LogoCoverage { with_logo, total })
+}
+
+/// Comando Tauri: busca ahora el logo de todos los canales (renueva antes el directorio si
+/// toca). Tarda: baja como mucho una imagen por fuente que no se haya probado.
+#[tauri::command]
+pub async fn find_logos(app: AppHandle) -> Result<LogoCoverage, String> {
+    let db_path = schema::resolve_db_path(&app).map_err(|err| err.to_string())?;
+    let (with_logo, total) = crate::catalog::logos::resolve_all(&db_path, &logos_dir(&app)?).await;
+    Ok(LogoCoverage { with_logo, total })
+}

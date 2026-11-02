@@ -348,5 +348,8 @@ El control parental es por perfil (sustituyó al PIN global de F8).
 - `GET /api/health` → `{ status, version }`.
 - `GET /img/:size/:image_id` — `size` es `w342`, `w500` o `w1280`; imágenes de TMDB ya
   cacheadas en disco.
+- `GET /logo/:channel_id` — el logo del canal que encuentra `catalog::logos` (proveedor,
+  guía, directorio de iptv-org o canal hermano), ya guardado en el aparato. 404 si no hay
+  ninguno que funcione: el cliente enseña las iniciales. Caché de un día.
 
 ---

@@ -87,7 +87,18 @@ pub async fn run_epg_sync(
 /// `catalog::sync`.
 fn import_into_db(conn: &Connection, provider_id: i64, path: &Path, cutoff_past: i64, cutoff_future: i64) -> Result<EpgSyncSummary, EpgError> {
     let mut programmes = Vec::new();
-    parse_xmltv(path, cutoff_past, cutoff_future, |p| programmes.push(p))?;
+    let mut icons: Vec<(String, String)> = Vec::new();
+    parse_xmltv_with_channels(path, cutoff_past, cutoff_future, |p| programmes.push(p), |id, url| icons.push((id, url)))?;
+    // El logo de cada canal según la guía, para cuando el del proveedor no funcione.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute("DELETE FROM epg_channel_icons WHERE provider_id = ?1", rusqlite::params![provider_id])?;
+    for (channel_id, url) in &icons {
+        tx.execute(
+            "INSERT OR REPLACE INTO epg_channel_icons (provider_id, channel_id, icon_url) VALUES (?1, ?2, ?3)",
+            rusqlite::params![provider_id, channel_id, url],
+        )?;
+    }
+    tx.commit()?;
 
     queries::delete_epg_programmes_for_provider(conn, provider_id)?;
     for chunk in programmes.chunks(BATCH_SIZE) {
@@ -174,7 +185,19 @@ fn open_possibly_gzipped(path: &Path) -> Result<Box<dyn BufRead>, EpgError> {
 /// segundos) — descarta el resto ahí mismo, sin construirlo ni guardarlo. El llamador
 /// decide qué hacer con cada uno (aquí: acumular lotes de 500 e insertarlos en
 /// transacciones, igual que el resto de `catalog::sync`).
-pub fn parse_xmltv(path: &Path, cutoff_past: i64, cutoff_future: i64, mut on_programme: impl FnMut(Programme)) -> Result<(), EpgError> {
+pub fn parse_xmltv(path: &Path, cutoff_past: i64, cutoff_future: i64, on_programme: impl FnMut(Programme)) -> Result<(), EpgError> {
+    parse_xmltv_with_channels(path, cutoff_past, cutoff_future, on_programme, |_, _| {})
+}
+
+/// Igual que [`parse_xmltv`], y además llama a `on_channel_icon(id, url)` con el logo de
+/// cada `<channel>` que lo trae (`<icon src>`), para los logos de canal.
+pub fn parse_xmltv_with_channels(
+    path: &Path,
+    cutoff_past: i64,
+    cutoff_future: i64,
+    mut on_programme: impl FnMut(Programme),
+    mut on_channel_icon: impl FnMut(String, String),
+) -> Result<(), EpgError> {
     let reader = open_possibly_gzipped(path)?;
     let mut xml = Reader::from_reader(reader);
     xml.config_mut().trim_text(true);
@@ -182,11 +205,18 @@ pub fn parse_xmltv(path: &Path, cutoff_past: i64, cutoff_future: i64, mut on_pro
 
     let mut current: Option<PartialProgramme> = None;
     let mut current_field: Option<Field> = None;
+    let mut current_channel: Option<String> = None;
 
     loop {
         match xml.read_event_into(&mut buf) {
             Ok(Event::Start(e)) if e.local_name().as_ref() == b"programme" => {
                 current = PartialProgramme::from_start_tag(&e);
+            }
+            Ok(Event::Start(e)) if e.local_name().as_ref() == b"channel" => {
+                current_channel = attribute(&e, b"id");
+            }
+            Ok(Event::End(e)) if e.local_name().as_ref() == b"channel" => {
+                current_channel = None;
             }
             Ok(Event::Start(e)) if current.is_some() => {
                 current_field = Field::from_name(e.local_name().as_ref());
@@ -194,6 +224,10 @@ pub fn parse_xmltv(path: &Path, cutoff_past: i64, cutoff_future: i64, mut on_pro
             Ok(Event::Empty(e)) if e.local_name().as_ref() == b"icon" => {
                 if let Some(partial) = current.as_mut() {
                     partial.icon_url = attribute(&e, b"src");
+                } else if let (Some(channel), Some(src)) = (current_channel.as_ref(), attribute(&e, b"src")) {
+                    if src.starts_with("http") {
+                        on_channel_icon(channel.clone(), src);
+                    }
                 }
             }
             Ok(Event::Text(t)) => {
@@ -382,6 +416,24 @@ mod tests {
     <title lang="es">Demasiado viejo</title>
   </programme>
 </tv>"#;
+
+    #[test]
+    fn reads_the_logo_of_each_channel_but_not_the_ones_of_programmes() {
+        let dir = scratch_dir("channel-icons");
+        let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<tv>
+  <channel id="la1.es"><display-name>La 1</display-name><icon src="https://logos.example/la1.png"/></channel>
+  <channel id="sinlogo.es"><display-name>Sin logo</display-name></channel>
+  <programme channel="la1.es" start="20200101120000 +0000" stop="20200101130000 +0000">
+    <title>Telediario</title><icon src="https://logos.example/programa.png"/>
+  </programme>
+</tv>"#;
+        let path = write_fixture(&dir, "guide.xml", xml);
+        let mut icons = Vec::new();
+        parse_xmltv_with_channels(&path, 0, 2_000_000_000, |_| {}, |id, url| icons.push((id, url))).unwrap();
+        assert_eq!(icons, vec![("la1.es".to_string(), "https://logos.example/la1.png".to_string())]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parses_full_programme_with_all_fields() {
