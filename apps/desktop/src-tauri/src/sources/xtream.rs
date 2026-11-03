@@ -101,6 +101,9 @@ impl XtreamSource {
             if status.is_server_error() {
                 return Err(SourceError::ServerDown(status.as_u16()));
             }
+            if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::UNAUTHORIZED {
+                return Err(SourceError::Rejected(FORBIDDEN_REASON.to_string()));
+            }
             return Err(SourceError::invalid_response(url.as_str(), format!("HTTP {status}")));
         }
 
@@ -315,6 +318,10 @@ fn gateway_retry_delay(attempt: u32) -> Duration {
 /// `{"error": "..."}`), ya en palabras del usuario. Algunos paneles solo admiten
 /// conexiones desde ciertos países y lo dicen así; fuera de ellos no hay nada que
 /// arreglar en la app.
+/// Un 401/403 sin explicación del panel: casi siempre, que no admite conexiones desde la red
+/// en la que está el aparato (una VPN, o fuera de su país).
+pub(crate) const FORBIDDEN_REASON: &str = "Tu proveedor ha rechazado la conexión (error 403). Suele pasar con una VPN activa o al conectarte      desde fuera de su país: quítala, o usa una con salida en su país, y vuelve a probar.";
+
 pub(crate) fn rejection_reason(body: &[u8]) -> Option<String> {
     let value: serde_json::Value = serde_json::from_slice(body).ok()?;
     let message = value.get("message").or_else(|| value.get("error"))?.as_str()?.trim();

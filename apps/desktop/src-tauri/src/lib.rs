@@ -166,6 +166,7 @@ pub fn run() {
             list_providers,
             validate_xtream,
             validate_m3u,
+            commands::m3u_xtream_suggestion,
             add_provider,
             delete_provider,
             sync_provider,

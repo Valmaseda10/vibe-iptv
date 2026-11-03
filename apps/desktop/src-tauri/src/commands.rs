@@ -127,6 +127,14 @@ pub async fn validate_xtream(
     })
 }
 
+/// Comando Tauri: si un enlace M3U es en realidad de un panel Xtream (`get.php?username=…`),
+/// sus datos para añadirlo como Xtream. Solo mira el enlace: no descarga nada, así que sirve
+/// aunque el panel no deje bajar la lista entera.
+#[tauri::command]
+pub fn m3u_xtream_suggestion(url: String) -> Option<XtreamSuggestion> {
+    m3u::detect_embedded_xtream_credentials(&url).map(|creds| XtreamSuggestion { base_url: creds.base_url, username: creds.username, password: creds.password })
+}
+
 #[tauri::command]
 pub async fn validate_m3u(url: String) -> CmdResult<M3uValidation> {
     let suggested_xtream = m3u::detect_embedded_xtream_credentials(&url).map(|creds| XtreamSuggestion {
@@ -610,7 +618,10 @@ async fn fetch_m3u_text(url: &str) -> CmdResult<String> {
         if let Some(reason) = crate::sources::xtream::rejection_reason(&body) {
             return Err(reason);
         }
-        return Err(format!("el proveedor respondió {status} al pedir la lista {}", redact(url)));
+        if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::UNAUTHORIZED {
+            return Err(crate::sources::xtream::FORBIDDEN_REASON.to_string());
+        }
+        return Err(format!("El proveedor respondió con un error (HTTP {}) al pedir la lista. Revisa el enlace.", status.as_u16()));
     }
     let text = response.text().await.map_err(|_| format!("no se pudo leer {}", redact(url)))?;
     if !text.trim_start_matches('\u{feff}').trim_start().starts_with("#EXTM3U") {

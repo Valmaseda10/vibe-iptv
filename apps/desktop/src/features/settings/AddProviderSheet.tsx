@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { errorMessage } from "../../lib/api-client";
-import type { AccountStatus, AddProviderInput, M3uValidation, ProviderKind, ProviderSummary } from "../../lib/api-types";
+import type { AccountStatus, AddProviderInput, M3uValidation, ProviderKind, ProviderSummary, XtreamSuggestion } from "../../lib/api-types";
 import { GlassSheet } from "../../components/GlassSheet";
 import { BUTTON, BUTTON_PRIMARY, INPUT } from "./styles";
 
@@ -22,6 +22,22 @@ export function AddProviderSheet({ onClose, onAdded }: { onClose: () => void; on
   const [xtreamStatus, setXtreamStatus] = useState<AccountStatus | null>(null);
   const [m3uStatus, setM3uStatus] = useState<M3uValidation | null>(null);
   const set = (patch: Partial<FormState>) => setForm((prev) => ({ ...prev, ...patch }));
+  // Un enlace M3U de un panel Xtream (`get.php?username=…`) se reconoce solo por el enlace,
+  // sin descargar nada: hay paneles que no dejan bajar la lista entera pero sí entrar como Xtream.
+  const [linkSuggestion, setLinkSuggestion] = useState<XtreamSuggestion | null>(null);
+  useEffect(() => {
+    if (form.kind !== "m3u" || !form.m3uUrl.trim()) {
+      setLinkSuggestion(null);
+      return;
+    }
+    let cancelled = false;
+    invoke<XtreamSuggestion | null>("m3u_xtream_suggestion", { url: form.m3uUrl.trim() })
+      .then((found) => !cancelled && setLinkSuggestion(found))
+      .catch(() => !cancelled && setLinkSuggestion(null));
+    return () => {
+      cancelled = true;
+    };
+  }, [form.kind, form.m3uUrl]);
 
   const validate = useMutation({
     mutationFn: async () => {
@@ -55,7 +71,7 @@ export function AddProviderSheet({ onClose, onAdded }: { onClose: () => void; on
 
   // Una lista M3U que en realidad sale de un panel Xtream: mejor como Xtream.
   function applySuggestion() {
-    const suggestion = m3uStatus?.suggested_xtream;
+    const suggestion = m3uStatus?.suggested_xtream ?? linkSuggestion;
     if (!suggestion) return;
     set({ kind: "xtream", baseUrl: suggestion.base_url, username: suggestion.username, password: suggestion.password });
     setM3uStatus(null);
@@ -110,6 +126,15 @@ export function AddProviderSheet({ onClose, onAdded }: { onClose: () => void; on
           </Field>
         )}
 
+        {form.kind === "m3u" && linkSuggestion && !m3uStatus && (
+          <div className="flex flex-col gap-2 rounded-xl bg-red-600/10 p-3 text-sm ring-1 ring-red-600/40">
+            <p className="font-medium text-white">Este enlace es de un panel Xtream: mejor añadirlo como Xtream.</p>
+            <p className="text-neutral-300">No descarga la lista entera (hay paneles que no lo permiten), carga en segundos y trae guía y series completas.</p>
+            <button type="button" className={`${BUTTON_PRIMARY} self-start`} onClick={applySuggestion}>
+              Usar como Xtream
+            </button>
+          </div>
+        )}
         {xtreamStatus && (
           <div className={`rounded-xl p-3 text-sm ${xtreamStatus.auth_ok ? "bg-emerald-500/10 text-emerald-300" : "bg-red-500/10 text-red-300"}`}>
             <p className="font-medium">{xtreamStatus.auth_ok ? "La cuenta funciona." : `El proveedor rechazó los datos (${xtreamStatus.status}).`}</p>
