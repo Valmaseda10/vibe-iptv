@@ -8,6 +8,16 @@ const KEEPALIVE_MS = 5_000;
  * saltárselo (el directo va algo por delante del último trozo grabado). */
 const RESUME_MARGIN_SECONDS = 2;
 
+/** Parón con vídeo de sobra guardado: hls.js empuja la reproducción unas décimas antes
+ * (a los 0,5 s, no a los 2 s) y lo intenta más veces antes de dar la grabación por perdida
+ * (darla por perdida es volver a conectar con el proveedor). La causa de los que se
+ * medían (huecos de audio cuando el proveedor pierde un trozo) se arregla en el núcleo:
+ * ver `LIVE_AUDIO` en `media::ffmpeg`. */
+const STALL_RECOVERY = { detectStallWithCurrentTimeMs: 500, highBufferWatchdogPeriod: 0.5, nudgeMaxRetry: 10 } as const;
+/** Errores del decodificador que se arreglan sin salir de la grabación, por minuto. */
+const MAX_RECOVERIES = 3;
+const RECOVERY_WINDOW_MS = 60_000;
+
 /** A dónde entrar en la grabación: el segundo exacto de la sesión y, por si la ventana ya
  * se deslizó, cuántos segundos por detrás del directo. */
 type Entry = { at: number; behind: number; fromEdge?: boolean };
@@ -69,7 +79,8 @@ export function useLiveTimeshift({ enabled, channelId, base, videoRef }: Options
     let started = false;
     void import("hls.js").then(({ default: HlsClass }) => {
       if (cancelled) return;
-      const hls = new HlsClass({ autoStartLoad: false, backBufferLength: 90, maxBufferLength: 30, liveDurationInfinity: true });
+      const hls = new HlsClass({ autoStartLoad: false, backBufferLength: 90, maxBufferLength: 30, liveDurationInfinity: true, ...STALL_RECOVERY });
+      const recoveries: number[] = [];
       hlsRef.current = hls;
       hls.on(HlsClass.Events.LEVEL_LOADED, (_event, data) => {
         setLiveEdge(data.details.edge);
@@ -85,7 +96,19 @@ export function useLiveTimeshift({ enabled, channelId, base, videoRef }: Options
         video.play().catch(() => {});
       });
       hls.on(HlsClass.Events.ERROR, (_event, data) => {
-        if (data.fatal) setFailed(true);
+        if (!data.fatal) return;
+        // Un fotograma que el decodificador no traga (el proveedor perdió un trozo) se
+        // arregla aquí mismo, sin volver a conectar con el proveedor. Si se repite mucho,
+        // la grabación no sirve: se vuelve al directo, que sabe reconectar y explicarlo.
+        const now = performance.now();
+        while (now - (recoveries[0] ?? now) > RECOVERY_WINDOW_MS) recoveries.shift();
+        if (data.type === HlsClass.ErrorTypes.MEDIA_ERROR && recoveries.length < MAX_RECOVERIES) {
+          recoveries.push(now);
+          hls.recoverMediaError();
+          video.play().catch(() => {});
+          return;
+        }
+        setFailed(true);
       });
       hls.loadSource(`${base}/stream/timeshift/channel/${channelId}/live.m3u8`);
       hls.attachMedia(video);

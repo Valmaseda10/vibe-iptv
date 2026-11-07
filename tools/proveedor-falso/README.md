@@ -50,6 +50,9 @@ vez: la app nunca debería abrir dos (regla R1).
 
 - `VIBE_FALSO_BACHES=1`: en el directo, cada 10 s deja de mandar 1,5 s y luego manda lo
   atrasado de golpe, como un panel tras una VPN. Para medir los parones del reproductor.
+- `VIBE_FALSO_SALTOS=1`: en el directo, cada 10 s pierde 1,5 s del canal, que no llega
+  nunca (como un reemisor que pierde su origen): datos rotos y un salto en las marcas de
+  tiempo. VLC lo salta; es lo que paraba el directo del PC (ver `DECISIONS.md`, 2026-11-07).
 - `VIBE_FALSO_RAFAGA=30`: la ráfaga inicial del directo dura 30 s en vez de 3.
 - `VIBE_FALSO_EPISODIO_NUEVO=1`: añade «Serie de pruebas VIBE», que gana un episodio cada
   vez que se pide su ficha (a partir de la segunda). Para los avisos de episodios nuevos

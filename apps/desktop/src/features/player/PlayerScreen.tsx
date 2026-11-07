@@ -21,7 +21,7 @@ import type {
 } from "../../lib/api-types";
 import { ArrowDownIcon, ArrowUpIcon, BackIcon, FullscreenIcon, ListIcon, MuteIcon, PauseIcon, PictureInPictureIcon, PlayIcon, VolumeIcon } from "../../components/icons";
 import { feedLabels } from "../../lib/channels";
-import { LIVE_BADGE_MAX_BEHIND_S, LIVE_CUSHION_BEHIND_S, useLiveCushion } from "./useLiveCushion";
+import { LIVE_BADGE_MAX_BEHIND_S, LIVE_CUSHION_BEHIND_S, useLiveCushion, useRecordingPace } from "./useLiveCushion";
 import type { PlayerKind, PlayerSearch, PlayerSession } from "../../lib/playerSession";
 import { ChannelPanel } from "./ChannelPanel";
 import { askToRate, WATCHED_RATIO, type RateCandidate } from "../../lib/ratePrompt";
@@ -368,6 +368,7 @@ export function PlayerScreen({ kind, id, search, mini, onNavigate, onExpand, onC
     },
     onSwitch: () => timeshift.enterNearLive(LIVE_CUSHION_BEHIND_S),
   });
+  useRecordingPace(videoRef, liveTimeshift && timeshift.inBuffer, timeshift.bufferKey);
   // Y los parones ya dentro de la grabación, para el diagnóstico: si los hay, la causa es otra.
   useEffect(() => {
     const video = videoRef.current;

@@ -80,14 +80,22 @@ recodificar vídeo:
 ```
 ffmpeg -hide_banner -loglevel error \
   -probesize <1M directo | 2M VOD> -analyzeduration <1M directo | 2M VOD> \
+  [-fflags +discardcorrupt, solo en directo] \
   -i <url> \
-  -c:v copy -c:a <copy [-bsf:a aac_adtstoasc si es AAC] | aac -b:a 192k> \
+  -c:v copy \
+  -c:a <directo: aac -b:a 192k -af aresample=async=1:first_pts=0 \
+        VOD: copy [-bsf:a aac_adtstoasc si es AAC] | aac -b:a 192k> \
   -f mp4 -movflags frag_keyframe+empty_moov+default_base_moof+delay_moov \
   -frag_duration 500000 \
   pipe:1
 ```
 
-El audio se recodifica solo si es AC3, E-AC3 o DTS **y el cliente no lo decodifica**:
+**En directo, el audio siempre se codifica a AAC**, rellenando con silencio los huecos que
+deja el proveedor al perder un trozo del canal, y lo que llega roto se tira. Si no, el
+`<video>` del PC daba errores y se congelaba en cada pérdida, cosa que VLC salta sin que se
+note (medido, ver `DECISIONS.md`, 2026-11-07). El vídeo se sigue copiando.
+
+En VOD, el audio se recodifica solo si es AC3, E-AC3 o DTS **y el cliente no lo decodifica**:
 el reproductor manda `?audio_passthrough=ac3,eac3` con lo que su WebView reproduce
 (`canPlayType`). La WebView2 de Windows reproduce AC-3/E-AC-3, así que ahí el Dolby se
 copia tal cual y se conserva el 5.1; DTS se sigue convirtiendo. El vídeo **nunca** se

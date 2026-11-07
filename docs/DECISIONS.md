@@ -2246,6 +2246,36 @@ recordatorios viajan con la cuenta, cada perfil por separado; «Tu año» sale e
   pestañas (desde las transiciones de F17): solo Directo, Guía y «Catálogo completo»
   tienen ya la altura justa; el resto crece con su contenido.
 
+- **El directo del PC se paraba mucho; en el iPad no (2026-11-07, pedido por el
+  usuario).** Reproducido con el proveedor de pruebas en un modo nuevo,
+  `VIBE_FALSO_SALTOS=1`: cada 10 s pierde 1,5 s del canal, que no llega nunca (lo que hace
+  un reemisor que pierde su origen, frecuente tras una VPN). VLC lo salta sin que se note;
+  el PC tenía tres fallos encadenados:
+  1. Lo que llegaba roto daba error de decodificación en el `<video>`, y el reproductor
+     volvía a conectar con el proveedor cada ~14 s. Ahora ffmpeg lo tira
+     (`-fflags +discardcorrupt`, solo en directo).
+  2. Con el audio copiado, el último fotograma antes del salto decía durar todo el hueco
+     (1,6 s en vez de 23 ms). En MSE eso es un hueco de audio dentro de lo «guardado»: la
+     imagen se congelaba hasta el siguiente trozo de la grabación, aunque hubiera 10 s por
+     delante (un parón por pérdida). Ahora el audio del directo se codifica siempre a AAC
+     con `aresample=async=1`, que rellena el hueco con silencio, como VLC. El vídeo se
+     sigue copiando. Cerrar el salto (`-dts_delta_threshold 1`) se probó y se descartó:
+     el directo se queda 1,5 s más atrás con cada pérdida y el margen se acaba. A cambio,
+     el Dolby de un canal en directo llega convertido; el de las películas, no.
+  3. Un canal que llega algo más despacio que el tiempo real se comía el margen de la
+     grabación y, a los pocos minutos, se paraba cada poco. Ahora, con menos de 6 s de
+     margen, la grabación se reproduce al 95 % (con el tono conservado) hasta recuperar 9;
+     VLC hace lo mismo con su reloj.
+
+  Además, un error de hls.js en la grabación se arregla ahí mismo
+  (`recoverMediaError`, hasta 3 por minuto) en vez de volver a conectar, y hls.js empuja
+  un parón con vídeo guardado a los 0,5 s y no a los 2 s. Medido en la app, mismo canal y
+  2 min con pérdidas: antes 13–14 s parado y una conexión nueva cada 14 s; ahora 0,7 s,
+  todo antes de pasar a la grabación, y una sola conexión. En 5 min: 0,2 s. Sin pérdidas
+  (`VIBE_FALSO_BACHES=1` y proveedor limpio) no cambia nada. Sin datos del proveedor real:
+  si sigue pasando, «Exportar diagnóstico» apunta cada parón (desde dónde y cuánto había
+  guardado) y cada error de ffmpeg.
+
 ## Deuda técnica conocida desde el diseño
 
 - **mpv en ventana separada.** El nivel 3 de la cascada no permite superponer la

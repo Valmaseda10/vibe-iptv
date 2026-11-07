@@ -388,6 +388,9 @@ function sendLive(req, res, spec) {
   // `VIBE_FALSO_BACHES=1`: cada 10 s deja de mandar 1,5 s y luego manda lo atrasado de
   // golpe, como un panel real tras una VPN. Para medir los parones del reproductor.
   const baches = process.env.VIBE_FALSO_BACHES === "1";
+  // `VIBE_FALSO_SALTOS=1`: cada 10 s se pierde 1,5 s del canal (no llega nunca, como un
+  // reemisor que pierde su origen): las marcas de tiempo saltan hacia delante.
+  const saltos = process.env.VIBE_FALSO_SALTOS === "1";
   let tick = 0;
   let owed = 0;
   const timer = setInterval(() => {
@@ -397,6 +400,11 @@ function sendLive(req, res, spec) {
       return;
     }
     tick++;
+    if (saltos && tick > 50 && tick % 100 >= 85) {
+      // Lo perdido se salta en paquetes enteros de MPEG-TS (188 bytes).
+      offset = Math.min(size, offset + Math.floor(bytesPerTick / 188) * 188);
+      return;
+    }
     if (baches && tick % 100 >= 85) {
       owed += bytesPerTick;
       return;

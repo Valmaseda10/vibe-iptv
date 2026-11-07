@@ -11,6 +11,38 @@ export const LIVE_CUSHION_BEHIND_S = 12;
 /** Retraso con el que la pantalla sigue diciendo «En directo» en vez de «−0:12». */
 export const LIVE_BADGE_MAX_BEHIND_S = 15;
 
+/** Por debajo de este margen en la grabación se reproduce un poco más despacio... */
+const SLOW_BELOW_S = 6;
+/** ...hasta recuperar este. */
+const NORMAL_ABOVE_S = 9;
+/** 5 % más lento: con el tono conservado (lo hace el navegador), no se nota. */
+const SLOW_RATE = 0.95;
+
+/**
+ * Margen de la grabación (2026-11-07). Un canal que llega algo más despacio que el tiempo
+ * real (proveedor saturado, VPN) se come poco a poco los segundos de margen y, al acabarse,
+ * se para cada pocos segundos. VLC (iPhone y iPad) lo evita ajustando su reloj al del
+ * canal; esto hace lo mismo: con poco margen, al 95 % hasta recuperarlo. Medido con el
+ * proveedor de pruebas, que llega un 7 % lento: sin esto, parones de 2 s a partir del
+ * minuto 3.
+ */
+export function useRecordingPace(videoRef: RefObject<HTMLVideoElement | null>, active: boolean, videoKey: string | null) {
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!active || !video) return;
+    const timer = window.setInterval(() => {
+      if (video.paused || !video.buffered.length) return;
+      const ahead = video.buffered.end(video.buffered.length - 1) - video.currentTime;
+      if (ahead < SLOW_BELOW_S && video.playbackRate !== SLOW_RATE) video.playbackRate = SLOW_RATE;
+      else if (ahead > NORMAL_ABOVE_S && video.playbackRate !== 1) video.playbackRate = 1;
+    }, 500);
+    return () => {
+      window.clearInterval(timer);
+      video.playbackRate = 1;
+    };
+  }, [videoRef, active, videoKey]);
+}
+
 /** Lo que se cuenta de cada parón al núcleo, para el diagnóstico. */
 export type StallReport = { aheadS: number; currentTime: number };
 

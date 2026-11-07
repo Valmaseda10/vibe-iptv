@@ -41,6 +41,21 @@ pub fn is_http(url: &str) -> bool {
     url.starts_with("http://") || url.starts_with("https://")
 }
 
+/// Audio del directo: siempre AAC, con los huecos rellenos de silencio (2026-11-07).
+///
+/// Cuando el proveedor pierde un trozo del canal (pasa tras una VPN o un reemisor), las
+/// marcas de tiempo saltan. Copiando el audio, el último fotograma antes del salto dice
+/// durar todo el hueco (1,6 s en vez de 23 ms) y el `<video>` del PC (MSE) se queda sin
+/// audio que reproducir: la imagen se congela hasta que llega el siguiente trozo de la
+/// grabación, aunque haya 10 s guardados. VLC (iPhone y iPad) rellena ese hueco solo; esto
+/// hace lo mismo. Medido con el proveedor de pruebas perdiendo 1,5 s cada 10 s: de un
+/// parón por hueco a ninguno. El vídeo se sigue copiando tal cual (su último fotograma se
+/// queda en pantalla durante el hueco, como en VLC). Cerrar el salto en vez de rellenarlo
+/// (`-dts_delta_threshold`) no sirve: el directo se queda 1,5 s más atrás con cada pérdida
+/// y el margen de la grabación se acaba. Cuesta una codificación AAC, poca CPU; a cambio,
+/// el Dolby de un canal en directo llega convertido (el de las películas, no).
+const LIVE_AUDIO: [&str; 6] = ["-c:a", "aac", "-b:a", "192k", "-af", "aresample=async=1:first_pts=0"];
+
 /// Construye el comando ffmpeg de remux, sin lanzarlo todavía. Separado de
 /// [`spawn_remux`] para poder probar los flags exactos sin depender de tener ffmpeg
 /// instalado.
@@ -63,6 +78,10 @@ pub fn build_remux_command(ffmpeg_path: &Path, url: &str, user_agent: &str, opti
     // panel no manda ráfaga.
     if live {
         command.args(["-probesize", "1M", "-analyzeduration", "1M"]);
+        // Lo que el proveedor manda roto (perdió un trozo del canal) se tira aquí: el
+        // `<video>` del PC daba error de decodificación con ello y el reproductor volvía a
+        // conectar con el proveedor cada pocos segundos (medido 2026-11-07, ver LIVE_AUDIO).
+        command.args(["-fflags", "+discardcorrupt"]);
     } else {
         command.args(["-probesize", "2M", "-analyzeduration", "2M"]);
     }
@@ -102,7 +121,10 @@ pub fn build_remux_command(ffmpeg_path: &Path, url: &str, user_agent: &str, opti
     // WebView2 de Windows reproduce AC-3/E-AC-3, y convertirlo a AAC estéreo perdía el
     // 5.1 de las películas y gastaba CPU sin necesidad.
     let client_decodes = audio_codec.is_some_and(|codec| client_audio.iter().any(|c| c == codec));
-    if crate::media::probe::audio_needs_transcode(audio_codec) && !client_decodes {
+    let live_audio = live && audio_codec.is_some();
+    if live_audio {
+        command.args(LIVE_AUDIO);
+    } else if crate::media::probe::audio_needs_transcode(audio_codec) && !client_decodes {
         command.args(["-c:a", "aac", "-b:a", "192k"]);
     } else {
         command.args(["-c:a", "copy"]);
@@ -144,13 +166,15 @@ pub fn build_remux_command(ffmpeg_path: &Path, url: &str, user_agent: &str, opti
     // Otra salida del mismo proceso (F13): la grabación del directo, en trozos HLS fMP4 en
     // disco con una ventana deslizante. Misma conexión con el proveedor (R1) y mismo reloj
     // que la salida principal (medido: los dos empiezan en cero), así que el reproductor
-    // puede pasar de una a otra en el mismo segundo al pausar o rebobinar. hls.js la
-    // reproduce por MSE, que no acepta audio MPEG (MP2/MP3) dentro de MP4 (medido en la
-    // WebView2): ese audio, solo aquí, se convierte a AAC.
+    // puede pasar de una a otra en el mismo segundo al pausar o rebobinar. El audio, el
+    // mismo que la salida principal (`LIVE_AUDIO`); sin él, hls.js (MSE) no acepta audio
+    // MPEG (MP2/MP3) dentro de MP4 (medido en la WebView2): ese, solo aquí, se convierte.
     if let Some(dir) = timeshift {
         command.args(["-map", "0:v:0", "-map", &audio_map, "-c:v", "copy"]);
         let mse_decodes = matches!(audio_codec, Some("aac") | None) || client_decodes;
-        if mse_decodes {
+        if live_audio {
+            command.args(LIVE_AUDIO);
+        } else if mse_decodes {
             command.args(["-c:a", "copy"]);
             if audio_codec == Some("aac") {
                 command.args(["-bsf:a", "aac_adtstoasc"]);
@@ -231,7 +255,7 @@ mod tests {
 
     #[test]
     fn aac_is_copied_with_the_adts_to_mp4_filter() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some("aac"), live: true, ..Default::default() });
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some("aac"), ..Default::default() });
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "copy");
@@ -241,7 +265,7 @@ mod tests {
     #[test]
     fn other_compatible_audio_is_copied_without_the_aac_filter() {
         for codec in [Some("mp3"), Some("opus"), None] {
-            let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: codec, live: true, ..Default::default() });
+            let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: codec, ..Default::default() });
             let args = args_of(&command);
             let pos = args.iter().position(|a| a == "-c:a").unwrap();
             assert_eq!(args[pos + 1], "copy");
@@ -253,24 +277,50 @@ mod tests {
     fn dolby_audio_is_copied_when_the_client_decodes_it() {
         let client = ["ac3".to_string(), "eac3".to_string()];
         for codec in ["ac3", "eac3"] {
-            let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some(codec), client_audio: &client, live: true, ..Default::default() }));
+            let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some(codec), client_audio: &client, ..Default::default() }));
             let pos = args.iter().position(|a| a == "-c:a").unwrap();
             assert_eq!(args[pos + 1], "copy", "{codec} no debe convertirse si el cliente lo decodifica");
         }
         // DTS sigue convirtiéndose: el cliente no dijo que lo decodifique.
-        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some("dts"), client_audio: &client, live: true, ..Default::default() }));
+        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some("dts"), client_audio: &client, ..Default::default() }));
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "aac");
     }
 
     #[test]
     fn audio_transcodes_to_aac_at_192k_when_incompatible() {
-        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some("ac3"), live: true, ..Default::default() });
+        let command = build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some("ac3"), ..Default::default() });
         let args = args_of(&command);
         let pos = args.iter().position(|a| a == "-c:a").unwrap();
         assert_eq!(args[pos + 1], "aac");
         let b_pos = args.iter().position(|a| a == "-b:a").unwrap();
         assert_eq!(args[b_pos + 1], "192k");
+    }
+
+    #[test]
+    fn live_audio_is_always_aac_with_its_gaps_filled() {
+        // Si el proveedor pierde un trozo, el hueco de audio congelaba la imagen en el PC.
+        let client = ["ac3".to_string(), "eac3".to_string()];
+        for codec in ["aac", "mp2", "ac3", "eac3"] {
+            let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { audio_codec: Some(codec), client_audio: &client, live: true, ..Default::default() }));
+            let pos = args.iter().position(|a| a == "-c:a").unwrap();
+            assert_eq!(args[pos + 1], "aac", "{codec}");
+            assert!(args.windows(2).any(|w| w[0] == "-af" && w[1].starts_with("aresample=async=1")), "{codec}");
+            assert!(!args.iter().any(|a| a == "aac_adtstoasc"), "{codec}: no hay ADTS que convertir si se codifica");
+        }
+        // Sin audio conocido, nada que codificar.
+        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, ..Default::default() }));
+        assert!(!args.iter().any(|a| a == "-af"));
+    }
+
+    #[test]
+    fn live_drops_what_the_provider_sends_broken_but_vod_does_not() {
+        let live = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, ..Default::default() }));
+        let pos = live.iter().position(|a| a == "-fflags").unwrap();
+        assert_eq!(live[pos + 1], "+discardcorrupt");
+        assert!(pos < live.iter().position(|a| a == "-i").unwrap(), "es una opción de entrada");
+        let vod = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.mkv", "ua", &RemuxOptions::default()));
+        assert!(!vod.iter().any(|a| a == "-fflags"));
     }
 
     #[test]
@@ -353,9 +403,10 @@ mod tests {
         let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &options(Some("mp2"))));
         let pipe = args.iter().position(|a| a == "pipe:1").unwrap();
         let (live, recording) = (&args[..pipe], &args[pipe + 1..]);
-        // El directo copia el MP2 (el `<video>` lo reproduce); la grabación va por MSE, que no.
-        assert!(live.windows(2).any(|w| w[0] == "-c:a" && w[1] == "copy"));
+        // Las dos salidas, con el mismo audio del directo (AAC con los huecos rellenos).
+        assert!(live.windows(2).any(|w| w[0] == "-c:a" && w[1] == "aac"));
         assert!(recording.windows(2).any(|w| w[0] == "-c:a" && w[1] == "aac"));
+        assert!(recording.windows(2).any(|w| w[0] == "-af" && w[1].starts_with("aresample=async=1")));
         assert!(live.windows(2).any(|w| w[0] == "-map" && w[1] == "0:a:0?"), "con dos salidas, mapas explícitos");
         assert!(recording.windows(2).any(|w| w[0] == "-f" && w[1] == "hls"));
         assert!(recording.windows(2).any(|w| w[0] == "-hls_list_size" && w[1] == "900"), "30 min en trozos de 2 s");
@@ -364,11 +415,7 @@ mod tests {
         assert!(recording.last().unwrap().ends_with("live.m3u8"));
         assert!(args.iter().any(|a| a == "-y"));
 
-        // AAC se copia en las dos (con su filtro); sin grabación no cambia nada.
-        let args = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &options(Some("aac"))));
-        let pipe = args.iter().position(|a| a == "pipe:1").unwrap();
-        assert!(args[pipe + 1..].windows(2).any(|w| w[0] == "-bsf:a" && w[1] == "aac_adtstoasc"));
-        assert!(!args[pipe + 1..].iter().any(|a| a == "aac"));
+        // Sin grabación no hay segunda salida.
         let plain = args_of(&build_remux_command(Path::new("ffmpeg"), "http://x/1.ts", "ua", &RemuxOptions { live: true, ..Default::default() }));
         assert!(!plain.iter().any(|a| a == "hls"));
         assert_eq!(plain.last().map(String::as_str), Some("pipe:1"));
