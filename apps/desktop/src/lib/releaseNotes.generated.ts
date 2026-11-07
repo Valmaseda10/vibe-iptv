@@ -1,9 +1,10 @@
 // Generado por tools/publicar-version.mjs a partir de las notas de la versión: no se edita a mano.
 export const RELEASE_NOTES: { version: string; notes: readonly string[] } = {
-  "version": "0.3.4",
+  "version": "0.3.5",
   "notes": [
-    "Logos de canal: si el del proveedor no funciona, la app busca otro en la guía, en un directorio abierto de logos y en canales de la misma familia, lo comprueba y lo guarda. Los que no tienen logo en ningún sitio enseñan sus iniciales.",
-    "En Ajustes → Datos y copia ves cuántos canales tienen logo y puedes buscarlos al momento.",
-    "Buscar: los canales salen con su logo entero y una sola vez cada uno."
+    "Directo: ya no se para cuando el proveedor pierde trozos del canal (pasa a menudo con una VPN). La imagen sigue, el sonido no se corta y la app no vuelve a conectar con el proveedor cada pocos segundos.",
+    "Directo: si el canal llega algo lento, se reproduce un poco más despacio sin que se note, en vez de pararse cada poco.",
+    "Añadir proveedor: si el proveedor rechaza la conexión (error 403), la app explica por qué suele pasar. Y si pegas un enlace de lista de un panel Xtream, te ofrece añadirlo como Xtream.",
+    "Deportes: si no hay partidos porque la guía no se ha podido actualizar, ahora lo dice."
   ]
 };
